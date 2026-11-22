@@ -10,7 +10,6 @@ use crate::labels::{self, BucketKey, EntryAt, Lookup};
 use crate::memory::Memory;
 use crate::page_store::Pages;
 use crate::stored::{Bucket, HEADER_CLASS};
-use crate::targets;
 use alloc::vec::Vec;
 
 impl<M: Memory> Graph<M> {
@@ -31,13 +30,11 @@ impl<M: Memory> Graph<M> {
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`], or [`Error::OutOfMemory`] when a target index cannot take the change (rare: a removal can
-    /// split an index leaf); then nothing changed.
+    /// [`Error::UnknownVertex`]. A removal takes no memory.
     pub fn remove_edge(&mut self, half: EdgeRef) -> Result<Removal, Error> {
         let Some(Pair { own, other, theirs }) = self.pair(half)? else {
             return Ok(Removal::Absent);
         };
-        self.edges.reserve(2 * targets::PAGES_PER_CHANGE)?;
         let halves = order(half, other);
         // Only a label with a width has a value to report.
         let value = if self.widths.get(half.label()).is_some() {
@@ -91,7 +88,7 @@ impl<M: Memory> Graph<M> {
     }
 
     /// Tombstones the live half at `at` in `found` and takes it out of the target index. Writes
-    /// no value. Within reserved memory.
+    /// no value and takes no memory.
     pub(super) fn tombstone(&mut self, found: Found, at: Position) {
         let (next, target) = bucket::remove(found.bucket.slots, at, &self.edges)
             .unwrap_or_else(|| corrupt("live half not in its bucket"));
@@ -99,7 +96,7 @@ impl<M: Memory> Graph<M> {
             slots: next,
             ..found.bucket
         };
-        let bucket = self.index_removed(bucket, target, at);
+        self.index_removed(&bucket, target, at);
         self.publish(found.entry, bucket);
     }
 

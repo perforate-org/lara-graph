@@ -13,7 +13,7 @@ use crate::descriptor::Descriptor;
 use crate::id::{Position, VertexId};
 use crate::memory::Memory;
 use crate::stored::{Bucket, Index};
-use crate::targets::{self, BLOCK, Change, Root};
+use crate::targets::{self, BLOCK, Change, Nth, Root};
 use alloc::vec::Vec;
 
 /// A block batch planned before the insert that completes the block; it holds when the insert
@@ -114,20 +114,16 @@ impl<M: Memory> Graph<M> {
         changes
     }
 
-    /// The bucket's index after the edge to `target` at `at` was removed. Within reserved memory.
-    pub(super) fn index_removed(
-        &mut self,
-        bucket: Bucket,
-        target: VertexId,
-        at: Position,
-    ) -> Bucket {
-        let index = match indexed(&bucket) {
-            Some(end) if at.index() < end => {
-                self.index_apply(bucket.index.tree(), &[change(target, at, -1)])
+    /// Takes the edge to `target` at `at`, just removed, out of the bucket's index: in place, so
+    /// the index stays where it is and no memory is taken.
+    pub(super) fn index_removed(&self, bucket: &Bucket, target: VertexId, at: Position) {
+        match (indexed(bucket), bucket.index.tree()) {
+            (Some(end), Some(root)) if at.index() < end => {
+                targets::lower(&self.edges, root, key(target, at));
             }
-            Some(_) | None => bucket.index,
-        };
-        Bucket { index, ..bucket }
+            (Some(end), None) if at.index() < end => corrupt("an indexed edge without an index"),
+            (Some(_) | None, _) => {}
+        }
     }
 
     /// Applies changes within reserved memory.
@@ -148,10 +144,10 @@ impl<M: Memory> Graph<M> {
                 // indexed end (`p` is below the bucket's end, so its block is at most the last);
                 // the rest of `p`'s block is scanned.
                 let block = p.index() / BLOCK;
-                let before = b.index.tree().map_or(0, |root| {
-                    targets::count_before(&view, root, (t.index(), block))
-                        - targets::count_before(&view, root, (t.index(), 0))
-                });
+                let before = b
+                    .index
+                    .tree()
+                    .map_or(0, |root| targets::rank(&view, root, t.index(), block));
                 (block * BLOCK, before)
             }
             None => (0, 0),
@@ -169,21 +165,14 @@ impl<M: Memory> Graph<M> {
         let view = self.edges.pages();
         let stored = b.slots.stored();
         let (span, mut skip) = match (indexed(b), b.index.tree()) {
-            (Some(end), Some(root)) => {
-                let first = targets::count_before(&view, root, (t.index(), 0));
-                match targets::select(&view, root, first + k) {
-                    Some((posting, within)) if posting.target == t.index() => {
-                        let low = posting.block * BLOCK;
-                        ((low, low + BLOCK), within)
-                    }
-                    // Past the target's indexed entries: the rest are in the last block.
-                    Some(_) | None => {
-                        let indexed =
-                            targets::count_before(&view, root, (t.index(), u32::MAX)) - first;
-                        ((end, stored), k - indexed)
-                    }
+            (Some(end), Some(root)) => match targets::nth(&view, root, t.index(), k) {
+                Nth::At(posting, within) => {
+                    let low = posting.block * BLOCK;
+                    ((low, low + BLOCK), within)
                 }
-            }
+                // Past the target's indexed entries: the rest are in the last block.
+                Nth::Past(indexed) => ((end, stored), k - indexed),
+            },
             (Some(end), None) => ((end, stored), k),
             (None, _) => ((0, stored), k),
         };
@@ -209,10 +198,15 @@ impl<M: Memory> Graph<M> {
     }
 }
 
+/// The key of the posting of `target` in `at`'s block.
+const fn key(target: VertexId, at: Position) -> (u32, u32) {
+    (target.index(), at.index() / BLOCK)
+}
+
 /// A change of `delta` to the posting of `target` in `at`'s block.
-pub(super) fn change(target: VertexId, at: Position, delta: i64) -> Change {
+pub(super) const fn change(target: VertexId, at: Position, delta: i64) -> Change {
     Change {
-        key: (target.index(), at.index() / BLOCK),
+        key: key(target, at),
         delta,
     }
 }

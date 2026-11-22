@@ -7,7 +7,6 @@
 use crate::corrupt::corrupt;
 use crate::id::VertexId;
 use crate::page_store::{EXTENT_BYTES, Extent};
-use alloc::vec::Vec;
 
 /// Bytes per descriptor.
 pub(crate) const DESCRIPTOR_BYTES: usize = 16;
@@ -163,29 +162,31 @@ impl Descriptor {
     //   Run:   kind | stored u16 | live u16 | extent (7) | 4 reserved
     //   Paged: kind | stored u32 | live u32 | index extent (7)
     pub(crate) fn encode(&self) -> [u8; DESCRIPTOR_BYTES] {
-        let bytes: Vec<u8> = match self {
-            Self::Tiny(tiny) => [KIND_TINY, tiny.len, 0, 0]
-                .into_iter()
-                .chain(tiny.slots.iter().flat_map(|s| s.encode()))
-                .collect(),
-            Self::Run(run) => [KIND_RUN]
-                .into_iter()
-                .chain(run.stored.to_le_bytes())
-                .chain(run.live.to_le_bytes())
-                .chain(run.extent.encode())
-                .collect(),
-            Self::Paged(paged) => [KIND_PAGED]
-                .into_iter()
-                .chain(paged.stored.to_le_bytes())
-                .chain(paged.live.to_le_bytes())
-                .chain(paged.index.encode())
-                .collect(),
-        };
-        let mut out = [0u8; DESCRIPTOR_BYTES];
-        for (dst, src) in out.iter_mut().zip(bytes) {
-            *dst = src;
+        match self {
+            Self::Tiny(tiny) => {
+                let [[s0, s1, s2, s3], [s4, s5, s6, s7], [s8, s9, s10, s11]] =
+                    tiny.slots.map(Slot::encode);
+                [
+                    KIND_TINY, tiny.len, 0, 0, s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11,
+                ]
+            }
+            Self::Run(run) => {
+                let [s0, s1] = run.stored.to_le_bytes();
+                let [l0, l1] = run.live.to_le_bytes();
+                let [e0, e1, e2, e3, e4, e5, e6] = run.extent.encode();
+                [
+                    KIND_RUN, s0, s1, l0, l1, e0, e1, e2, e3, e4, e5, e6, 0, 0, 0, 0,
+                ]
+            }
+            Self::Paged(paged) => {
+                let [s0, s1, s2, s3] = paged.stored.to_le_bytes();
+                let [l0, l1, l2, l3] = paged.live.to_le_bytes();
+                let [e0, e1, e2, e3, e4, e5, e6] = paged.index.encode();
+                [
+                    KIND_PAGED, s0, s1, s2, s3, l0, l1, l2, l3, e0, e1, e2, e3, e4, e5, e6,
+                ]
+            }
         }
-        out
     }
 
     pub(crate) fn decode(bytes: [u8; DESCRIPTOR_BYTES]) -> Self {

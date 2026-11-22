@@ -52,6 +52,83 @@ pub(crate) fn select<M: Memory>(
     leaf::select(&read, left, total)
 }
 
+/// Where the `k`-th (0-based) unit of count among a target's postings is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Nth {
+    /// In this posting, at this rank within it.
+    At(Posting, u32),
+    /// Past them: the target's postings hold this many units in all.
+    Past(u32),
+}
+
+/// The `k`-th unit of count among `target`'s postings. Usually one descent: the walk of the leaf
+/// where they start; a target whose postings run on into the next leaf is counted from the root.
+pub(crate) fn nth<M: Memory>(view: &Pages<'_, M>, root: Root, target: u32, k: u32) -> Nth {
+    let mut left = k;
+    let mut found = None;
+    let complete = walk_target(view, root, target, |p| {
+        found = if p.target != target {
+            Some(Nth::Past(k - left))
+        } else if left < p.count {
+            Some(Nth::At(p, left))
+        } else {
+            left -= p.count;
+            None
+        };
+        found.is_some()
+    });
+    match (found, complete) {
+        (Some(nth), _) => nth,
+        (None, true) => Nth::Past(k - left),
+        (None, false) => {
+            let first = count_before(view, root, (target, 0));
+            match select(view, root, first + k) {
+                Some((p, within)) if p.target == target => Nth::At(p, within),
+                Some(_) | None => Nth::Past(count_before(view, root, (target, u32::MAX)) - first),
+            }
+        }
+    }
+}
+
+/// The units of count among `target`'s postings in blocks before `block`. Usually one descent, as
+/// for [`nth`].
+pub(crate) fn rank<M: Memory>(view: &Pages<'_, M>, root: Root, target: u32, block: u32) -> u32 {
+    let mut sum = 0;
+    let complete = walk_target(view, root, target, |p| {
+        let done = (p.target, p.block) >= (target, block);
+        if !done {
+            sum += p.count;
+        }
+        done
+    });
+    if complete {
+        sum
+    } else {
+        count_before(view, root, (target, block)) - count_before(view, root, (target, 0))
+    }
+}
+
+/// Calls `f` with the postings from `target`'s first on, in the leaf where they start, until it
+/// returns true. Whether that walk saw all it needed: `f` stopped it, or the leaf is the last.
+fn walk_target<M: Memory>(
+    view: &Pages<'_, M>,
+    root: Root,
+    target: u32,
+    f: impl FnMut(Posting) -> bool,
+) -> bool {
+    let key = (target, 0);
+    let mut page = root.page;
+    let mut last = true;
+    for _ in 0..root.depth {
+        let n = node_len(view, page);
+        let i = child_of(view, page, n, key);
+        last &= i + 1 == n;
+        page = page_at(view, page, i);
+    }
+    let read = |offset, buf: &mut [u8]| read_into(view, page, offset, buf);
+    leaf::walk_from(&read, key, f) || last
+}
+
 /// Releases every page of the tree.
 pub(crate) fn release<M: Memory>(store: &mut PageStore<M>, root: Root) {
     if root.depth > 0 {

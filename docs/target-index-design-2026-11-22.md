@@ -313,6 +313,57 @@ removing half a hub 26 %, and compaction 33 %.
 - **Single lookups.** Paged buckets now have a header, so `edge_lookup` and similar reads pay one
   more 32-byte read.
 
+### Cheaper removals and pairing (2026-11-23)
+
+canbench's instruction tracing (`--instruction-tracing`, a flame graph per bench) showed where a
+removal from a hub's side went, at ~24K instructions per edge:
+- **About 11K was the index decrement**, sent through the batch machinery: changes sorted and
+  combined, a plan, then a commit. Most of it was memory reads (~150 instructions each on the
+  heap memory) and short-lived `Vec`s (~200 each).
+- **About 3.4K was writing the bucket header**, on every removal and insert into a hub: the
+  descriptor, plane and header were encoded through iterator chains collected into `Vec`s.
+
+Changes:
+- **A removal lowers its posting in one descent** (`targets::lower`). It walks to the leaf, rewrites
+  the count bits and the segment's total there, and lowers each parent's count on the way back.
+  - It writes in place and allocates nothing, so a removal takes no memory: `remove_edge` and
+    `detach_step` no longer reserve, and `remove_edge` no longer fails for memory.
+  - Batches of decrements, such as compaction's, still go through the plan.
+- **Headers, descriptors and plane roots encode into fixed arrays**, without allocating.
+- **Rank and selection by target take one descent** (`targets::nth`, `targets::rank`). They walk the
+  target's postings in the leaf where they start. Before, they took two or three counted descents
+  from the root.
+  - A target whose postings run on into the next leaf falls back to the counted descents.
+- **Segment walks are inlined** (`#[inline]`). Without the hint, the new callers stopped the
+  compiler from inlining them into rank and selection, which cost ~900 instructions per walk.
+
+| Bench | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| `hub_remove_half_compact_65536` | 915M | 629M | −31 % |
+| — of which removals | 791M | 504M | −36 % (~15.4K per edge) |
+| — of which compaction | 124M | 125M | ±0 % |
+| `hub_remove_one_65536` (from the leaf's side) | 48.1K | 28.3K | −41 % |
+| `counterpart_into_hub_4096` | 27.0K | 17.3K | −36 % |
+| `detach_satellite_65536` | 46.3K | 27.4K | −41 % |
+| `detach_hub_65536` | 1.21B | 949M | −22 % |
+| `hub_insert_4096` / `_65536` | 60.5M / 1.03B | 46.0M / 775M | −24 % / −25 % |
+| `hub_insert_parallel_4096` | 56.5M | 40.8M | −28 % |
+| `set_value_4096` | 21.5K | 14.7K | −32 % |
+| scans, visits, `edge_lookup_65536` | | | ±0 % |
+
+**Against ic-stable-lara (one side), per half:**
+- inserts: 1.25× at 4096 edges, 1.9× at 65536;
+- removal with compaction: 2.3×;
+- hub detach at 4096 edges: 1.5× its synchronous detach.
+
+**Where a removal's ~15K go now.**
+- Finding both halves: ~5K. That is two bucket lookups, the half's slot, and the leaf's one-entry
+  bucket.
+- The index decrement: ~6K, about 20 memory reads and writes.
+- Tombstones and the two buckets' state: the rest.
+- Compaction's sort of its changes is ~1.1M of its 4.0M at 4096 edges. A stable sort and a sort on
+  a packed `u64` key measured the same.
+
 ### Space
 
 `cargo run --release --example index_pages -p lara-core-bench` builds 65536-edge hubs through the

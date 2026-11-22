@@ -22,7 +22,7 @@ use super::tree::Change;
 use crate::corrupt::corrupt;
 use alloc::vec::Vec;
 use core::ops::Range;
-use segment::{Entry, merge, rebuild};
+use segment::{Entry, Lowered, merge, rebuild};
 use write::{Split, Touched, gather, in_place, pack};
 
 pub(super) const LEAF_BYTES: usize = 4096;
@@ -205,6 +205,27 @@ pub(super) fn select(read: Read<'_>, rank: u32, total: Option<u32>) -> Option<(P
     found
 }
 
+/// Calls `f` with the leaf's postings from `key` on, in order, until it returns true; whether it
+/// did.
+pub(super) fn walk_from(
+    read: Read<'_>,
+    key: (u32, u32),
+    mut f: impl FnMut(Posting) -> bool,
+) -> bool {
+    let leaf = Leaf::open(read);
+    let mut stopped = false;
+    for e in (leaf.segment_of(key)..leaf.len()).filter_map(|i| leaf.entry(i)) {
+        e.walk(read, |p| {
+            stopped = p.key() >= key && f(p);
+            stopped
+        });
+        if stopped {
+            break;
+        }
+    }
+    stopped
+}
+
 /// A whole leaf as its parent lists it: first key, total count and bytes.
 pub(super) struct Image {
     pub(super) first: (u32, u32),
@@ -249,9 +270,10 @@ pub(super) fn update(old: Option<Read<'_>>, changes: &[Change]) -> Update {
     }
     // Removals only lower counts of postings that exist: they rewrite counts in place.
     if changes.iter().all(|c| c.delta < 0)
-        && let Some(update) = patched(&leaf, &groups)
+        && let Some(writes) = patched(&leaf, &groups)
     {
-        return update;
+        let delta = changes.iter().map(|c| c.delta).sum();
+        return Update::InPlace { writes, delta };
     }
     let touched: Vec<Touched> = groups
         .iter()
@@ -266,19 +288,42 @@ pub(super) fn update(old: Option<Read<'_>>, changes: &[Change]) -> Update {
         .unwrap_or_else(|| Update::Replace(pack(&gather(&leaf, touched), split)))
 }
 
+/// Decrements written over one segment in place.
+pub(super) struct Patch {
+    index: usize,
+    lowered: Lowered,
+}
+
+impl Patch {
+    /// Calls `write` with each `(offset, bytes)` the patch writes: the changed count bits, and
+    /// the segment's table entry with its new total.
+    pub(super) fn write(&self, mut write: impl FnMut(usize, &[u8])) {
+        let (offset, bytes) = self.lowered.changed();
+        write(offset, bytes);
+        write(table_end(self.index), &self.lowered.entry.to_bytes());
+    }
+}
+
+/// The patch that lowers the count of the posting at `key` by one in place, or `None` when the
+/// leaf lacks it.
+pub(super) fn lowered(read: Read<'_>, key: (u32, u32)) -> Option<Patch> {
+    let leaf = Leaf::open(read);
+    patch(&leaf, leaf.segment_of(key), &[Change { key, delta: -1 }])
+}
+
+fn patch(leaf: &Leaf<'_>, index: usize, changes: &[Change]) -> Option<Patch> {
+    let lowered = leaf.entry(index)?.lower(leaf.read, changes)?;
+    Some(Patch { index, lowered })
+}
+
 /// The writes that apply every group's decrements by lowering counts in place, or `None` when one
 /// of them names a posting its segment lacks.
-fn patched(leaf: &Leaf<'_>, groups: &[(usize, &[Change])]) -> Option<Update> {
+fn patched(leaf: &Leaf<'_>, groups: &[(usize, &[Change])]) -> Option<Vec<(usize, Vec<u8>)>> {
     let mut writes = Vec::with_capacity(2 * groups.len());
-    let mut delta = 0;
     for &(index, changes) in groups {
-        let entry = leaf.entry(index)?;
-        let (from, bytes, entry) = entry.lower(leaf.read, changes)?;
-        writes.push((entry.offset + from, bytes));
-        writes.push((table_end(index), entry.to_bytes().to_vec()));
-        delta += changes.iter().map(|c| c.delta).sum::<i64>();
+        patch(leaf, index, changes)?.write(|at, bytes| writes.push((at, bytes.to_vec())));
     }
-    Some(Update::InPlace { writes, delta })
+    Some(writes)
 }
 
 /// Segment `index` re-coded with `changes`; a single replacement that still fits keeps its slot.

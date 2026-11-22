@@ -54,20 +54,17 @@ pub(crate) enum Plane {
 impl Plane {
     /// Layout: kind | extent (run) or root page id u32 and depth u8 (table) | padding.
     pub(crate) fn encode(self) -> [u8; ROOT_BYTES] {
-        let mut out = [0u8; ROOT_BYTES];
-        let body: Vec<u8> = match self {
-            Self::Empty => vec![KIND_EMPTY],
-            Self::Run(extent) => [KIND_RUN].into_iter().chain(extent.encode()).collect(),
-            Self::Table { root, depth } => [KIND_TABLE]
-                .into_iter()
-                .chain(root.get().to_le_bytes())
-                .chain([depth])
-                .collect(),
-        };
-        for (dst, src) in out.iter_mut().zip(body) {
-            *dst = src;
+        match self {
+            Self::Empty => [KIND_EMPTY, 0, 0, 0, 0, 0, 0, 0],
+            Self::Run(extent) => {
+                let [e0, e1, e2, e3, e4, e5, e6] = extent.encode();
+                [KIND_RUN, e0, e1, e2, e3, e4, e5, e6]
+            }
+            Self::Table { root, depth } => {
+                let [r0, r1, r2, r3] = root.get().to_le_bytes();
+                [KIND_TABLE, r0, r1, r2, r3, depth, 0, 0]
+            }
         }
-        out
     }
 
     pub(crate) fn decode(bytes: [u8; ROOT_BYTES]) -> Self {

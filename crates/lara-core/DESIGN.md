@@ -241,18 +241,20 @@ skipping dead pages.
 A paged bucket keeps a **counted B+ tree of postings** (`targets`, `graph/index`). A posting
 `(target, block, count)` says that `count` live entries to `target` sit among the 64 positions of
 `block`. Rank and selection of a target's entries are therefore logarithmic, followed by one block
-scan. This matches halves in `counterpart`, removal and detach without scanning a hub.
+scan. This matches halves in `counterpart`, removal and detach without scanning a hub. A target's
+postings are usually reached in one descent, by walking the leaf where they start.
 
 - **Coverage.** The index covers the bucket's complete blocks; the last, partial block is scanned
   instead.
   - An append that completes a block brings the block's live entries in as one batch, sized
     beforehand by a counting pass.
-  - Removals rewrite counts in place: counts are fixed-width per segment, and a posting that
-    reaches zero stays until its segment is rewritten.
+  - A removal lowers its posting's count in place in one descent, and takes no memory. Counts are
+    fixed-width per segment, and a posting that reaches zero stays until its segment is
+    rewritten. Batches of decrements are lowered in place too.
   - Batches are planned once in memory, reserved exactly and committed. A block's batch is planned
     before the insert that completes the block; compaction plans its moves.
 - **Leaves are slotted pages of coded segments.** Each segment holds 16-32 postings, coded as
-  Rice target gaps, gamma counts and fixed-width blocks.
+  Rice target gaps, fixed-width counts and fixed-width blocks.
   - A change reads and writes only the segments it touches.
   - Internal nodes keep keys, pages and counts in separate arrays, so a lookup reads only what it
     probes.
@@ -260,9 +262,9 @@ scan. This matches halves in `counterpart`, removal and detach without scanning 
   such a bucket scan it.
 - **Costs.** Measurements and the space it takes are in
   `docs/target-index-design-2026-11-22.md`:
-  - pairing through a hub costs tens of thousands of instructions instead of a scan;
-  - hub inserts cost about 50-60 % more;
-  - removals from a hub's side cost one in-place index change each;
+  - pairing through a hub costs ~17-28K instructions instead of a scan;
+  - hub inserts cost about 15-20 % more than before the index;
+  - removals from a hub's side cost one in-place index change each, ~6K;
   - the index takes 0.8-1.4× the slots for hubs of distinct targets.
 
 ## Not yet

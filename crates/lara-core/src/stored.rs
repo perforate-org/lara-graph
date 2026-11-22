@@ -38,14 +38,9 @@ impl Stored {
         match self {
             Self::Plain(d) => d.encode(),
             Self::Extended(header) => {
-                let mut out = [0u8; DESCRIPTOR_BYTES];
-                for (dst, src) in out
-                    .iter_mut()
-                    .zip([KIND_EXTENDED].into_iter().chain(header.encode()))
-                {
-                    *dst = src;
-                }
-                out
+                let [e0, e1, e2, e3, e4, e5, e6] = header.encode();
+                let kind = KIND_EXTENDED;
+                [kind, e0, e1, e2, e3, e4, e5, e6, 0, 0, 0, 0, 0, 0, 0, 0]
             }
         }
     }
@@ -172,15 +167,14 @@ impl Bucket {
             Index::Dropped => (DROPPED_INDEX, 0),
             Index::Tree(r) => (r.page.get(), r.depth),
         };
-        let bytes: alloc::vec::Vec<u8> = self
-            .slots
-            .encode()
-            .into_iter()
-            .chain(plane.encode())
-            .chain(width.to_le_bytes())
-            .chain(page.to_le_bytes())
-            .chain([depth])
-            .collect();
+        let mut bytes = [0u8; HEADER_BYTES];
+        let (d, rest) = bytes.split_at_mut(DESCRIPTOR_BYTES);
+        let (root, rest) = rest.split_at_mut(ROOT_BYTES);
+        d.copy_from_slice(&self.slots.encode());
+        root.copy_from_slice(&plane.encode());
+        let [w0, w1] = width.to_le_bytes();
+        let [i0, i1, i2, i3] = page.to_le_bytes();
+        rest.copy_from_slice(&[w0, w1, i0, i1, i2, i3, depth]);
         store.write(header.offset(), &bytes);
     }
 }

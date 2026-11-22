@@ -9,7 +9,6 @@ use crate::id::{EdgeRef, Position, Progress, RemovedEdge, VertexId, VertexState}
 use crate::labels::{self, BucketKey};
 use crate::memory::Memory;
 use crate::stored::{Bucket, Index};
-use crate::targets;
 use crate::vertex::Record;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -59,8 +58,6 @@ impl<M: Memory> Graph<M> {
         // Per neighbour bucket: positions before hold no live entry to `v`.
         let mut hints = BTreeMap::new();
         for _ in 0..budget.get() {
-            // Removing two halves may change two target indexes.
-            self.edges.reserve(2 * targets::PAGES_PER_CHANGE)?;
             let list = self.list(v)?;
             let Some((entry, key, stored)) =
                 list.map(|list| labels::first(&self.lists.pages(), list))

@@ -9,7 +9,8 @@
 //! Leaves are pages of bit-packed postings (`leaf`); internal nodes keep each child's first key
 //! and total count, so the rank and selection of a target's entries are logarithmic even for a
 //! target with millions of parallel edges. Changes come in batches applied within reserved memory;
-//! a counting pass tells how much a large batch needs (`tree`).
+//! a counting pass tells how much a large batch needs (`tree`). A removal's single decrement is
+//! written in place and needs none.
 
 mod bits;
 mod leaf;
@@ -17,11 +18,11 @@ mod tree;
 
 #[cfg(any(test, feature = "bench-internals"))]
 pub(crate) use tree::extents;
-#[cfg(test)]
-pub(crate) use tree::postings;
 pub(crate) use tree::{
-    Change, Plan, Root, apply_reserved, commit, count_before, plan, release, select,
+    Change, Nth, Plan, Root, apply_reserved, commit, lower, nth, plan, rank, release,
 };
+#[cfg(test)]
+pub(crate) use tree::{count_before, postings, select};
 
 /// Positions per block.
 pub(crate) const BLOCK: u32 = 64;

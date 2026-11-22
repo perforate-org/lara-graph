@@ -61,6 +61,40 @@ fn check(store: &PageStore<VecMemory>, root: Option<Root>, model: &BTreeMap<(u32
         before += count;
     }
     assert_eq!(select(&view, root, before), None);
+    let sample: BTreeSet<u32> = model.keys().step_by(97).map(|&(t, _)| t).collect();
+    for target in sample {
+        check_target(&view, root, model, target);
+    }
+}
+
+/// `nth` and `rank` over `target`'s postings, against the model: every unit's posting, and the
+/// rank at every block the target has a posting in and just past it.
+fn check_target(
+    view: &crate::page_store::Pages<'_, VecMemory>,
+    root: Root,
+    model: &BTreeMap<(u32, u32), u32>,
+    target: u32,
+) {
+    let mut seen = 0u32;
+    for (&(_, block), &count) in model.range((target, 0)..=(target, u32::MAX)) {
+        assert_eq!(
+            rank(view, root, target, block),
+            seen,
+            "rank of {target} at {block}"
+        );
+        for within in [0, count - 1] {
+            let p = Posting {
+                target,
+                block,
+                count,
+            };
+            assert_eq!(nth(view, root, target, seen + within), Nth::At(p, within));
+        }
+        seen += count;
+        assert_eq!(rank(view, root, target, block + 1), seen);
+    }
+    assert_eq!(nth(view, root, target, seen), Nth::Past(seen));
+    assert_eq!(rank(view, root, target, u32::MAX), seen);
 }
 
 /// The deepest root seen, to show the test reaches several levels.
@@ -197,4 +231,65 @@ fn a_batch_over_every_posting_keeps_each_change_in_its_segment() {
         }
         check(&store, root, &model);
     }
+}
+
+/// Single decrements lower counts in place, down to zero, and take no pages; a batch after them
+/// still applies over the zero counts they leave.
+#[test]
+fn single_decrements_lower_counts_in_place() {
+    let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+    let mut model: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+    let mut rng = Rng(0x5851_F42D_4C95_7F2D);
+    let seed: Vec<Change> = (0..3000).map(|_| add_some(&mut model, &mut rng)).collect();
+    let mut root = commit_planned(&mut store, None, &seed);
+    assert!(depth(root) >= 2, "depth {}", depth(root));
+    let pages = store.allocated();
+    for round in 0..2000 {
+        let i = usize::try_from(rng.below(u64::try_from(model.len()).unwrap())).unwrap();
+        let (&key, count) = model.iter_mut().nth(i).unwrap();
+        *count -= 1;
+        if *count == 0 {
+            model.remove(&key);
+        }
+        lower(&store, root.unwrap(), key);
+        if round % 250 == 0 {
+            check(&store, root, &model);
+        }
+    }
+    check(&store, root, &model);
+    assert_eq!(store.allocated(), pages, "no page taken or released");
+    let more: Vec<Change> = (0..500).map(|_| add_some(&mut model, &mut rng)).collect();
+    root = commit_planned(&mut store, root, &more);
+    check(&store, root, &model);
+}
+
+/// Targets whose postings fill several leaves are found and ranked across them; so are targets
+/// between and beyond the postings.
+#[test]
+fn nth_and_rank_follow_targets_across_leaves() {
+    let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+    let mut model: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+    let mut rng = Rng(0x1405_7B7E_F767_814F);
+    let mut changes: Vec<Change> = (0..2000).map(|_| add_some(&mut model, &mut rng)).collect();
+    for target in [7, 2_500_000, 4_999_999] {
+        for block in 0..1500 {
+            let delta = 1 + u32::try_from(rng.below(3)).unwrap();
+            *model.entry((target, block)).or_default() += delta;
+            changes.push(Change {
+                key: (target, block),
+                delta: i64::from(delta),
+            });
+        }
+    }
+    let root = commit_planned(&mut store, None, &changes).unwrap();
+    assert!(root.depth >= 2, "depth {}", root.depth);
+    let view = store.pages();
+    for target in [0, 7, 8, 2_500_000, 4_999_999, u32::MAX] {
+        check_target(&view, root, &model, target);
+    }
+    // The zero count single decrements leave is skipped.
+    for _ in 0..model.remove(&(7, 0)).unwrap() {
+        lower(&store, root, (7, 0));
+    }
+    check_target(&store.pages(), root, &model, 7);
 }

@@ -22,8 +22,13 @@ pub(crate) use commit::{Plan, commit};
 pub(crate) use lookup::extents;
 #[cfg(test)]
 pub(crate) use lookup::postings;
-pub(crate) use lookup::{count_before, release, select};
-use node::{Child, FANOUT, child_of, children, key_at, node_len, page_at, read_into};
+pub(crate) use lookup::{Nth, nth, rank, release};
+#[cfg(test)]
+pub(crate) use lookup::{count_before, select};
+use node::{
+    Child, FANOUT, at, child_of, children, count_at, key_at, node_len, page_at, read_into,
+    write_child,
+};
 
 /// Where a tree is: its root page and how many internal levels lie above the leaves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,7 +47,7 @@ pub(crate) struct Change {
 /// Sorts changes and sums those to one key.
 fn combine(changes: &[Change]) -> Vec<Change> {
     let mut sorted = changes.to_vec();
-    sorted.sort_by_key(|c| c.key);
+    sorted.sort_unstable_by_key(|c| c.key);
     let mut out: Vec<Change> = Vec::with_capacity(sorted.len());
     for c in sorted {
         match out.last_mut() {
@@ -63,6 +68,26 @@ pub(crate) fn apply_reserved<M: Memory>(
     changes: &[Change],
 ) -> Result<Option<Root>, WriteError> {
     commit(store, plan(&store.pages(), root, changes))
+}
+
+/// Lowers the count of the posting at `key` by one, in place: no page moves and none is
+/// allocated. A count that reaches zero stays until its segment is next rewritten.
+pub(crate) fn lower<M: Memory>(store: &PageStore<M>, root: Root, key: (u32, u32)) {
+    lower_under(store, (root.page, root.depth), key);
+}
+
+fn lower_under<M: Memory>(store: &PageStore<M>, (page, level): (PageId, u8), key: (u32, u32)) {
+    let view = store.pages();
+    if level == 0 {
+        let read = |offset, buf: &mut [u8]| read_into(&view, page, offset, buf);
+        leaf::lowered(&read, key)
+            .unwrap_or_else(|| corrupt("an index decrement without its posting"))
+            .write(|offset, bytes| store.write(at(page, offset), bytes));
+        return;
+    }
+    let i = child_of(&view, page, node_len(&view, page), key);
+    lower_under(store, (page_at(&view, page, i), level - 1), key);
+    write_child(store, page, i, shifted(count_at(&view, page, i), -1));
 }
 
 /// What `changes` would do to the tree, read but not written: [`Plan::pages`] tells what to

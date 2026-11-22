@@ -6,6 +6,7 @@ use crate::targets::Posting;
 use crate::targets::bits::{PADDING, Reader, Writer, rice_len};
 use crate::targets::tree::Change;
 use alloc::vec::Vec;
+use core::ops::Range;
 
 /// Postings a segment is cut to when it is rebuilt.
 const SEGMENT_TARGET: usize = 16;
@@ -229,6 +230,7 @@ impl Entry {
 
     /// Calls `f` with each posting of `code` (from [`Self::padded`]) in order and the bit its
     /// count starts at, until it returns true.
+    #[inline]
     fn scan(&self, code: &[u8], mut f: impl FnMut(Posting, usize) -> bool) {
         let mut reader = Reader::new(code);
         let mut target = self.first.0;
@@ -253,19 +255,15 @@ impl Entry {
     }
 
     /// Calls `f` with the segment's postings in order, until it returns true.
+    #[inline]
     pub(super) fn walk(&self, read: Read<'_>, mut f: impl FnMut(Posting) -> bool) {
         self.scan(&self.padded(read), |p, _| f(p));
     }
 
-    /// Lowers the counts of postings it holds by `changes` (sorted, all decrements) in place: the
-    /// code's changed bytes (from the slot's start) and the entry with its new total, or `None`
-    /// when a change names a posting it lacks. A lower count always fits its field; one that
-    /// reaches zero stays until the segment is rewritten.
-    pub(super) fn lower(
-        &self,
-        read: Read<'_>,
-        changes: &[Change],
-    ) -> Option<(usize, Vec<u8>, Self)> {
+    /// Lowers the counts of postings it holds by `changes` (sorted, all decrements) in place, or
+    /// `None` when a change names a posting it lacks. A lower count always fits its field; one
+    /// that reaches zero stays until the segment is rewritten.
+    pub(super) fn lower(&self, read: Read<'_>, changes: &[Change]) -> Option<Lowered> {
         let mut code = self.padded(read);
         let mut found: Vec<(usize, u32)> = Vec::with_capacity(changes.len());
         let mut rest = changes.iter().peekable();
@@ -288,9 +286,12 @@ impl Entry {
             low = low.min(at / 8);
             high = high.max((at + usize::try_from(self.c).unwrap_or(32)).div_ceil(8));
         }
-        let bytes = code.get(low..high)?.to_vec();
         let total = u32::try_from(total).ok()?;
-        Some((low, bytes, Self { total, ..*self }))
+        Some(Lowered {
+            code,
+            changed: low..high,
+            entry: Self { total, ..*self },
+        })
     }
 
     /// The segment's postings, read from its slot.
@@ -301,6 +302,26 @@ impl Entry {
             false
         });
         out
+    }
+}
+
+/// A segment with counts lowered in place.
+pub(super) struct Lowered {
+    /// The slot's code with the counts rewritten.
+    code: Vec<u8>,
+    /// The bytes of the code that changed.
+    changed: Range<usize>,
+    /// The entry with its new total.
+    pub(super) entry: Entry,
+}
+
+impl Lowered {
+    /// The changed bytes of the code, and where in the leaf they go.
+    pub(super) fn changed(&self) -> (usize, &[u8]) {
+        (
+            self.entry.offset + self.changed.start,
+            self.code.get(self.changed.clone()).unwrap_or(&[]),
+        )
     }
 }
 
