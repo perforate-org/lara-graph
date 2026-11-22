@@ -178,3 +178,23 @@ fn drain(store: &mut PageStore<VecMemory>, root: Option<Root>, model: &BTreeMap<
     }
     assert_eq!(store.allocated().len(), 0);
 }
+
+/// One batch changing every posting: each segment's first key comes with the keys of the segment
+/// before it, and must still go to its own segment.
+#[test]
+fn a_batch_over_every_posting_keeps_each_change_in_its_segment() {
+    let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+    let mut model: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+    let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+    let seed: Vec<Change> = (0..3000).map(|_| add_some(&mut model, &mut rng)).collect();
+    let mut root = commit_planned(&mut store, None, &seed);
+    check(&store, root, &model);
+    for delta in [1i64, -1] {
+        let all: Vec<Change> = model.keys().map(|&key| Change { key, delta }).collect();
+        root = commit_planned(&mut store, root, &all);
+        for count in model.values_mut() {
+            *count = u32::try_from(i64::from(*count) + delta).unwrap();
+        }
+        check(&store, root, &model);
+    }
+}

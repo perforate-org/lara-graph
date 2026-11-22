@@ -16,7 +16,7 @@ pub(crate) fn count_before<M: Memory>(view: &Pages<'_, M>, root: Root, key: (u32
     for _ in 0..root.depth {
         let n = node_len(view, page);
         let i = child_of(view, page, n, key);
-        let sums = counts(view, page, 0..i + 1);
+        let sums = counts(view, page, i + 1);
         before += sums.iter().take(i).sum::<u32>();
         total = sums.last().copied();
         page = page_at(view, page, i);
@@ -36,7 +36,7 @@ pub(crate) fn select<M: Memory>(
     let mut total = None;
     for _ in 0..root.depth {
         let n = node_len(view, page);
-        let sums = counts(view, page, 0..n);
+        let sums = counts(view, page, n);
         let mut next = None;
         for (i, &count) in sums.iter().enumerate() {
             if left < count {

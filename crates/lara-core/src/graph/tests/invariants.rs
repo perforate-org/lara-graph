@@ -85,7 +85,14 @@ fn check_values<M: Memory>(
             "a dropped index on a small bucket"
         );
     }
-    let end = indexed(bucket).unwrap_or(0);
+    // What the index must cover, worked out here rather than through the code under test: a
+    // paged bucket's complete blocks, unless its index was dropped.
+    let end = match (&bucket.slots, bucket.index) {
+        (Descriptor::Paged(_), Index::Empty | Index::Tree(_)) => {
+            bucket.slots.stored() / targets::BLOCK * targets::BLOCK
+        }
+        (Descriptor::Paged(_), Index::Dropped) | (Descriptor::Tiny(_) | Descriptor::Run(_), _) => 0,
+    };
     let mut expected: BTreeMap<(u32, u32), u32> = BTreeMap::new();
     let mut live = Vec::new();
     bucket::read(&bucket.slots, &view, &mut live);

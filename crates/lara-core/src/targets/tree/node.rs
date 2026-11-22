@@ -7,7 +7,6 @@ use crate::memory::Memory;
 use crate::page_store::{PageId, PageStore, Pages};
 use crate::units::ByteOffset;
 use alloc::vec::Vec;
-use core::ops::Range;
 
 const NODE_HEADER: usize = 4;
 /// Bytes a child takes across the three arrays.
@@ -71,14 +70,10 @@ pub(super) fn count_at<M: Memory>(view: &Pages<'_, M>, page: PageId, i: usize) -
     u32_at(view, page, COUNTS + 4 * i)
 }
 
-/// The counts of children `range`, with one read.
-pub(super) fn counts<M: Memory>(
-    view: &Pages<'_, M>,
-    page: PageId,
-    range: Range<usize>,
-) -> Vec<u32> {
-    let mut bytes = alloc::vec![0u8; 4 * range.len()];
-    read_into(view, page, COUNTS + 4 * range.start, &mut bytes);
+/// The counts of the first `n` children, with one read.
+pub(super) fn counts<M: Memory>(view: &Pages<'_, M>, page: PageId, n: usize) -> Vec<u32> {
+    let mut bytes = alloc::vec![0u8; 4 * n];
+    read_into(view, page, COUNTS, &mut bytes);
     bytes
         .as_chunks::<4>()
         .0
@@ -117,7 +112,7 @@ pub(super) fn children<M: Memory>(view: &Pages<'_, M>, page: PageId) -> Vec<Chil
         .0
         .iter()
         .zip(pages.as_chunks::<4>().0)
-        .zip(counts(view, page, 0..n))
+        .zip(counts(view, page, n))
         .map(|(([t0, t1, t2, t3, b0, b1, b2, b3], p), count)| Child {
             first: (
                 u32::from_le_bytes([*t0, *t1, *t2, *t3]),

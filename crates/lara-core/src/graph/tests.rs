@@ -11,7 +11,6 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use core::num::NonZeroU32;
 use core::ops::ControlFlow;
-use index::indexed;
 
 /// The backing memories of a test graph; graphs borrow them so they can be reopened.
 #[derive(Default)]

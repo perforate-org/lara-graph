@@ -5,10 +5,10 @@
 //! the pages it counted, so a batch is reserved for and applied in one pass of the work.
 
 use super::Root;
-use super::node::{Child, at, count_at, node_len, page_at, write_child, write_node};
+use super::node::{Child, at, count_at, write_child, write_node};
 use crate::corrupt::corrupt;
 use crate::memory::{Memory, WriteError};
-use crate::page_store::{ByteClass, Extent, PageId, PageStore};
+use crate::page_store::{ByteClass, PageId, PageStore};
 use alloc::vec::Vec;
 
 type Key = (u32, u32);
@@ -89,17 +89,10 @@ impl Plan {
     /// The pages committing the plan allocates.
     pub(crate) fn pages(&self) -> u32 {
         match &self.top {
-            Top::Unchanged(_) => 0,
-            Top::Kept(_, kept) => kept_pages(kept),
+            // A kept node's changed children are all kept too: none takes a page.
+            Top::Unchanged(_) | Top::Kept(..) => 0,
             Top::Fresh(fresh) => fresh_pages(fresh),
         }
-    }
-}
-
-fn kept_pages(kept: &Kept) -> u32 {
-    match &kept.work {
-        Work::Leaf(_) => 0,
-        Work::Node(kids) => kids.iter().map(|(_, k)| kept_pages(k)).sum(),
     }
 }
 
@@ -110,8 +103,7 @@ fn fresh_pages(fresh: &Fresh) -> u32 {
         Body::Node(kids) => kids
             .iter()
             .map(|k| match k {
-                Kid::Old(_) => 0,
-                Kid::Kept(_, kept) => kept_pages(kept),
+                Kid::Old(_) | Kid::Kept(..) => 0,
                 Kid::Fresh(f) => fresh_pages(f),
             })
             .sum(),
@@ -135,7 +127,7 @@ pub(crate) fn commit<M: Memory>(
             depth: plan.depth,
         }),
     };
-    Ok(root.map(|r| shrink(store, r)))
+    Ok(root)
 }
 
 fn write_kept<M: Memory>(store: &PageStore<M>, kept: &Kept) {
@@ -182,23 +174,6 @@ fn write_fresh<M: Memory>(store: &mut PageStore<M>, fresh: Fresh) -> Result<Chil
         page,
         count: fresh.count,
     })
-}
-
-/// A root with one child gives way to it.
-fn shrink<M: Memory>(store: &mut PageStore<M>, mut top: Root) -> Root {
-    while top.depth > 0 {
-        let view = store.pages();
-        if node_len(&view, top.page) != 1 {
-            break;
-        }
-        let only = page_at(&view, top.page, 0);
-        store.release(Extent::whole(top.page));
-        top = Root {
-            page: only,
-            depth: top.depth - 1,
-        };
-    }
-    top
 }
 
 /// `count` changed by `delta`.

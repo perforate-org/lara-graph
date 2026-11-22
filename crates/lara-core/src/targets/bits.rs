@@ -116,3 +116,36 @@ impl<'a> Reader<'a> {
         q << k | self.fixed(k)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Rice codes round-trip between fixed fields, long quotients included (runs of ones past a
+    /// 32-bit window), and `rice_len` tells the bits each takes.
+    #[test]
+    fn rice_codes_round_trip_with_long_quotients() {
+        let cases: Vec<(u32, u32)> = [0, 1, 2, 30, 31, 32, 33, 63, 64, 65, 100, 1000]
+            .into_iter()
+            .flat_map(|q| [0u32, 1, 5].map(|k| ((q << k) | ((1 << k) - 1), k)))
+            .collect();
+        let mut out = Writer::with_capacity(64);
+        for &(value, k) in &cases {
+            out.fixed(0b101, 3);
+            out.rice(value, k);
+        }
+        let mut bytes = out.into_bytes();
+        bytes.extend([0; PADDING]);
+        let mut reader = Reader::new(&bytes);
+        for &(value, k) in &cases {
+            assert_eq!(reader.fixed(3), 0b101);
+            let start = reader.position();
+            assert_eq!(reader.rice(k), value, "rice({value}, {k})");
+            assert_eq!(
+                reader.position() - start,
+                rice_len(value, k),
+                "length of rice({value}, {k})"
+            );
+        }
+    }
+}
