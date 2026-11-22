@@ -108,6 +108,29 @@ pub(crate) fn rank<M: Memory>(view: &Pages<'_, M>, root: Root, target: u32, bloc
     }
 }
 
+/// The last block where `target` has a unit of count, if any. Usually one descent, as for
+/// [`nth`].
+pub(crate) fn last_block<M: Memory>(view: &Pages<'_, M>, root: Root, target: u32) -> Option<u32> {
+    let mut last = None;
+    let complete = walk_target(view, root, target, |p| {
+        if p.target != target {
+            return true;
+        }
+        if p.count > 0 {
+            last = Some(p.block);
+        }
+        false
+    });
+    if complete {
+        return last;
+    }
+    let end = count_before(view, root, (target, u32::MAX));
+    if end == count_before(view, root, (target, 0)) {
+        return None;
+    }
+    select(view, root, end - 1).map(|(p, _)| p.block)
+}
+
 /// Calls `f` with the postings from `target`'s first on, in the leaf where they start, until it
 /// returns true. Whether that walk saw all it needed: `f` stopped it, or the leaf is the last.
 fn walk_target<M: Memory>(

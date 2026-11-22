@@ -1,10 +1,10 @@
 //! Inserting edges: every half or none, each with its value when the label has a width.
 
-use super::index::Batch;
+use super::index::{Batch, Between};
 use super::{Error, Graph, reserved};
-use crate::bucket;
+use crate::bucket::{self, Spot};
 use crate::corrupt::corrupt;
-use crate::descriptor::Descriptor;
+use crate::descriptor::{Descriptor, Slot};
 use crate::id::{EdgeRef, Halves, Label, Placement, Position, Side, VertexId, VertexState, Width};
 use crate::labels::{self, BucketKey, BucketList, EntryAt, Lookup};
 use crate::memory::Memory;
@@ -78,24 +78,41 @@ impl<M: Memory> Graph<M> {
         let width = self.value_width(label, value)?;
         let places = self.admit(&halves)?;
         let n = u32::try_from(N).map_err(|_| Error::AddressSpaceExhausted)?;
-        // An append that completes a block of a hub's bucket indexes the whole block: planned
-        // now, so that its pages are reserved with the rest.
-        let batches: [Option<Batch>; N] = core::array::from_fn(|i| {
-            let (half, place) = (halves.get(i)?, places.get(i)?);
+        // Each half's spot, and the block batch of an append that completes a block of a hub's
+        // bucket: planned now, so that its pages are reserved with the rest.
+        let spots: [(Spot, Option<Batch>); N] = core::array::from_fn(|i| {
+            let (Some(half), Some(place)) = (halves.get(i), places.get(i)) else {
+                corrupt("an admitted half");
+            };
             match place.target {
                 Target::Present(_, stored) => {
                     let bucket = Bucket::resolve(&self.edges.pages(), stored);
-                    self.batch_for(&bucket, half.target)
+                    // The other half's bucket, as it stands, tells whether the two ends have
+                    // edges between them already.
+                    let partner = (N == 2)
+                        .then(|| halves.get(1 - i).zip(places.get(1 - i)))
+                        .flatten();
+                    let between = partner.map_or(Between::Unknown, |(h, p)| between(h, p));
+                    let spot = self.spot_for(&bucket, half.target, half.placement, between);
+                    let batch = match spot {
+                        Spot::End => self.batch_for(&bucket, half.target),
+                        Spot::Hole(_) => None,
+                    };
+                    (spot, batch)
                 }
-                Target::Absent(_) => None,
+                Target::Absent(_) => (Spot::End, None),
             }
         });
-        let batch_pages: u32 = batches.iter().flatten().map(Batch::pages).sum();
+        let batch_pages: u32 = spots
+            .iter()
+            .filter_map(|(_, b)| b.as_ref())
+            .map(Batch::pages)
+            .sum();
         self.edges
             .reserve(pages_per_half(width) * n + batch_pages)?;
         self.lists.reserve(labels::PAGES_PER_ADD * n)?;
         let mut places = places.into_iter();
-        let mut batches = batches.into_iter();
+        let mut spots = spots.into_iter();
         let mut touched: Option<VertexId> = None;
         Ok(halves.map(|half| {
             let planned = places.next().unwrap_or_else(|| corrupt("an admitted half"));
@@ -107,8 +124,8 @@ impl<M: Memory> Graph<M> {
                 planned
             };
             touched = Some(half.vertex);
-            let batch = batches.next().flatten();
-            self.insert_half(half, place, width.map(|w| (w, value)), batch)
+            let (spot, batch) = spots.next().unwrap_or_else(|| corrupt("an admitted half"));
+            self.insert_half(half, place, (spot, batch), width.map(|w| (w, value)))
         }))
     }
 
@@ -167,30 +184,35 @@ impl<M: Memory> Graph<M> {
         &mut self,
         half: Half,
         place: Place,
+        spot: (Spot, Option<Batch>),
         value: Option<(Width, &[u8])>,
-        batch: Option<Batch>,
     ) -> EdgeRef {
         let at = match value {
-            None => self.insert_plain(half, place, batch),
-            Some(value) => self.insert_extended(half, place, Some(value), batch),
+            None => self.insert_plain(half, place, spot),
+            Some(value) => self.insert_extended(half, place, spot, Some(value)),
         };
         EdgeRef::new(half.vertex, half.key.label, half.key.side, at)
     }
 
     /// A half of a label without values. A plain bucket that stays below a page takes the slot
     /// alone; anything else goes through [`Self::insert_extended`].
-    fn insert_plain(&mut self, half: Half, place: Place, batch: Option<Batch>) -> Position {
+    fn insert_plain(
+        &mut self,
+        half: Half,
+        place: Place,
+        (destination, batch): (Spot, Option<Batch>),
+    ) -> Position {
         let (slot, slots) = match place.target {
             Target::Present(entry, Stored::Plain(slots)) => (Ok(entry), slots),
             Target::Absent(gap) => (Err(gap), Descriptor::EMPTY),
             Target::Present(_, Stored::Extended(_)) => {
-                return self.insert_extended(half, place, None, batch);
+                return self.insert_extended(half, place, (destination, batch), None);
             }
         };
         let (next, at) = reserved(bucket::insert(
             slots,
             half.target,
-            half.placement,
+            destination,
             &mut self.edges,
         ));
         // A run that just became paged gets its target index.
@@ -206,8 +228,8 @@ impl<M: Memory> Graph<M> {
         &mut self,
         half: Half,
         place: Place,
+        (destination, batch): (Spot, Option<Batch>),
         value: Option<(Width, &[u8])>,
-        batch: Option<Batch>,
     ) -> Position {
         let (slot, bucket) = match place.target {
             Target::Present(entry, stored) => {
@@ -219,14 +241,12 @@ impl<M: Memory> Graph<M> {
             Some((width, _)) if bucket.values.is_none() => self.with_values(bucket, width),
             Some(_) | None => bucket,
         };
-        let (slots, at) = {
-            reserved(bucket::insert(
-                bucket.slots,
-                half.target,
-                half.placement,
-                &mut self.edges,
-            ))
-        };
+        let (slots, at) = reserved(bucket::insert(
+            bucket.slots,
+            half.target,
+            destination,
+            &mut self.edges,
+        ));
         let was = core::mem::replace(&mut bucket.slots, slots);
         if let (Some(cells), Some((width, bytes))) = (bucket.values.as_mut(), value) {
             cells.plane = reserved(values::write(
@@ -302,6 +322,20 @@ pub(super) fn pages_per_half(width: Option<Width>) -> u32 {
         + 1
         + targets::PAGES_PER_CHANGE
         + width.map_or(0, |_| 1 + values::PAGES_PER_WRITE)
+}
+
+/// Whether `half`'s bucket, at `place`, shows the two ends without edges between them: absent, or
+/// tiny without an entry to `half`'s target. Larger buckets are not read for this.
+fn between(half: &Half, place: &Place) -> Between {
+    match place.target {
+        Target::Absent(_) => Between::Nothing,
+        Target::Present(_, Stored::Plain(Descriptor::Tiny(tiny)))
+            if !tiny.slots().contains(&Slot::Live(half.target)) =>
+        {
+            Between::Nothing
+        }
+        Target::Present(..) => Between::Unknown,
+    }
 }
 
 /// Where a half goes: its vertex's record and its bucket, or where the bucket belongs.

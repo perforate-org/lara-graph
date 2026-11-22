@@ -22,7 +22,7 @@ pub(crate) use commit::{Plan, commit};
 pub(crate) use lookup::extents;
 #[cfg(test)]
 pub(crate) use lookup::postings;
-pub(crate) use lookup::{Nth, nth, rank, release};
+pub(crate) use lookup::{Nth, last_block, nth, rank, release};
 #[cfg(test)]
 pub(crate) use lookup::{count_before, select};
 use node::{

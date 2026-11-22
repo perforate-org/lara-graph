@@ -7,14 +7,23 @@
 //! buckets drop their indexes, as all their edges are going: their lookups scan.
 
 use super::{Graph, reserved};
-use crate::bucket;
+use crate::bucket::{self, Spot};
 use crate::corrupt::corrupt;
 use crate::descriptor::Descriptor;
-use crate::id::{Position, VertexId};
+use crate::id::{Placement, Position, VertexId};
 use crate::memory::Memory;
 use crate::stored::{Bucket, Index};
 use crate::targets::{self, BLOCK, Change, Nth, Root};
 use alloc::vec::Vec;
+
+/// What an insert knows of the edges already between a half's two ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Between {
+    /// There are none: the other end's bucket shows it.
+    Nothing,
+    /// Not known without looking.
+    Unknown,
+}
 
 /// A block batch planned before the insert that completes the block; it holds when the insert
 /// appends at `at`.
@@ -101,6 +110,49 @@ impl<M: Memory> Graph<M> {
                 &changes,
             )),
             at: Position::new(next),
+        })
+    }
+
+    /// Where an insert of an edge to `t` into `b` goes under `placement`: the first safe hole
+    /// when it reuses holes and there is one, else the end. With no edges `between` the two ends,
+    /// any hole is safe and the target index is not consulted.
+    pub(super) fn spot_for(
+        &self,
+        b: &Bucket,
+        t: VertexId,
+        placement: Placement,
+        between: Between,
+    ) -> Spot {
+        let last = || match between {
+            Between::Nothing => None,
+            Between::Unknown => self.last_to(b, t),
+        };
+        match placement {
+            Placement::Append => Spot::End,
+            Placement::ReuseHoles => {
+                bucket::hole(&b.slots, t, &self.edges.pages(), last).map_or(Spot::End, Spot::Hole)
+            }
+        }
+    }
+
+    /// The position of the last live edge to `t` in a paged bucket: in the unindexed last block,
+    /// else in the last indexed block that holds one.
+    fn last_to(&self, b: &Bucket, t: VertexId) -> Option<Position> {
+        let view = self.edges.pages();
+        let last_in = |span: (u32, u32)| {
+            let mut last = None;
+            bucket::find_in(&b.slots, &view, span, |e| {
+                if e.target() == t {
+                    last = Some(e.position());
+                }
+                false
+            });
+            last
+        };
+        let end = indexed(b).unwrap_or(0);
+        last_in((end, b.slots.stored())).or_else(|| {
+            let block = targets::last_block(&view, b.index.tree()?, t.index())?;
+            last_in((block * BLOCK, (block + 1) * BLOCK))
         })
     }
 

@@ -73,10 +73,19 @@ position, so position order is insertion order: this is Gleaph's `Insertion` ord
 compaction keeps it. `ReuseHoles` refills a hole when one is safe, without waiting for
 compaction; this is Gleaph's `Unordered`. Appending never reads the bucket's slots.
 
-**Equal-target edges stay in insertion order** either way. `ReuseHoles` takes a hole only if no
-live edge to the same target lies after it, and otherwise appends; paged buckets reuse holes in
-their last page only. Gleaph pairs forward and reverse entries of parallel edges by their rank among equal-target
-edges (ADR 0048), so this invariant keeps both sides aligned without coordinating them.
+**Equal-target edges stay in insertion order** either way. `ReuseHoles` takes the first hole
+after the last live edge to the same target, and appends when there is none. Gleaph pairs forward
+and reverse entries of parallel edges by their rank among equal-target edges (ADR 0048), so this
+invariant keeps both sides aligned without coordinating them.
+
+**Reused holes keep positions stable.** An `Unordered` bucket heals itself through inserts and
+never needs compaction, so nothing keyed by position is ever re-keyed.
+- In a paged bucket, the last edge to the target comes from the target index. When the other end's
+  bucket is absent, or tiny without an edge back, there is none and the index is not read.
+- The page index then leads straight to the first page with a hole after it, and the page's entry
+  names its first hole.
+- A fill costs ~40-45K instructions on a 65536-edge hub, against ~12K for an append. Most of it is
+  the target index's new posting: its segment is decoded and coded again.
 
 The descriptor size is set by memory: on sparse graphs per-vertex descriptors dominate, and 16
 bytes with 3 inline slots used 8-17% less memory than 24 bytes with 5
@@ -140,9 +149,14 @@ the leaf's entry.
 
 ## The page index
 
-A paged bucket's index lists its data pages; each 6-byte entry is a page id and, at the bottom
-level, that page's tombstone count, so a scan skips fully dead pages without reading them. The
-index is a tree of fanout 682 (one page of entries) whose depth follows from the page count and
+A paged bucket's index lists its data pages. Each 8-byte entry is a page id, a count and a slot.
+- At the bottom level, the count is the page's tombstones, so a scan skips fully dead pages
+  without reading them. The slot is the page's first hole, so a reusing insert finds one without
+  reading the page.
+- Above it, the count is how many of the node's children have a fillable hole, so the search for
+  one goes straight down. A hollow page's holes are not filled.
+
+The index is a tree of fanout 512 (one page of entries) whose depth follows from the page count and
 is never stored. The top is an extent sized to its entries: it grows by copying at most one page,
 and a full one-page top becomes the first child of a new top without copying (as in
 ic-stable-lara's Tree-CSR). Three levels cover every position a `u32` can name.
@@ -269,6 +283,9 @@ postings are usually reached in one descent, by walking the leaf where they star
 
 ## Not yet
 
+- A cheaper index change for a filled hole: a new posting re-codes its whole segment (~25K
+  instructions). Bumping an existing posting's count in place, and appending a posting past a
+  segment's last key, would avoid it.
 - Reclaiming zero-count postings and index pages of hubs whose edges were mostly removed,
   short of demotion.
 - Detaching many vertices at once with one pass over each shared hub.

@@ -225,12 +225,10 @@ fn merge<M: Memory>(
         .collect();
     bytes.resize(byte_len(PAGE_SLOTS), 0xFF);
     store.write(first.1.present().offset(), &bytes);
-    paged::set_tombstones(
-        store,
-        paged,
-        first.0,
-        narrow(PAGE_SLOTS - stored_u32(edges.len())),
-    );
+    // The live edges are packed at the front: the first hole follows them.
+    let live = narrow(stored_u32(edges.len()));
+    let holes = (narrow(PAGE_SLOTS) - live, live.min(paged::NO_HOLE));
+    paged::set_holes(store, paged, first.0, holes);
     paged::hollow(store, paged, second.0);
     moves_to_front(&edges, base)
 }

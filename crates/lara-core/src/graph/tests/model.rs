@@ -84,6 +84,9 @@ impl Model {
                 "an append goes after every stored position"
             );
         }
+        if placement_of(half.label()) == Placement::ReuseHoles {
+            Self::check_reuse(bucket, i, slot);
+        }
         if i == bucket.len() {
             bucket.push(Some(slot));
         } else {
@@ -96,6 +99,37 @@ impl Model {
             .flatten()
             .any(|s| s.other == slot.other);
         assert!(!later_equal, "equal-target edges stay in insertion order");
+    }
+
+    /// A reusing insert fills the first hole after the last live slot to the same vertex, or
+    /// appends when there is none. Holes in a complete page with no live slot may be passed over:
+    /// compaction may have released that page.
+    fn check_reuse(bucket: &[Option<Slot>], i: usize, slot: Slot) {
+        let page = usize::try_from(PAGE_SLOTS).unwrap();
+        let start = bucket
+            .iter()
+            .rposition(|s| s.is_some_and(|s| s.other == slot.other))
+            .map_or(0, |last| last + 1);
+        let dead = |at: usize| {
+            let low = at / page * page;
+            bucket
+                .get(low..low + page)
+                .is_some_and(|slots| slots.iter().all(Option::is_none))
+        };
+        let passed: Vec<usize> = (start..i.min(bucket.len()))
+            .filter(|&h| bucket[h].is_none())
+            .collect();
+        assert!(
+            passed.iter().all(|&h| dead(h)),
+            "a reusing insert at {i} passed over a fillable hole in {passed:?}"
+        );
+        if i < bucket.len() && dead(i) {
+            assert_eq!(
+                i,
+                start.max(i / page * page),
+                "the first hole of a dead page"
+            );
+        }
     }
 
     /// Every half of edge `id`.

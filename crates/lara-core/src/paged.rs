@@ -1,10 +1,14 @@
 //! The page index of a paged bucket.
 //!
 //! Data pages hold 1024 slots each; position `p` is slot `p % 1024` of data page `p / 1024`.
-//! The index lists data pages in order. Each entry is 6 bytes: a page id and, at the bottom
-//! level, that data page's tombstone count (so a scan skips dead pages without reading them).
+//! The index lists data pages in order. Each entry is 8 bytes: a page id, a count and a slot.
+//! - At the bottom level, the count is the data page's tombstones, so a scan skips dead pages
+//!   without reading them, and the slot is the page's first hole, so an insert that reuses holes
+//!   finds one without reading the page.
+//! - Above it, the count is how many of the node's children hold a hole an insert can fill, so a
+//!   search for one goes straight to it.
 //!
-//! The index is a tree of fixed fanout [`FANOUT`] (682 entries fill a page). Its depth follows
+//! The index is a tree of fixed fanout [`FANOUT`] (512 entries fill a page). Its depth follows
 //! from the number of data pages and is never stored. The top level is an extent sized to its
 //! entries; every lower node is a whole page. Growth is bounded: the top grows by copying at most
 //! one page of entries, and a full one-page top becomes a child of a new top without copying.
@@ -18,24 +22,53 @@ use crate::units::ByteOffset;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
-/// Bytes per index entry.
-const ENTRY_BYTES: u32 = 6;
-/// Entries per index page.
-pub(crate) const FANOUT: u32 = 682;
+mod growth;
 
-/// A data page and its tombstone count. A hollow entry (`page: None`) stands for a page whose
-/// positions are all dead: its page was released without renumbering anything after it.
+pub(crate) use growth::append_page;
+
+/// Bytes per index entry.
+const ENTRY: usize = 8;
+const ENTRY_BYTES: u32 = 8;
+/// Entries per index page.
+pub(crate) const FANOUT: u32 = 4096 / ENTRY_BYTES;
+/// The first-hole slot of a page without holes.
+pub(crate) const NO_HOLE: u16 = 1024;
+
+/// A data page, its tombstone count and the slot of its first hole ([`NO_HOLE`] for none). A
+/// hollow entry (`page: None`) stands for a page whose positions are all dead: its page was
+/// released without renumbering anything after it.
+///
+/// An entry above the bottom level is read as one too: its page is the child node, and its count
+/// is how many of the child's entries have a fillable hole below them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Leaf {
     pub(crate) page: Option<PageId>,
     pub(crate) tombstones: u16,
+    pub(crate) first_hole: u16,
+}
+
+/// Whether an entry at `level` has a hole an insert can fill below it: a present data page with a
+/// tombstone, or a node with such a child. A hollow page's holes are not filled: its page is gone.
+const fn fillable(level: u32, entry: Leaf) -> bool {
+    entry.tombstones > 0 && (level > 1 || entry.page.is_some())
 }
 
 impl Leaf {
-    pub(crate) const fn live(page: PageId, tombstones: u16) -> Self {
+    /// A data page with `tombstones` holes, the first at slot `first_hole`.
+    pub(crate) const fn data(page: PageId, tombstones: u16, first_hole: u16) -> Self {
         Self {
             page: Some(page),
             tombstones,
+            first_hole,
+        }
+    }
+
+    /// A node entry: its child, and how many of the child's entries have a fillable hole.
+    const fn node(page: PageId, holed: u16) -> Self {
+        Self {
+            page: Some(page),
+            tombstones: holed,
+            first_hole: NO_HOLE,
         }
     }
 
@@ -74,18 +107,20 @@ fn entry_at(node: ByteOffset, index: u64) -> ByteOffset {
     ByteOffset::new(node.get() + index * u64::from(ENTRY_BYTES))
 }
 
-fn encode(leaf: Leaf) -> [u8; 6] {
+fn encode(leaf: Leaf) -> [u8; ENTRY] {
     let [p0, p1, p2, p3] = leaf.page.map_or(HOLLOW, PageId::get).to_le_bytes();
     let [t0, t1] = leaf.tombstones.to_le_bytes();
-    [p0, p1, p2, p3, t0, t1]
+    let [h0, h1] = leaf.first_hole.to_le_bytes();
+    [p0, p1, p2, p3, t0, t1, h0, h1]
 }
 
-fn decode(bytes: [u8; 6]) -> Leaf {
-    let [p0, p1, p2, p3, t0, t1] = bytes;
+fn decode(bytes: [u8; ENTRY]) -> Leaf {
+    let [p0, p1, p2, p3, t0, t1, h0, h1] = bytes;
     let raw = u32::from_le_bytes([p0, p1, p2, p3]);
     Leaf {
         page: (raw != HOLLOW).then_some(PageId::new(raw)),
         tombstones: u16::from_le_bytes([t0, t1]),
+        first_hole: u16::from_le_bytes([h0, h1]),
     }
 }
 
@@ -112,39 +147,51 @@ impl Node {
     }
 }
 
+/// Whether a walk goes below a node entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Descend {
+    Into,
+    Past,
+}
+
+/// Entries read at a time: a walk that stops early reads little of a large node.
+const WALK_ENTRIES: u64 = 64;
+
 /// Visits the entries under `node` whose subtrees hold data pages numbered `from` or later, in
 /// order, parents before their children, as `(level, first data page covered, entry)`, until
-/// `on_entry` breaks. Level-1 entries are data pages. Reads each node from its first such entry.
+/// `on_entry` breaks; it says for each node entry whether to go below it. Level-1 entries are
+/// data pages. Reads each node from its first such entry, a window at a time.
 fn walk<M: Memory, B>(
     view: &Pages<'_, M>,
     node: Node,
     total: u32,
     from: u64,
-    on_entry: &mut impl FnMut(u32, u64, Leaf) -> ControlFlow<B>,
+    on_entry: &mut impl FnMut(u32, u64, Leaf) -> ControlFlow<B, Descend>,
 ) -> ControlFlow<B> {
     let covered = span(node.level);
     let entries = (u64::from(total) - node.first)
         .div_ceil(covered)
         .min(u64::from(FANOUT));
-    let start = from.saturating_sub(node.first) / covered;
-    if start >= entries {
-        return ControlFlow::Continue(());
-    }
-    let len = usize::try_from((entries - start) * u64::from(ENTRY_BYTES))
-        .unwrap_or_else(|_| corrupt("index"));
-    let bytes = view.read(entry_at(node.offset, start), len);
-    for (i, &raw) in (start..).zip(bytes.as_chunks::<6>().0) {
-        let entry = decode(raw);
-        let first = node.first + i * covered;
-        on_entry(node.level, first, entry)?;
-        if node.level > 1 {
-            let child = Node {
-                offset: entry.present().offset(),
-                level: node.level - 1,
-                first,
-            };
-            walk(view, child, total, from, on_entry)?;
+    let mut start = from.saturating_sub(node.first) / covered;
+    while start < entries {
+        let end = (start + WALK_ENTRIES).min(entries);
+        let len = usize::try_from((end - start) * u64::from(ENTRY_BYTES))
+            .unwrap_or_else(|_| corrupt("index"));
+        let bytes = view.read(entry_at(node.offset, start), len);
+        for (i, &raw) in (start..).zip(bytes.as_chunks::<ENTRY>().0) {
+            let entry = decode(raw);
+            let first = node.first + i * covered;
+            let descend = on_entry(node.level, first, entry)?;
+            if node.level > 1 && descend == Descend::Into {
+                let child = Node {
+                    offset: entry.present().offset(),
+                    level: node.level - 1,
+                    first,
+                };
+                walk(view, child, total, from, on_entry)?;
+            }
         }
+        start = end;
     }
     ControlFlow::Continue(())
 }
@@ -158,7 +205,7 @@ fn every_entry<M: Memory>(view: &Pages<'_, M>, paged: &Paged, mut f: impl FnMut(
         0,
         &mut |level, _, entry| {
             f(level, entry);
-            ControlFlow::Continue(())
+            ControlFlow::Continue(Descend::Into)
         },
     );
 }
@@ -178,13 +225,9 @@ pub(crate) fn visit_leaves<M: Memory, B>(
         u64::from(from),
         &mut |level, first, entry| {
             if level == 1 {
-                f(
-                    u32::try_from(first).unwrap_or_else(|_| corrupt("page number")),
-                    entry,
-                )
-            } else {
-                ControlFlow::Continue(())
+                f(page_number(first), entry)?;
             }
+            ControlFlow::Continue(Descend::Into)
         },
     )
 }
@@ -200,17 +243,115 @@ pub(crate) fn leaves<M: Memory>(view: &Pages<'_, M>, paged: &Paged) -> Vec<Leaf>
     out
 }
 
+/// Levels the index of any bucket can have: three cover every `u32` position.
+const MAX_DEPTH: usize = 3;
+
+/// The entries on the way to data page `number`, top first, ending at its bottom-level entry.
+fn path<M: Memory>(view: &Pages<'_, M>, paged: &Paged, number: u32) -> Path {
+    let mut entries = [ByteOffset::new(0); MAX_DEPTH];
+    let mut node = paged.index.offset();
+    let depth = depth(data_pages(paged.stored));
+    for (slot, level) in entries.iter_mut().zip((1..=depth).rev()) {
+        let at = entry_at(node, (u64::from(number) / span(level)) % u64::from(FANOUT));
+        *slot = at;
+        if level > 1 {
+            node = decode(view.read_array(at)).present().offset();
+        }
+    }
+    let len = usize::try_from(depth).unwrap_or(MAX_DEPTH);
+    if len > MAX_DEPTH {
+        corrupt("index depth");
+    }
+    Path { entries, len }
+}
+
+/// The index entries above and at a data page's, top first.
+struct Path {
+    entries: [ByteOffset; MAX_DEPTH],
+    len: usize,
+}
+
+impl Path {
+    fn entries(&self) -> &[ByteOffset] {
+        self.entries.get(..self.len).unwrap_or(&[])
+    }
+
+    /// The data page's own entry.
+    fn bottom(&self) -> ByteOffset {
+        self.entries()
+            .last()
+            .copied()
+            .unwrap_or_else(|| corrupt("index depth"))
+    }
+}
+
 /// Where the bottom-level entry of data page `number` is.
 fn leaf_entry<M: Memory>(view: &Pages<'_, M>, paged: &Paged, number: u32) -> ByteOffset {
-    let mut node = paged.index.offset();
-    for level in (1..=depth(data_pages(paged.stored))).rev() {
-        let at = entry_at(node, (u64::from(number) / span(level)) % u64::from(FANOUT));
-        if level == 1 {
-            return at;
+    path(view, paged, number).bottom()
+}
+
+/// Rewrites data page `number`'s entry with `make` applied to it, and keeps the counts above it
+/// in step when whether it has a fillable hole changes. Returns the old entry.
+fn rewrite_leaf<M: Memory>(
+    store: &PageStore<M>,
+    paged: &Paged,
+    number: u32,
+    make: impl FnOnce(Leaf) -> Leaf,
+) -> Leaf {
+    let view = store.pages();
+    let path = path(&view, paged, number);
+    let at = path.bottom();
+    let old = decode(view.read_array(at));
+    let new = make(old);
+    store.write(at, &encode(new));
+    let mut gained = match (fillable(1, old), fillable(1, new)) {
+        (false, true) => Some(true),
+        (true, false) => Some(false),
+        (true, true) | (false, false) => None,
+    };
+    for &above in path.entries().iter().rev().skip(1) {
+        let Some(gain) = gained else { break };
+        let entry = decode(view.read_array(above));
+        let count = if gain {
+            entry.tombstones.checked_add(1)
+        } else {
+            entry.tombstones.checked_sub(1)
         }
-        node = decode(view.read_array(at)).present().offset();
+        .unwrap_or_else(|| corrupt("index hole count"));
+        store.write(above, &encode(Leaf::node(entry.present(), count)));
+        // The node above sees a change only when this one starts or stops having holes.
+        gained = ((entry.tombstones == 0) != (count == 0)).then_some(gain);
     }
-    corrupt("index depth")
+    old
+}
+
+/// The first data page numbered `from` or later with a hole an insert can fill, and its entry.
+/// Goes below a node entry only when its count says a child has one; a child that holds `from`
+/// may still have none at `from` or later, so the walk goes on past it.
+pub(crate) fn first_fillable<M: Memory>(
+    view: &Pages<'_, M>,
+    paged: &Paged,
+    from: u32,
+) -> Option<(u32, Leaf)> {
+    let found = walk(
+        view,
+        Node::top(paged),
+        data_pages(paged.stored),
+        u64::from(from),
+        &mut |level, first, entry| match (fillable(level, entry), level) {
+            (false, _) => ControlFlow::Continue(Descend::Past),
+            (true, 1) => ControlFlow::Break((page_number(first), entry)),
+            (true, _) => ControlFlow::Continue(Descend::Into),
+        },
+    );
+    match found {
+        ControlFlow::Break(found) => Some(found),
+        ControlFlow::Continue(()) => None,
+    }
+}
+
+fn page_number(first: u64) -> u32 {
+    u32::try_from(first).unwrap_or_else(|_| corrupt("page number"))
 }
 
 /// Data page `number` of a paged bucket.
@@ -218,57 +359,68 @@ pub(crate) fn data_page<M: Memory>(view: &Pages<'_, M>, paged: &Paged, number: u
     decode(view.read_array(leaf_entry(view, paged, number)))
 }
 
-/// Whether a data page gains or loses a tombstone.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TombstoneChange {
-    /// An edge was removed.
-    Add,
-    /// A hole was filled.
-    Remove,
+/// Records that the edge at `slot` of data page `number` was removed.
+pub(crate) fn removed<M: Memory>(store: &PageStore<M>, paged: &Paged, number: u32, slot: u16) {
+    rewrite_leaf(store, paged, number, |leaf| Leaf {
+        tombstones: leaf
+            .tombstones
+            .checked_add(1)
+            .unwrap_or_else(|| corrupt("tombstone count")),
+        first_hole: leaf.first_hole.min(slot),
+        ..leaf
+    });
 }
 
-/// Updates the tombstone count of data page `number`.
-pub(crate) fn change_tombstones<M: Memory>(
+/// Records that the hole at `slot` of data page `number` was filled. When it was the page's
+/// first, `next_hole` finds the next one: the first after `slot`.
+pub(crate) fn filled<M: Memory>(
     store: &PageStore<M>,
     paged: &Paged,
     number: u32,
-    change: TombstoneChange,
+    slot: u16,
+    next_hole: impl FnOnce() -> u16,
 ) {
-    let at = leaf_entry(&store.pages(), paged, number);
-    let leaf = decode(store.pages().read_array(at));
-    let tombstones = match change {
-        TombstoneChange::Add => leaf.tombstones.checked_add(1),
-        TombstoneChange::Remove => leaf.tombstones.checked_sub(1),
-    };
-    let tombstones = tombstones.unwrap_or_else(|| corrupt("tombstone count"));
-    store.write(at, &encode(Leaf { tombstones, ..leaf }));
+    rewrite_leaf(store, paged, number, |leaf| {
+        let tombstones = leaf
+            .tombstones
+            .checked_sub(1)
+            .unwrap_or_else(|| corrupt("tombstone count"));
+        let first_hole = match (tombstones, leaf.first_hole == slot) {
+            (0, _) => NO_HOLE,
+            (_, true) => next_hole(),
+            (_, false) => leaf.first_hole,
+        };
+        Leaf {
+            tombstones,
+            first_hole,
+            ..leaf
+        }
+    });
 }
 
 /// Releases data page `number` (all of its positions are dead) and leaves a hollow entry, so
 /// no later position moves.
 pub(crate) fn hollow<M: Memory>(store: &mut PageStore<M>, paged: &Paged, number: u32) {
-    let at = leaf_entry(&store.pages(), paged, number);
-    let leaf = decode(store.pages().read_array(at));
-    store.write(
-        at,
-        &encode(Leaf {
-            page: None,
-            tombstones: narrow(PAGE_SLOTS),
-        }),
-    );
+    let leaf = rewrite_leaf(store, paged, number, |_| Leaf {
+        page: None,
+        tombstones: narrow(PAGE_SLOTS),
+        first_hole: 0,
+    });
     store.release(Extent::whole(leaf.present()));
 }
 
-/// Overwrites data page `number`'s tombstone count.
-pub(crate) fn set_tombstones<M: Memory>(
+/// Overwrites data page `number`'s tombstone count and first hole.
+pub(crate) fn set_holes<M: Memory>(
     store: &PageStore<M>,
     paged: &Paged,
     number: u32,
-    tombstones: u16,
+    (tombstones, first_hole): (u16, u16),
 ) {
-    let at = leaf_entry(&store.pages(), paged, number);
-    let leaf = decode(store.pages().read_array(at));
-    store.write(at, &encode(Leaf { tombstones, ..leaf }));
+    rewrite_leaf(store, paged, number, |leaf| Leaf {
+        tombstones,
+        first_hole,
+        ..leaf
+    });
 }
 
 /// Every index node below the top (whole pages), for releasing a demoted bucket's index.
@@ -280,6 +432,15 @@ pub(crate) fn index_nodes<M: Memory>(view: &Pages<'_, M>, paged: &Paged) -> Vec<
         }
     });
     out
+}
+
+/// Bytes of `entries` index entries.
+fn byte_len_of(entries: u32) -> usize {
+    usize::try_from(entries * ENTRY_BYTES).unwrap_or_else(|_| corrupt("index"))
+}
+
+fn stored_count(count: usize) -> u32 {
+    u32::try_from(count).unwrap_or_else(|_| corrupt("index entry count"))
 }
 
 fn narrow(count: u32) -> u16 {
@@ -299,128 +460,34 @@ pub(crate) fn start<M: Memory>(
     store.write(entry_at(index.offset(), 0), &encode(first));
     store.write(
         entry_at(index.offset(), 1),
-        &encode(Leaf::live(page.page(), 0)),
+        &encode(Leaf::data(page.page(), 0, NO_HOLE)),
     );
     Ok((index, page.page()))
 }
 
-/// How adding a data page changes the index's top level.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TopChange {
-    /// The top has room.
-    Keep,
-    /// The top moves to an extent for this many entries (copying at most one page).
-    Grow { entries: u32 },
-    /// The full one-page top becomes the first child of a new two-entry top.
-    Deepen,
-}
-
-/// What adding data page `number` needs.
-struct Growth {
-    number: u32,
-    depth: u32,
-    top: TopChange,
-    /// Levels below the top that need a new node, bottom first.
-    fresh_levels: Vec<u32>,
-}
-
-/// The allocations a growth made.
-struct Grown {
-    data: PageId,
-    top: Extent,
-    fresh: Vec<(u32, PageId)>,
-}
-
-fn plan(paged: &Paged) -> Growth {
-    let number = data_pages(paged.stored);
-    let (old_depth, depth) = (depth(number), depth(number + 1));
-    let fresh_levels = (1..depth.min(old_depth + 1))
-        .filter(|&level| u64::from(number) % span(level + 1) == 0)
-        .collect();
-    let top = if depth > old_depth {
-        TopChange::Deepen
-    } else {
-        let entries =
-            u32::try_from(u64::from(number + 1).div_ceil(span(old_depth))).unwrap_or(FANOUT);
-        if entries * ENTRY_BYTES > paged.index.len() {
-            TopChange::Grow { entries }
-        } else {
-            TopChange::Keep
-        }
-    };
-    Growth {
-        number,
-        depth,
-        top,
-        fresh_levels,
-    }
-}
-
-/// Adds a data page after the last (full) one. Returns the index's new top and the new page.
-pub(crate) fn append_page<M: Memory>(
-    store: &mut PageStore<M>,
-    paged: &Paged,
-) -> Result<(Extent, PageId), WriteError> {
-    let growth = plan(paged);
-    let grown = allocate(store, &growth, paged.index)?;
-    // Everything below writes into existing or newly allocated space: nothing fails.
-    match growth.top {
-        TopChange::Keep => {}
-        TopChange::Deepen => {
-            let first = Leaf::live(paged.index.page(), 0);
-            store.write(entry_at(grown.top.offset(), 0), &encode(first));
-        }
-        TopChange::Grow { .. } => {
-            let entries = u64::from(growth.number).div_ceil(span(growth.depth));
-            let len = usize::try_from(entries * u64::from(ENTRY_BYTES))
-                .unwrap_or_else(|_| corrupt("index"));
-            let bytes = store.pages().read(paged.index.offset(), len);
-            store.write(grown.top.offset(), &bytes);
-            store.release(paged.index);
-        }
-    }
-    link_path(store, &growth, &grown);
-    Ok((grown.top, grown.data))
-}
-
-/// Allocates the data page, fresh nodes and new top together: all or nothing.
-fn allocate<M: Memory>(
-    store: &mut PageStore<M>,
-    growth: &Growth,
-    old_top: Extent,
-) -> Result<Grown, WriteError> {
-    let mut txn = SpanTxn::begin(store);
-    let data = txn.allocate(ByteClass::PAGE)?.page();
-    let mut fresh = Vec::new();
-    for &level in &growth.fresh_levels {
-        fresh.push((level, txn.allocate(ByteClass::PAGE)?.page()));
-    }
-    let top = match growth.top {
-        TopChange::Keep => old_top,
-        TopChange::Grow { entries } => txn.allocate(index_class(entries))?,
-        TopChange::Deepen => txn.allocate(index_class(2))?,
-    };
-    txn.commit();
-    Ok(Grown { data, top, fresh })
-}
-
-/// Walks the new page's path from the top, linking fresh nodes and writing its entry.
-fn link_path<M: Memory>(store: &PageStore<M>, growth: &Growth, grown: &Grown) {
-    let number = u64::from(growth.number);
-    let mut node = grown.top.offset();
-    for level in (2..=growth.depth).rev() {
-        let at = entry_at(node, (number / span(level)) % u64::from(FANOUT));
-        let child = match grown.fresh.iter().find(|(l, _)| *l == level - 1) {
-            Some(&(_, page)) => {
-                store.write(at, &encode(Leaf::live(page, 0)));
-                page
+/// Checks that every count above the bottom level is the number of its child's entries with a
+/// fillable hole (invariant checks).
+#[cfg(test)]
+pub(crate) fn check_hole_counts<M: Memory>(view: &Pages<'_, M>, paged: &Paged) {
+    fn count<M: Memory>(view: &Pages<'_, M>, node: Node, total: u32) -> u16 {
+        let mut holed = 0u16;
+        let _: ControlFlow<()> = walk(view, node, total, node.first, &mut |level, first, entry| {
+            if level == node.level {
+                if level > 1 {
+                    let child = Node {
+                        offset: entry.present().offset(),
+                        level: level - 1,
+                        first,
+                    };
+                    assert_eq!(count(view, child, total), entry.tombstones, "level {level}");
+                }
+                holed += u16::from(fillable(level, entry));
             }
-            None => decode(store.pages().read_array(at)).present(),
-        };
-        node = child.offset();
+            ControlFlow::Continue(Descend::Past)
+        });
+        holed
     }
-    let at = entry_at(node, number % u64::from(FANOUT));
-    store.write(at, &encode(Leaf::live(grown.data, 0)));
+    count(view, Node::top(paged), data_pages(paged.stored));
 }
 
 /// Every extent the index itself uses, for invariant checks: the top and every lower node.
@@ -438,38 +505,10 @@ pub(crate) fn index_extents<M: Memory>(view: &Pages<'_, M>, paged: &Paged) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bucket::PAGES_PER_INSERT;
-
-    /// Pages appending data page `number` (after full pages `0..number`) takes.
-    fn pages_taken(number: u32) -> u32 {
-        // A one-page top: `Grow` never applies, `Keep` and `Deepen` are decided by depth.
-        let paged = Paged {
-            index: Extent::whole(PageId::new(0)),
-            stored: number * PAGE_SLOTS,
-            live: number * PAGE_SLOTS,
-        };
-        let growth = plan(&paged);
-        let top = match growth.top {
-            TopChange::Keep => 0,
-            TopChange::Grow { .. } | TopChange::Deepen => 1,
-        };
-        1 + top + u32::try_from(growth.fresh_levels.len()).unwrap()
-    }
 
     #[test]
-    fn deepening_to_three_levels_takes_the_most_pages_an_insert_reserves() {
-        let two_levels = FANOUT;
-        let three_levels = FANOUT * FANOUT;
-        assert_eq!(pages_taken(two_levels), 3, "data, top, one fresh node");
-        assert_eq!(
-            pages_taken(three_levels),
-            PAGES_PER_INSERT,
-            "data, top, two fresh nodes"
-        );
-        let last = u32::MAX / PAGE_SLOTS;
-        assert_eq!(depth(last + 1), 3, "three levels cover every u32 position");
-        for number in [1, two_levels - 1, two_levels + 1, three_levels + 1, last] {
-            assert!(pages_taken(number) <= PAGES_PER_INSERT, "page {number}");
-        }
+    fn constants_agree() {
+        assert_eq!(u32::from(NO_HOLE), PAGE_SLOTS);
+        assert_eq!(u32::try_from(ENTRY).unwrap(), ENTRY_BYTES);
     }
 }

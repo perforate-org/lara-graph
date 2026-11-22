@@ -128,9 +128,9 @@ pub enum Placement {
     /// Always after every stored position, so position order is insertion order (Gleaph's
     /// `Insertion` order). Holes stay until compaction, which keeps the order.
     Append,
-    /// Into a hole when one is safe (no live edge to the same vertex after it), else after
-    /// every stored position. Fills holes without compaction; positions do not follow insertion
-    /// order (Gleaph's `Unordered`).
+    /// Into the first hole after the last live edge to the same vertex, anywhere in the bucket,
+    /// else after every stored position. Fills holes without compaction, so positions stay
+    /// stable; they do not follow insertion order (Gleaph's `Unordered`).
     ReuseHoles,
 }
 

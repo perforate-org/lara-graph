@@ -345,6 +345,51 @@ fn hub_remove_half_compact_65536() -> BenchResult {
     remove_half_then_compact(65536)
 }
 
+/// Removes every other edge of a hub, then inserts as many edges reusing holes (Gleaph's
+/// `Unordered`): to fresh leaves, which take the holes from the front, or a second edge to each
+/// remaining leaf, which takes the first hole after that leaf's edge.
+fn refill_hub(degree: u32, to: Refill) -> BenchResult {
+    let mut g = heap_graph();
+    let (hub, edges) = seed_hub(&mut g, degree);
+    for halves in edges.iter().step_by(2) {
+        black_box(
+            g.remove_edge(halves.canonical())
+                .unwrap_or_else(|e| panic!("{e}")),
+        );
+    }
+    let targets: Vec<VertexId> = match to {
+        Refill::Fresh => vertices(&mut g, degree / 2),
+        Refill::Parallel => edges
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .map(|halves| halves.other().vertex())
+            .collect(),
+    };
+    bench_fn(|| {
+        for &leaf in &targets {
+            black_box(directed(&mut g, hub, black_box(leaf)));
+        }
+    })
+}
+
+/// Whose edges refill a hub's holes.
+#[derive(Clone, Copy)]
+enum Refill {
+    Fresh,
+    Parallel,
+}
+
+#[bench(raw)]
+fn hub_refill_holes_65536() -> BenchResult {
+    refill_hub(65536, Refill::Fresh)
+}
+
+#[bench(raw)]
+fn hub_refill_holes_parallel_65536() -> BenchResult {
+    refill_hub(65536, Refill::Parallel)
+}
+
 /// Finds the out half of the hub's last edge from its in half at the leaf: a rank count over
 /// the leaf's bucket and a selection in the hub's.
 #[bench(raw)]

@@ -165,7 +165,15 @@ fn check_page_tombstones<M: Memory>(view: &Pages<'_, M>, paged: &Paged) {
             dead,
             "page {number} tombstones"
         );
+        if let Some(page) = leaf.page {
+            let bytes = view.read(page.offset(), usize::try_from(count * 4).unwrap());
+            let first = Slot::decode_all(&bytes)
+                .position(|s| s == Slot::Tombstone)
+                .map_or(paged::NO_HOLE, |i| u16::try_from(i).unwrap());
+            assert_eq!(leaf.first_hole, first, "page {number} first hole");
+        }
     }
+    paged::check_hole_counts(view, paged);
 }
 
 /// Every bucket's live entries to a vertex are matched by as many entries back.
