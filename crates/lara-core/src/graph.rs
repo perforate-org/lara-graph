@@ -4,6 +4,7 @@ use crate::bucket;
 use crate::compact::{self, Inline, Outcome};
 use crate::corrupt::{corrupt, reservation_exceeded};
 use crate::descriptor::Descriptor;
+use crate::descriptor::PAGE_SLOTS;
 use crate::id::{
     Edge, EdgeRef, Label, Move, Progress, RemovedEdge, Side, VertexId, VertexState, Width,
 };
@@ -382,6 +383,19 @@ impl<M: Memory> Graph<M> {
                     moved.width,
                     pair,
                 ));
+            }
+        }
+        if let (Some(cells), Outcome::Bucket(slots)) = (values.as_mut(), &step.outcome) {
+            // Positions that hold no edges any more: past the new end, or in a released page.
+            let old_end = found.bucket.slots.stored();
+            let ranges = [
+                (slots.stored() < old_end).then_some((slots.stored(), u32::MAX)),
+                step.hollowed
+                    .map(|page| (page * PAGE_SLOTS, (page + 1) * PAGE_SLOTS)),
+            ];
+            for range in ranges.into_iter().flatten() {
+                cells.plane =
+                    values::release_range(&mut self.edges, cells.plane, cells.width, range);
             }
         }
         match step.outcome {

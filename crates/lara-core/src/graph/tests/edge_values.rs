@@ -159,3 +159,35 @@ fn an_insert_with_a_value_that_runs_out_of_memory_changes_nothing() {
     }
     check(&g);
 }
+
+#[test]
+fn compaction_releases_the_value_pages_it_empties() {
+    let backing = Backing::default();
+    let mut g = backing.create(2);
+    g.declare_width(l(0), w(64)).unwrap();
+    // 64-byte values: 64 per value page, 16 value pages per slot page.
+    let halves = valued_edges(&mut g, l(0), 3 * PAGE_SLOTS, 64);
+    let pages = |g: &Graph<&VecMemory>| g.edges.allocated().len();
+    // A dead middle page: compaction hollows it and its 16 value pages go with it.
+    for half in
+        &halves[usize::try_from(PAGE_SLOTS).unwrap()..usize::try_from(2 * PAGE_SLOTS).unwrap()]
+    {
+        g.remove_edge(*half).unwrap();
+    }
+    let before = pages(&g);
+    g.compact(v(0), l(0), Side::Out).unwrap();
+    assert!(
+        before - pages(&g) >= 17,
+        "slot page and value pages released"
+    );
+    check(&g);
+    // Demoting to a run leaves positions past the new end: their value pages go too.
+    for half in halves.iter().skip(1) {
+        g.remove_edge(*half).unwrap();
+    }
+    let before = pages(&g);
+    while g.compact(v(0), l(0), Side::Out).unwrap().progress() == Progress::Remaining {}
+    assert!(before - pages(&g) >= 30, "{before} → {}", pages(&g));
+    assert_eq!(g.value(halves[0]), Ok(Some(val(0, 64))));
+    check(&g);
+}

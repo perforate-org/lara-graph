@@ -35,6 +35,8 @@ pub(crate) struct Step {
     pub(crate) outcome: Outcome,
     pub(crate) moves: Vec<Move>,
     pub(crate) progress: Progress,
+    /// A data page the step released, its index entry left hollow: its positions hold no edges.
+    pub(crate) hollowed: Option<u32>,
 }
 
 impl Step {
@@ -43,6 +45,7 @@ impl Step {
             outcome: Outcome::Bucket(d),
             moves: Vec::new(),
             progress: Progress::Done,
+            hollowed: None,
         }
     }
 }
@@ -94,6 +97,7 @@ fn pack_small<M: Memory>(
         outcome,
         moves: moves_to_front(&edges, 0),
         progress: Progress::Done,
+        hollowed: None,
     })
 }
 
@@ -120,6 +124,7 @@ fn demote<M: Memory>(
         outcome,
         moves: moves_to_front(&edges, 0),
         progress: Progress::Done,
+        hollowed: None,
     })
 }
 
@@ -136,6 +141,7 @@ fn page_step<M: Memory>(paged: Paged, store: &mut PageStore<M>) -> Step {
                 outcome: Outcome::Bucket(Descriptor::Paged(paged)),
                 moves: Vec::new(),
                 progress: Progress::Remaining,
+                hollowed: Some(number),
             };
         }
         let next = (number + 1..last).find(|&n| leaf_at(&leaves, n).page.is_some());
@@ -147,6 +153,7 @@ fn page_step<M: Memory>(paged: Paged, store: &mut PageStore<M>) -> Step {
                     outcome: Outcome::Bucket(Descriptor::Paged(paged)),
                     moves,
                     progress: Progress::Remaining,
+                    hollowed: Some(next),
                 };
             }
         }

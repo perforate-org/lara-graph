@@ -253,6 +253,50 @@ pub(crate) fn copy<M: Memory>(
     write(store, plane, width, to, &value)
 }
 
+/// Releases the storage of positions `low..high` that no longer hold edges: every value page
+/// wholly inside the range, nodes left empty, and the whole plane when nothing is left. Values
+/// there read as zeros afterwards. A run is released only when the range covers it.
+pub(crate) fn release_range<M: Memory>(
+    store: &mut PageStore<M>,
+    plane: Plane,
+    width: Width,
+    (low, high): (u32, u32),
+) -> Plane {
+    match plane {
+        Plane::Run(extent) if low == 0 && high >= extent.len() / u32::from(width.get()) => {
+            store.release(extent);
+            Plane::Empty
+        }
+        Plane::Empty | Plane::Run(_) => plane,
+        Plane::Table { root, depth } => {
+            release_table_range(store, (root, depth), width, (low, high))
+        }
+    }
+}
+
+/// [`release_range`] for a table: the pages wholly inside the range.
+fn release_table_range<M: Memory>(
+    store: &mut PageStore<M>,
+    (root, depth): (PageId, u8),
+    width: Width,
+    (low, high): (u32, u32),
+) -> Plane {
+    let cpp = cells_per_page(width);
+    let first = u64::from(low.div_ceil(cpp));
+    // The last page is whole only if the range reaches its end.
+    let end = if high == u32::MAX {
+        table::reach(depth)
+    } else {
+        u64::from(high / cpp)
+    };
+    let table = Plane::Table { root, depth };
+    if first >= end || !table::release_pages(store, (root, depth, 0), (first, end)) {
+        return table;
+    }
+    store.release(Extent::whole(root));
+    Plane::Empty
+}
+
 /// Releases every page and extent of a plane.
 pub(crate) fn release<M: Memory>(store: &mut PageStore<M>, plane: Plane) {
     match plane {

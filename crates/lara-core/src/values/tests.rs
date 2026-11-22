@@ -153,3 +153,61 @@ fn copying_a_zero_onto_missing_storage_writes_nothing() {
     assert_eq!(plane, Plane::Empty);
     assert_eq!(store.allocated().len(), 0);
 }
+
+/// Whether position `p` lost its storage when `low..high` was released from a plane now `plane`:
+/// everything when the plane is gone, nothing from a run, a table's pages wholly inside.
+fn released(plane: Plane, cpp: u32, (low, high): (u32, u32), p: u32) -> bool {
+    match plane {
+        Plane::Empty => true,
+        Plane::Run(_) => false,
+        Plane::Table { .. } => {
+            let start = p / cpp * cpp;
+            start >= low && (high == u32::MAX || start.saturating_add(cpp) <= high)
+        }
+    }
+}
+
+/// xorshift64 positions below a bound.
+struct Positions(u64);
+
+impl Positions {
+    fn below(&mut self, bound: u32) -> u32 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        u32::try_from(self.0 % u64::from(bound)).unwrap()
+    }
+}
+
+#[test]
+fn releasing_ranges_frees_whole_pages_and_keeps_the_rest() {
+    for bytes in [8, 300, 4096] {
+        let width = width(bytes);
+        let cpp = PAGE_BYTES / u32::from(bytes);
+        let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+        let mut plane = Plane::Empty;
+        let mut model: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
+        let mut rng = Positions(0x9E37_79B9_7F4A_7C15u64 ^ u64::from(bytes));
+        let bound = cpp * 3000;
+        for round in 0..40u32 {
+            for _ in 0..20 {
+                let p = rng.below(bound);
+                let v = value(width, p);
+                plane = write(&mut store, plane, width, p, &v).unwrap();
+                model.insert(p, v);
+            }
+            let (a, b) = (rng.below(bound), rng.below(bound));
+            let range = if round % 7 == 6 {
+                (0, u32::MAX)
+            } else {
+                (a.min(b), a.max(b))
+            };
+            plane = release_range(&mut store, plane, width, range);
+            model.retain(|&p, _| !released(plane, cpp, range, p));
+            let end = model.keys().next_back().map_or(1, |&p| p + 1);
+            check(&store, plane, width, &model, end);
+        }
+        release(&mut store, plane);
+        assert_eq!(store.allocated().len(), 0);
+    }
+}

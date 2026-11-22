@@ -178,6 +178,54 @@ pub(super) fn release_node<M: Memory>(store: &mut PageStore<M>, node: PageId, le
     store.release(Extent::whole(node));
 }
 
+/// Releases the value pages numbered `first..end` under `node` (at `level`, its subtree starting
+/// at page `base`), and every node they leave empty. Returns whether `node` is now empty; the
+/// caller releases it then.
+pub(super) fn release_pages<M: Memory>(
+    store: &mut PageStore<M>,
+    (node, level, base): (PageId, u8, u64),
+    range: (u64, u64),
+) -> bool {
+    let span = reach(level - 1);
+    let bytes = store.pages().read(node.offset(), page_len());
+    let mut empty = true;
+    for (i, &raw) in (0u64..).zip(bytes.as_chunks::<4>().0) {
+        let raw = u32::from_le_bytes(raw);
+        if raw == NONE {
+            continue;
+        }
+        let lo = base + i * span;
+        let child = (PageId::new(raw), level - 1, lo);
+        if release_child(store, child, (lo + span, range)) {
+            store.write(entry_at(node, i), &NONE.to_le_bytes());
+        } else {
+            empty = false;
+        }
+    }
+    empty
+}
+
+/// [`release_pages`] for one child covering pages `lo..hi`; returns whether it is gone.
+fn release_child<M: Memory>(
+    store: &mut PageStore<M>,
+    (child, level, lo): (PageId, u8, u64),
+    (hi, (first, end)): (u64, (u64, u64)),
+) -> bool {
+    if hi <= first || lo >= end {
+        return false;
+    }
+    if first <= lo && hi <= end {
+        release_node(store, child, level);
+        return true;
+    }
+    // Partly covered: only a node (level > 0) can be, since pages are whole units.
+    let emptied = release_pages(store, (child, level, lo), (first, end));
+    if emptied {
+        store.release(Extent::whole(child));
+    }
+    emptied
+}
+
 /// Page ids per node page.
 pub(super) const NODE_ENTRIES: u32 = PAGE_BYTES / 4;
 

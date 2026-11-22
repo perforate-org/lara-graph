@@ -197,7 +197,9 @@ the same on every side). Both halves hold the value. The design and its reasons 
   - A bucket's **value plane** (`values`) holds the value of position `p` in cell `p`.
   - Slot pages and scans of targets are untouched.
   - A delete writes no value, and a hole refill writes one.
-  - Only compaction moves values, one cell per moved edge.
+  - Only compaction moves values, one cell per moved edge. It also releases the value pages of
+    positions that no longer hold edges: past a shrunken bucket's end, or in a slot page it
+    released.
 - **Values read as zeros until written.** A plane is empty, a run, or a sparse radix table of
   value pages, where missing pages read as zeros.
   - Declaring a width costs O(1) and writes nothing.
@@ -238,8 +240,6 @@ skipping dead pages.
 - A sorted target index for paged buckets, so `counterpart`, detaching a hub's neighbour and
   joins on a target need not scan the bucket.
 - Detaching many vertices at once with one pass over each shared hub.
-- Releasing value pages of positions that compaction left behind (a demoted bucket's value plane
-  keeps its pages until the bucket goes).
 - Recovering the ~7% values added to removal with compaction and to detach: compaction still
   allocates its buffers (`docs/ic-measurements-2026-11-22.md`).
 - Descending scans of a paged bucket read its whole leaf list; a reverse index walk would read
