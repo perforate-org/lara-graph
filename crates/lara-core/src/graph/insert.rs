@@ -1,5 +1,6 @@
 //! Inserting edges: every half or none, each with its value when the label has a width.
 
+use super::index::Batch;
 use super::{Error, Graph, reserved};
 use crate::bucket;
 use crate::corrupt::corrupt;
@@ -8,7 +9,8 @@ use crate::id::{EdgeRef, Halves, Label, Placement, Position, Side, VertexId, Ver
 use crate::labels::{self, BucketKey, BucketList, EntryAt, Lookup};
 use crate::memory::Memory;
 use crate::page_store::Pages;
-use crate::stored::{Bucket, HEADER_CLASS, Stored, Values};
+use crate::stored::{Bucket, Stored, Values};
+use crate::targets;
 use crate::values::{self, Plane};
 use crate::vertex::Record;
 
@@ -76,9 +78,24 @@ impl<M: Memory> Graph<M> {
         let width = self.value_width(label, value)?;
         let places = self.admit(&halves)?;
         let n = u32::try_from(N).map_err(|_| Error::AddressSpaceExhausted)?;
-        self.edges.reserve(pages_per_half(width) * n)?;
+        // An append that completes a block of a hub's bucket indexes the whole block: planned
+        // now, so that its pages are reserved with the rest.
+        let batches: [Option<Batch>; N] = core::array::from_fn(|i| {
+            let (half, place) = (halves.get(i)?, places.get(i)?);
+            match place.target {
+                Target::Present(_, stored) => {
+                    let bucket = Bucket::resolve(&self.edges.pages(), stored);
+                    self.batch_for(&bucket, half.target)
+                }
+                Target::Absent(_) => None,
+            }
+        });
+        let batch_pages: u32 = batches.iter().flatten().map(Batch::pages).sum();
+        self.edges
+            .reserve(pages_per_half(width) * n + batch_pages)?;
         self.lists.reserve(labels::PAGES_PER_ADD * n)?;
         let mut places = places.into_iter();
+        let mut batches = batches.into_iter();
         let mut touched: Option<VertexId> = None;
         Ok(halves.map(|half| {
             let planned = places.next().unwrap_or_else(|| corrupt("an admitted half"));
@@ -90,7 +107,8 @@ impl<M: Memory> Graph<M> {
                 planned
             };
             touched = Some(half.vertex);
-            self.insert_half(half, place, width.map(|w| (w, value)))
+            let batch = batches.next().flatten();
+            self.insert_half(half, place, width.map(|w| (w, value)), batch)
         }))
     }
 
@@ -145,93 +163,72 @@ impl<M: Memory> Graph<M> {
     }
 
     /// Applies one admitted half within reserved memory. Cannot fail.
-    fn insert_half(&mut self, half: Half, place: Place, value: Option<(Width, &[u8])>) -> EdgeRef {
+    fn insert_half(
+        &mut self,
+        half: Half,
+        place: Place,
+        value: Option<(Width, &[u8])>,
+        batch: Option<Batch>,
+    ) -> EdgeRef {
         let at = match value {
-            None => self.insert_plain(half, place),
-            Some(value) => self.insert_valued(half, place, value),
+            None => self.insert_plain(half, place, batch),
+            Some(value) => self.insert_extended(half, place, Some(value), batch),
         };
         EdgeRef::new(half.vertex, half.key.label, half.key.side, at)
     }
 
-    /// A half of a label without values: the slot only.
-    fn insert_plain(&mut self, half: Half, place: Place) -> Position {
-        let Half {
-            vertex,
-            key,
-            target,
-            placement,
-        } = half;
-        match place.target {
-            Target::Present(entry, stored) => {
-                let Stored::Plain(slots) = stored else {
-                    corrupt("values in a bucket of a label without a width")
-                };
-                let (slots, at) =
-                    reserved(bucket::insert(slots, target, placement, &mut self.edges));
-                labels::set(&self.lists, entry, &Stored::Plain(slots));
-                at
+    /// A half of a label without values. A plain bucket that stays below a page takes the slot
+    /// alone; anything else goes through [`Self::insert_extended`].
+    fn insert_plain(&mut self, half: Half, place: Place, batch: Option<Batch>) -> Position {
+        let (slot, slots) = match place.target {
+            Target::Present(entry, Stored::Plain(slots)) => (Ok(entry), slots),
+            Target::Absent(gap) => (Err(gap), Descriptor::EMPTY),
+            Target::Present(_, Stored::Extended(_)) => {
+                return self.insert_extended(half, place, None, batch);
             }
-            Target::Absent(gap) => {
-                let (slots, at) = reserved(bucket::insert(
-                    Descriptor::EMPTY,
-                    target,
-                    placement,
-                    &mut self.edges,
-                ));
-                let stored = Stored::Plain(slots);
-                let list = reserved(labels::add(
-                    &mut self.lists,
-                    place.record.list,
-                    gap,
-                    key,
-                    &stored,
-                ));
-                self.set_record_list(vertex, place.record, list);
-                at
-            }
-        }
+        };
+        let (next, at) = reserved(bucket::insert(
+            slots,
+            half.target,
+            half.placement,
+            &mut self.edges,
+        ));
+        // A run that just became paged gets its target index.
+        let bucket = self.index_inserted(Bucket::plain(next), &slots, (half.target, at), batch);
+        self.finish(half, place, slot, bucket);
+        at
     }
 
-    /// A half of a label with values: the slot and its value cell. A bucket without a value plane
-    /// (new, or made before the width was declared) gets one.
-    fn insert_valued(
+    /// A half into a bucket with a header (values, an index or both), or one that needs one:
+    /// the slot, its value cell, and its index posting. A bucket of a label with values but no
+    /// value plane yet (new, or made before the width was declared) gets one.
+    fn insert_extended(
         &mut self,
         half: Half,
         place: Place,
-        (width, bytes): (Width, &[u8]),
+        value: Option<(Width, &[u8])>,
+        batch: Option<Batch>,
     ) -> Position {
-        let Half {
-            vertex,
-            key,
-            target,
-            placement,
-        } = half;
         let (slot, bucket) = match place.target {
             Target::Present(entry, stored) => {
                 (Ok(entry), Bucket::resolve(&self.edges.pages(), stored))
             }
-            Target::Absent(gap) => (
-                Err(gap),
-                Bucket {
-                    slots: Descriptor::EMPTY,
-                    values: None,
-                },
-            ),
+            Target::Absent(gap) => (Err(gap), Bucket::plain(Descriptor::EMPTY)),
         };
-        let newly_valued = bucket.values.is_none();
-        let mut bucket = if newly_valued {
-            self.with_values(bucket, width)
-        } else {
-            bucket
+        let mut bucket = match value {
+            Some((width, _)) if bucket.values.is_none() => self.with_values(bucket, width),
+            Some(_) | None => bucket,
         };
-        let (slots, at) = reserved(bucket::insert(
-            bucket.slots,
-            target,
-            placement,
-            &mut self.edges,
-        ));
-        bucket.slots = slots;
-        if let Some(cells) = bucket.values.as_mut() {
+        let (slots, at) = {
+            reserved(bucket::insert(
+                bucket.slots,
+                half.target,
+                half.placement,
+                &mut self.edges,
+            ))
+        };
+        let was = core::mem::replace(&mut bucket.slots, slots);
+        if let (Some(cells), Some((width, bytes))) = (bucket.values.as_mut(), value) {
             cells.plane = reserved(values::write(
                 &mut self.edges,
                 cells.plane,
@@ -240,29 +237,35 @@ impl<M: Memory> Graph<M> {
                 bytes,
             ));
         }
-        bucket.write_header(&self.edges);
+        let bucket = self.index_inserted(bucket, &was, (half.target, at), batch);
+        self.finish(half, place, slot, bucket);
+        at
+    }
+
+    /// Publishes a half's bucket: in place when it existed, else as a new list entry.
+    fn finish(&mut self, half: Half, place: Place, slot: Result<EntryAt, EntryAt>, bucket: Bucket) {
         match slot {
-            Ok(entry) if newly_valued => labels::set(&self.lists, entry, &bucket.stored()),
-            Ok(_) => {}
+            Ok(entry) => self.publish(entry, bucket),
             Err(gap) => {
+                let bucket = self.settle(bucket);
+                bucket.write_header(&self.edges);
                 let list = reserved(labels::add(
                     &mut self.lists,
                     place.record.list,
                     gap,
-                    key,
+                    half.key,
                     &bucket.stored(),
                 ));
-                self.set_record_list(vertex, place.record, list);
+                self.set_record_list(half.vertex, place.record, list);
             }
         }
-        at
     }
 
     /// How many positions a bucket stores, from its list entry.
     fn stored_positions(&self, stored: Stored) -> u32 {
         match stored {
             Stored::Plain(d) => d.stored(),
-            Stored::Valued(_) => Bucket::resolve(&self.edges.pages(), stored).slots.stored(),
+            Stored::Extended(_) => Bucket::resolve(&self.edges.pages(), stored).slots.stored(),
         }
     }
 
@@ -277,25 +280,28 @@ impl<M: Memory> Graph<M> {
         );
     }
 
-    /// `bucket` with a header and an empty value plane; never tiny. Within reserved memory.
+    /// `bucket` with an empty value plane, never tiny; [`Self::publish`] gives it a header.
+    /// Within reserved memory.
     pub(super) fn with_values(&mut self, bucket: Bucket, width: Width) -> Bucket {
         let slots = reserved(bucket::without_tiny(bucket.slots, &mut self.edges));
-        let header = reserved(self.edges.allocate(HEADER_CLASS));
         Bucket {
             slots,
             values: Some(Values {
-                header,
                 plane: Plane::Empty,
                 width,
             }),
+            ..bucket
         }
     }
 }
 
-/// Pages one half can take from the edge store: its slots, and for a label with a width, a run
-/// replacing a tiny bucket, a header and the value's write.
+/// Pages one half can take from the edge store: its slots, a header, the target index's change,
+/// and for a label with a width, a run replacing a tiny bucket and the value's write.
 pub(super) fn pages_per_half(width: Option<Width>) -> u32 {
-    bucket::PAGES_PER_INSERT + width.map_or(0, |_| 2 + values::PAGES_PER_WRITE)
+    bucket::PAGES_PER_INSERT
+        + 1
+        + targets::PAGES_PER_CHANGE
+        + width.map_or(0, |_| 1 + values::PAGES_PER_WRITE)
 }
 
 /// Where a half goes: its vertex's record and its bucket, or where the bucket belongs.

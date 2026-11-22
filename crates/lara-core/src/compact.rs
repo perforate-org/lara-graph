@@ -128,37 +128,85 @@ fn demote<M: Memory>(
     })
 }
 
-/// One page-level action, or none when nothing can be reclaimed this way.
-fn page_step<M: Memory>(paged: Paged, store: &mut PageStore<M>) -> Step {
-    let leaves = paged::leaves(&store.pages(), &paged);
+/// What one page-level step of a paged bucket does.
+enum PageAction {
+    /// Release this dead page (not the last) and leave its entry hollow.
+    Hollow(u32),
+    /// Pack the second page's live edges into the first.
+    Merge((u32, Leaf), (u32, Leaf)),
+    Nothing,
+}
+
+/// The page-level action for `paged`, read-only.
+fn choose<M: Memory>(paged: &Paged, store: &PageStore<M>) -> PageAction {
+    let leaves = paged::leaves(&store.pages(), paged);
     let last = stored_u32(leaves.len()) - 1;
     let full = narrow(PAGE_SLOTS);
     let candidates = (0u32..).zip(&leaves).take_while(|(n, _)| *n < last);
     for (number, leaf) in candidates.filter(|(_, l)| l.page.is_some() && l.tombstones > 0) {
         if leaf.tombstones == full {
-            paged::hollow(store, &paged, number);
-            return Step {
-                outcome: Outcome::Bucket(Descriptor::Paged(paged)),
-                moves: Vec::new(),
-                progress: Progress::Remaining,
-                hollowed: Some(number),
-            };
+            return PageAction::Hollow(number);
         }
         let next = (number + 1..last).find(|&n| leaf_at(&leaves, n).page.is_some());
         if let Some(next) = next {
             let (first, second) = (leaf_at(&leaves, number), leaf_at(&leaves, next));
             if u32::from(first.tombstones) + u32::from(second.tombstones) >= PAGE_SLOTS {
-                let moves = merge(store, &paged, (number, first), (next, second));
-                return Step {
-                    outcome: Outcome::Bucket(Descriptor::Paged(paged)),
-                    moves,
-                    progress: Progress::Remaining,
-                    hollowed: Some(next),
-                };
+                return PageAction::Merge((number, first), (next, second));
             }
         }
     }
-    Step::unchanged(Descriptor::Paged(paged))
+    PageAction::Nothing
+}
+
+/// The moves the next [`step`] of a large paged bucket will report, without changing anything;
+/// empty for every other bucket. Lets the caller plan what the moves cost before the step.
+pub(crate) fn preview<M: Memory>(d: Descriptor, store: &PageStore<M>) -> Vec<Move> {
+    let Descriptor::Paged(paged) = d else {
+        return Vec::new();
+    };
+    if d.live() == d.stored() || paged.live <= DEMOTE_AT {
+        return Vec::new();
+    }
+    match choose(&paged, store) {
+        PageAction::Merge(first, second) => {
+            let edges = merged_edges(store, first, second);
+            moves_to_front(&edges, first.0 * PAGE_SLOTS)
+        }
+        PageAction::Hollow(_) | PageAction::Nothing => Vec::new(),
+    }
+}
+
+/// One page-level action, or none when nothing can be reclaimed this way.
+fn page_step<M: Memory>(paged: Paged, store: &mut PageStore<M>) -> Step {
+    let step = |moves, hollowed| Step {
+        outcome: Outcome::Bucket(Descriptor::Paged(paged)),
+        moves,
+        progress: Progress::Remaining,
+        hollowed: Some(hollowed),
+    };
+    match choose(&paged, store) {
+        PageAction::Hollow(number) => {
+            paged::hollow(store, &paged, number);
+            step(Vec::new(), number)
+        }
+        PageAction::Merge(first, second) => {
+            let moves = merge(store, &paged, first, second);
+            step(moves, second.0)
+        }
+        PageAction::Nothing => Step::unchanged(Descriptor::Paged(paged)),
+    }
+}
+
+/// The live edges of two pages, in position order.
+fn merged_edges<M: Memory>(
+    store: &PageStore<M>,
+    first: (u32, Leaf),
+    second: (u32, Leaf),
+) -> Vec<Edge> {
+    [first, second]
+        .into_iter()
+        .flat_map(|(number, leaf)| page_edges(store, number, leaf.present()))
+        .collect()
 }
 
 /// Packs data page `second` into data page `first` (their live edges fit one page), then
@@ -169,10 +217,7 @@ fn merge<M: Memory>(
     first: (u32, Leaf),
     second: (u32, Leaf),
 ) -> Vec<Move> {
-    let edges: Vec<Edge> = [first, second]
-        .into_iter()
-        .flat_map(|(number, leaf)| page_edges(store, number, leaf.present()))
-        .collect();
+    let edges = merged_edges(store, first, second);
     let base = first.0 * PAGE_SLOTS;
     let mut bytes: Vec<u8> = edges
         .iter()

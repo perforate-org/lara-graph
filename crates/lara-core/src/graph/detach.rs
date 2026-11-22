@@ -1,5 +1,6 @@
 //! Detaching a vertex: removing its edges a bounded step at a time.
 
+use super::index::indexed;
 use super::pair::{Found, opposite, order};
 use super::{Detachment, Error, Graph, Step};
 use crate::bucket;
@@ -7,7 +8,8 @@ use crate::corrupt::corrupt;
 use crate::id::{EdgeRef, Position, Progress, RemovedEdge, VertexId, VertexState};
 use crate::labels::{self, BucketKey};
 use crate::memory::Memory;
-use crate::stored::Bucket;
+use crate::stored::{Bucket, Index};
+use crate::targets;
 use crate::vertex::Record;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -57,16 +59,18 @@ impl<M: Memory> Graph<M> {
         // Per neighbour bucket: positions before hold no live entry to `v`.
         let mut hints = BTreeMap::new();
         for _ in 0..budget.get() {
+            // Removing two halves may change two target indexes.
+            self.edges.reserve(2 * targets::PAGES_PER_CHANGE)?;
             let list = self.list(v)?;
             let Some((entry, key, stored)) =
                 list.map(|list| labels::first(&self.lists.pages(), list))
             else {
                 break;
             };
-            let found = Found {
+            let found = self.draining(Found {
                 entry,
                 bucket: Bucket::resolve(&self.edges.pages(), stored),
-            };
+            });
             let from = cursors.get(&key).copied().unwrap_or(Position::new(0));
             let first = bucket::find(&found.bucket.slots, &self.edges.pages(), from, |_| true);
             let Some(edge) = first else {
@@ -107,6 +111,18 @@ impl<M: Memory> Graph<M> {
         Ok(Step::new(removed, progress))
     }
 
+    /// A detaching vertex's bucket without its target index: all its edges are going, so
+    /// keeping the index in step would only cost. Lookups into it scan instead. Within reserved
+    /// memory (releasing allocates nothing).
+    fn draining(&mut self, found: Found) -> Found {
+        let Index::Tree(_) = found.bucket.index else {
+            return found;
+        };
+        let bucket = self.drop_index(found.bucket, Index::Dropped);
+        self.publish(found.entry, bucket);
+        Found { bucket, ..found }
+    }
+
     /// The other half of `half`, `v`'s first live edge in its bucket: the first live entry to
     /// `v` in `other`'s opposite bucket, since `v`'s earlier entries to `other` are gone. For an
     /// undirected self-loop that is `half` itself. `hints` remembers where each scan stopped
@@ -127,15 +143,19 @@ impl<M: Memory> Graph<M> {
             .copied()
             .unwrap_or(Position::new(0));
         let theirs = self.present(other, key);
-        let found = bucket::find(&theirs.bucket.slots, &self.edges.pages(), from, |e| {
-            e.target() == v
-        })
+        // A paged bucket finds it through its target index; a smaller one is scanned from where
+        // the last scan stopped.
+        let at = if indexed(&theirs.bucket).is_some() {
+            self.select_to(&theirs.bucket, v, 0)
+        } else {
+            bucket::find(&theirs.bucket.slots, &self.edges.pages(), from, |e| {
+                e.target() == v
+            })
+            .map(|e| e.position())
+        }
         .unwrap_or_else(|| corrupt("an edge half without its counterpart"));
         // Now a hole, so the next scan starts there.
-        hints.insert((other, key), found.position());
-        (
-            theirs,
-            EdgeRef::new(other, key.label, key.side, found.position()),
-        )
+        hints.insert((other, key), at);
+        (theirs, EdgeRef::new(other, key.label, key.side, at))
     }
 }

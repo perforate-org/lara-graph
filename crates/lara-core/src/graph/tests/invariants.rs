@@ -43,7 +43,8 @@ fn check_vertex<M: Memory>(g: &Graph<M>, i: u32, seen: &mut Seen) {
     );
     for (bucket_key, stored) in buckets {
         let bucket = Bucket::resolve(&g.edges.pages(), stored);
-        check_values(g, &bucket, &mut seen.edges);
+        let state = g.record(v(i)).unwrap().state;
+        check_values(g, &bucket, state, &mut seen.edges);
         for target in check_bucket(g, &bucket.slots, &mut seen.edges) {
             let entry = (i, bucket_key.label, bucket_key.side, target);
             *seen.halves.entry(entry).or_default() += 1;
@@ -51,18 +52,68 @@ fn check_vertex<M: Memory>(g: &Graph<M>, i: u32, seen: &mut Seen) {
     }
 }
 
-/// A bucket with values is never tiny, and owns its header and value plane.
-fn check_values<M: Memory>(g: &Graph<M>, bucket: &Bucket, owned: &mut BTreeSet<(u32, u64, u8)>) {
-    let Some(cells) = bucket.values else {
-        return;
-    };
-    assert!(
-        !matches!(bucket.slots, Descriptor::Tiny(_)),
-        "a valued bucket is tiny"
+/// A bucket has a header exactly when it has values or a target index; a bucket with values is
+/// never tiny; a paged bucket's index holds exactly the live edges of its complete blocks (and
+/// is empty when there are none), unless it was dropped while its vertex detaches; the header,
+/// value plane and index are owned once.
+fn check_values<M: Memory>(
+    g: &Graph<M>,
+    bucket: &Bucket,
+    state: VertexState,
+    owned: &mut BTreeSet<(u32, u64, u8)>,
+) {
+    let view = g.edges.pages();
+    assert_eq!(
+        bucket.header.is_some(),
+        bucket.extended(),
+        "header iff values or index"
     );
-    let plane = values::extents(&g.edges.pages(), cells.plane);
-    for extent in core::iter::once(cells.header).chain(plane) {
-        assert!(owned.insert(key(extent)), "header or value extent shared");
+    if bucket.values.is_some() {
+        assert!(
+            !matches!(bucket.slots, Descriptor::Tiny(_)),
+            "a valued bucket is tiny"
+        );
+    }
+    if bucket.index == Index::Dropped {
+        assert_eq!(
+            state,
+            VertexState::Detaching,
+            "an index dropped outside a detach"
+        );
+        assert!(
+            matches!(bucket.slots, Descriptor::Paged(_)),
+            "a dropped index on a small bucket"
+        );
+    }
+    let end = indexed(bucket).unwrap_or(0);
+    let mut expected: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+    let mut live = Vec::new();
+    bucket::read(&bucket.slots, &view, &mut live);
+    for e in live.iter().filter(|e| e.position().index() < end) {
+        let key = (e.target().index(), e.position().index() / targets::BLOCK);
+        *expected.entry(key).or_default() += 1;
+    }
+    let postings: BTreeMap<(u32, u32), u32> = targets::postings(&view, bucket.index.tree())
+        .into_iter()
+        .map(|p| (p.key(), p.count))
+        .collect();
+    assert_eq!(postings, expected, "target index matches the slots");
+    // Removals leave zero counts in place, so a tree may outlive its last indexed edge.
+    if !expected.is_empty() {
+        assert!(
+            matches!(bucket.index, Index::Tree(_)),
+            "indexed live edges without an index tree"
+        );
+    }
+    let plane = bucket
+        .values
+        .map_or_else(Vec::new, |cells| values::extents(&view, cells.plane));
+    let index = targets::extents(&view, bucket.index.tree());
+    for extent in bucket.header.into_iter().chain(plane).chain(index) {
+        assert!(
+            owned.insert(key(extent)),
+            "header, value or index extent shared"
+        );
     }
 }
 

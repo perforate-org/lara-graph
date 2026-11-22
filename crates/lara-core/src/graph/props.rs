@@ -5,7 +5,7 @@ use super::{Error, Graph, reserved};
 use crate::bucket::{self, Span, Window, stored_u32};
 use crate::descriptor::{Descriptor, PAGE_SLOTS};
 use crate::id::{Edge, EdgeRef, Label, Order, Position, Side, VertexId, Width};
-use crate::labels::{self, BucketKey};
+use crate::labels::BucketKey;
 use crate::memory::Memory;
 use crate::page_store::Pages;
 use crate::paged;
@@ -56,8 +56,7 @@ impl<M: Memory> Graph<M> {
     /// Writes `value` at `position` of `found`, giving the bucket a value plane if it has none.
     /// Within reserved memory.
     fn write_value(&mut self, found: Found, (width, position): (Width, Position), value: &[u8]) {
-        let newly = found.bucket.values.is_none();
-        let mut bucket = if newly {
+        let mut bucket = if found.bucket.values.is_none() {
             self.with_values(found.bucket, width)
         } else {
             found.bucket
@@ -72,10 +71,6 @@ impl<M: Memory> Graph<M> {
             ));
         }
         self.publish(found.entry, bucket);
-        if newly {
-            bucket.write_header(&self.edges);
-            labels::set(&self.lists, found.entry, &bucket.stored());
-        }
     }
 
     /// The value at `position` of `found` (a bucket of `label`), whether or not an edge is live

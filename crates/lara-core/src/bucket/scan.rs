@@ -123,11 +123,21 @@ pub(crate) fn find<M: Memory>(
     d: &Descriptor,
     view: &Pages<'_, M>,
     from: Position,
+    wanted: impl FnMut(Edge) -> bool,
+) -> Option<Edge> {
+    find_in(d, view, (from.index(), d.stored()), wanted)
+}
+
+/// [`find`] among positions `low..high`.
+pub(crate) fn find_in<M: Memory>(
+    d: &Descriptor,
+    view: &Pages<'_, M>,
+    (low, high): (u32, u32),
     mut wanted: impl FnMut(Edge) -> bool,
 ) -> Option<Edge> {
     // Its own loop rather than `visit`: the two compile to different code, and each is the
     // faster one for its use on the IC (`docs/ic-measurements-2026-11-22.md`).
-    let span = Span::new(from.index(), d.stored(), Order::Ascending);
+    let span = Span::new(low, high.min(d.stored()), Order::Ascending);
     scan(d, view, span, Window::Short.slots(), |first, bytes| {
         for (at, slot) in (first..).zip(Slot::decode_all(bytes)) {
             if let Slot::Live(target) = slot {

@@ -1,6 +1,7 @@
 //! Finding and removing both halves of an edge.
 
-use super::{Error, Graph, Removal};
+use super::index::indexed;
+use super::{Error, Graph, Removal, reserved};
 use crate::bucket;
 use crate::corrupt::corrupt;
 use crate::descriptor::Descriptor;
@@ -8,14 +9,16 @@ use crate::id::{EdgeRef, Halves, Position, RemovedEdge, Side, VertexId};
 use crate::labels::{self, BucketKey, EntryAt, Lookup};
 use crate::memory::Memory;
 use crate::page_store::Pages;
-use crate::stored::Bucket;
+use crate::stored::{Bucket, HEADER_CLASS};
+use crate::targets;
 use alloc::vec::Vec;
 
 impl<M: Memory> Graph<M> {
     /// The other half of the edge `half` belongs to, or `None` when `half` is not live.
     ///
-    /// When the other bucket is no larger and holds one entry back, that entry is the answer;
-    /// otherwise the halves are matched by rank, scanning both buckets up to the edge.
+    /// When the other bucket is small and holds one entry back, that entry is the answer;
+    /// otherwise the halves are matched by rank. A paged bucket answers rank and selection from
+    /// its target index (logarithmic, then one block scan); a smaller one is scanned.
     ///
     /// # Errors
     ///
@@ -28,11 +31,13 @@ impl<M: Memory> Graph<M> {
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`].
+    /// [`Error::UnknownVertex`], or [`Error::OutOfMemory`] when a target index cannot take the change (rare: a removal can
+    /// split an index leaf); then nothing changed.
     pub fn remove_edge(&mut self, half: EdgeRef) -> Result<Removal, Error> {
         let Some(Pair { own, other, theirs }) = self.pair(half)? else {
             return Ok(Removal::Absent);
         };
+        self.edges.reserve(2 * targets::PAGES_PER_CHANGE)?;
         let halves = order(half, other);
         // Only a label with a width has a value to report.
         let value = if self.widths.get(half.label()).is_some() {
@@ -68,16 +73,15 @@ impl<M: Memory> Graph<M> {
         };
         let theirs = self.present(other, key);
         let owner = half.vertex();
-        let only = (theirs.bucket.slots.stored() <= own.bucket.slots.stored())
-            .then(|| only_entry_to(&theirs.bucket.slots, &view, owner))
-            .flatten();
+        // A small other bucket with one entry back answers alone; else match by rank.
+        let only = (indexed(&theirs.bucket).is_none()
+            && theirs.bucket.slots.stored() <= own.bucket.slots.stored())
+        .then(|| only_entry_to(&theirs.bucket.slots, &view, owner))
+        .flatten();
         let at = only.unwrap_or_else(|| {
-            partner_by_rank(
-                half,
-                other,
-                (&own.bucket.slots, &theirs.bucket.slots),
-                &view,
-            )
+            let rank = self.rank_to(&own.bucket, other, half.position());
+            self.select_to(&theirs.bucket, owner, rank)
+                .unwrap_or_else(|| corrupt("an edge half without its counterpart"))
         });
         Ok(Some(Pair {
             own,
@@ -86,24 +90,46 @@ impl<M: Memory> Graph<M> {
         }))
     }
 
-    /// Tombstones the live half at `at` in `found`. Writes no value. Cannot fail.
-    pub(super) fn tombstone(&self, found: Found, at: Position) {
-        let (next, _) = bucket::remove(found.bucket.slots, at, &self.edges)
+    /// Tombstones the live half at `at` in `found` and takes it out of the target index. Writes
+    /// no value. Within reserved memory.
+    pub(super) fn tombstone(&mut self, found: Found, at: Position) {
+        let (next, target) = bucket::remove(found.bucket.slots, at, &self.edges)
             .unwrap_or_else(|| corrupt("live half not in its bucket"));
-        self.publish(
-            found.entry,
-            Bucket {
-                slots: next,
-                ..found.bucket
-            },
-        );
+        let bucket = Bucket {
+            slots: next,
+            ..found.bucket
+        };
+        let bucket = self.index_removed(bucket, target, at);
+        self.publish(found.entry, bucket);
     }
 
-    /// Publishes a bucket's new state: its header if it has values, else its list entry.
-    pub(super) fn publish(&self, entry: EntryAt, bucket: Bucket) {
-        match bucket.values {
-            Some(_) => bucket.write_header(&self.edges),
-            None => labels::set(&self.lists, entry, &bucket.stored()),
+    /// Publishes a bucket's new state: its header, and its list entry when it is plain or just
+    /// changed form. Within reserved memory.
+    pub(super) fn publish(&mut self, entry: EntryAt, bucket: Bucket) {
+        let had_header = bucket.header.is_some();
+        let bucket = self.settle(bucket);
+        bucket.write_header(&self.edges);
+        if !had_header || bucket.header.is_none() {
+            labels::set(&self.lists, entry, &bucket.stored());
+        }
+    }
+
+    /// Gives a bucket with values or an index a header, and releases a header nothing needs any
+    /// more. Within reserved memory.
+    pub(super) fn settle(&mut self, bucket: Bucket) -> Bucket {
+        match (bucket.extended(), bucket.header) {
+            (true, None) => Bucket {
+                header: Some(reserved(self.edges.allocate(HEADER_CLASS))),
+                ..bucket
+            },
+            (false, Some(header)) => {
+                self.edges.release(header);
+                Bucket {
+                    header: None,
+                    ..bucket
+                }
+            }
+            (true, Some(_)) | (false, None) => bucket,
         }
     }
 
@@ -159,37 +185,6 @@ fn only_entry_to<M: Memory>(
         seen > 1
     });
     first.filter(|_| seen == 1)
-}
-
-/// The other half's position by rank: as many live entries to `owner` precede it in the other
-/// bucket as entries to `other` precede `half` in its own.
-fn partner_by_rank<M: Memory>(
-    half: EdgeRef,
-    other: VertexId,
-    (own, theirs): (&Descriptor, &Descriptor),
-    view: &Pages<'_, M>,
-) -> Position {
-    let mut rank = 0usize;
-    bucket::find(own, view, Position::new(0), |e| {
-        let reached = e.position() >= half.position();
-        if !reached && e.target() == other {
-            rank += 1;
-        }
-        reached
-    });
-    let owner = half.vertex();
-    let mut seen = 0usize;
-    bucket::find(theirs, view, Position::new(0), |e| {
-        if e.target() != owner {
-            return false;
-        }
-        seen += 1;
-        seen > rank
-    })
-    .map_or_else(
-        || corrupt("an edge half without its counterpart"),
-        |e| e.position(),
-    )
 }
 
 pub(super) const fn key_of(half: EdgeRef) -> BucketKey {

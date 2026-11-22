@@ -32,6 +32,7 @@ mod paged;
 #[cfg(feature = "bench-internals")]
 mod span_alloc;
 mod stored;
+mod targets;
 
 #[cfg(feature = "bench-internals")]
 #[doc(hidden)]

@@ -23,7 +23,7 @@ mod positions;
 mod scan;
 
 pub(crate) use positions::read_positions;
-pub(crate) use scan::{Span, Window, find, read, visit};
+pub(crate) use scan::{Span, Window, find, find_in, read, visit};
 
 /// Pages one [`insert`] can take from the store. The worst case is a paged bucket whose index
 /// deepens: a data page, a new top and the fresh nodes on the path below it (two at most, as

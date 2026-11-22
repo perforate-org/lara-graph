@@ -15,5 +15,9 @@ ic-cdk = "0.20"
 ic-stable-structures = "0.7.2"
 lara-core = { path = "../lara-core" }
 
+[dev-dependencies]
+# Examples measure internals (the target index's pages).
+lara-core = { path = "../lara-core", features = ["bench-internals"] }
+
 [lints]
 workspace = true

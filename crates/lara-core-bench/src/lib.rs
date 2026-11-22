@@ -39,7 +39,13 @@ impl Memory for Stable {
     }
 }
 
-fn heap_graph() -> Graph<VecMemory> {
+/// A graph in five heap memories.
+///
+/// # Panics
+///
+/// When the graph cannot be created in fresh memories.
+#[must_use]
+pub fn heap_graph() -> Graph<VecMemory> {
     let memories = Memories::new(
         VecMemory::new(),
         VecMemory::new(),
@@ -310,12 +316,16 @@ fn remove_half_then_compact(degree: u32) -> BenchResult {
     let mut g = heap_graph();
     let (hub, edges) = seed_hub(&mut g, degree);
     bench_fn(|| {
-        for halves in edges.iter().step_by(2) {
-            black_box(
-                g.remove_edge(halves.canonical())
-                    .unwrap_or_else(|e| panic!("{e}")),
-            );
+        {
+            let _removals = canbench_rs::bench_scope("removals");
+            for halves in edges.iter().step_by(2) {
+                black_box(
+                    g.remove_edge(halves.canonical())
+                        .unwrap_or_else(|e| panic!("{e}")),
+                );
+            }
         }
+        let _compaction = canbench_rs::bench_scope("compaction");
         while g
             .compact(hub, LABEL, Side::Out)
             .unwrap_or_else(|e| panic!("compact: {e}"))
@@ -425,6 +435,19 @@ fn detach_satellite_4096() -> BenchResult {
 #[bench(raw)]
 fn detach_satellite_65536() -> BenchResult {
     detach_satellite(65536)
+}
+
+/// Removes one edge from the middle of a hub: the pair is matched through the hub's target index
+/// and the hub's half leaves it.
+#[bench(raw)]
+fn hub_remove_one_65536() -> BenchResult {
+    let mut g = heap_graph();
+    let (_, edges) = seed_hub(&mut g, 65536);
+    let middle = edges
+        .get(30_000)
+        .copied()
+        .unwrap_or_else(|| panic!("no middle edge"));
+    bench_fn(|| black_box(g.remove_edge(middle.other())))
 }
 
 /// One edge lookup by handle in a paged hub bucket.

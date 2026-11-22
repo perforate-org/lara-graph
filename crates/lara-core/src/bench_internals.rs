@@ -3,10 +3,19 @@
 //! Not part of the API: it is excluded from the public API snapshot, may change without notice,
 //! and exists so experiments run the real allocator instead of a copy of it.
 
+use crate::graph::Graph;
+use crate::id::{Label, Side, VertexId};
+use crate::labels::BucketKey;
 use crate::memory::{GrowFailed, Memory, VecMemory};
 use crate::span_alloc::{SpanTag, TagAllocator};
 use crate::units::SpanLen;
 use core::cell::Cell;
+
+/// Pages of the target index of `v`'s `(label, side)` bucket: 0 when it has none.
+#[must_use]
+pub fn index_pages<M: Memory>(g: &Graph<M>, v: VertexId, label: Label, side: Side) -> usize {
+    g.index_pages(v, BucketKey { label, side })
+}
 
 /// The slab span allocator over a heap memory that counts its accesses.
 pub struct SpanAllocator {

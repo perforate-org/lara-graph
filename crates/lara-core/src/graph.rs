@@ -1,19 +1,15 @@
 //! The graph: labeled buckets of edge halves per vertex and side, over five memories.
 
 use crate::bucket;
-use crate::compact::{self, Inline, Outcome};
 use crate::corrupt::{corrupt, reservation_exceeded};
 use crate::descriptor::Descriptor;
-use crate::descriptor::PAGE_SLOTS;
 use crate::id::{
     Edge, EdgeRef, Label, Move, Progress, RemovedEdge, Side, VertexId, VertexState, Width,
 };
 use crate::labels::{self, BucketKey, BucketList};
 use crate::memory::{GrowFailed, Memory, Region, WriteError};
 use crate::page_store::{self, PageStore};
-use crate::stored::Bucket;
 use crate::units::{ByteOffset, Overflow};
-use crate::values;
 use crate::vertex::{RECORD_BYTES, Record};
 use alloc::vec::Vec;
 use core::fmt;
@@ -350,71 +346,6 @@ impl<M: Memory> Graph<M> {
             .map_or(0, |d| d.stored() - d.live()))
     }
 
-    /// Reclaims removed edges' positions in `v`'s `(label, side)` bucket, one bounded step at a
-    /// time: at most one page of edges moves. Live edges keep their relative order, so the
-    /// halves stay paired; each one that moves is reported. Call again while
-    /// [`Compaction::progress`] is [`Progress::Remaining`].
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnknownVertex`], or [`Error::OutOfMemory`] when a smaller run cannot be
-    /// allocated. On error the graph is unchanged.
-    pub fn compact(&mut self, v: VertexId, label: Label, side: Side) -> Result<Compaction, Error> {
-        let Some(found) = self.find_bucket(v, BucketKey { label, side })? else {
-            return Ok(Step::new(Vec::new(), Progress::Done));
-        };
-        let inline = match found.bucket.values {
-            Some(values) => {
-                // Moved values may land in value pages not yet allocated: reserve them first.
-                self.edges.reserve(values::pages_per_moves(values.width))?;
-                Inline::Forbidden
-            }
-            None => Inline::Allowed,
-        };
-        let step = compact::step(found.bucket.slots, &mut self.edges, inline)?;
-        let mut values = found.bucket.values;
-        if let Some(moved) = values.as_mut() {
-            // Moves go to lower positions in ascending order, so no source is overwritten first.
-            for m in &step.moves {
-                let pair = (m.from().index(), m.to().index());
-                moved.plane = reserved(values::copy(
-                    &mut self.edges,
-                    moved.plane,
-                    moved.width,
-                    pair,
-                ));
-            }
-        }
-        if let (Some(cells), Outcome::Bucket(slots)) = (values.as_mut(), &step.outcome) {
-            // Positions that hold no edges any more: past the new end, or in a released page.
-            let old_end = found.bucket.slots.stored();
-            let ranges = [
-                (slots.stored() < old_end).then_some((slots.stored(), u32::MAX)),
-                step.hollowed
-                    .map(|page| (page * PAGE_SLOTS, (page + 1) * PAGE_SLOTS)),
-            ];
-            for range in ranges.into_iter().flatten() {
-                cells.plane =
-                    values::release_range(&mut self.edges, cells.plane, cells.width, range);
-            }
-        }
-        match step.outcome {
-            Outcome::Bucket(slots) => self.publish(found.entry, Bucket { slots, values }),
-            Outcome::Empty => {
-                if let Some(gone) = values {
-                    values::release(&mut self.edges, gone.plane);
-                    self.edges.release(gone.header);
-                }
-                let list = self
-                    .list(v)?
-                    .unwrap_or_else(|| corrupt("present bucket without a list"));
-                let list = labels::remove(&mut self.lists, list, found.entry);
-                self.set_list(v, list);
-            }
-        }
-        Ok(Step::new(step.moves, step.progress))
-    }
-
     fn region(&self) -> Region<'_, M> {
         Region::new(&self.vertices)
     }
@@ -543,7 +474,9 @@ impl core::error::Error for Error {}
 impl core::error::Error for CreateError {}
 impl core::error::Error for OpenError {}
 
+mod compaction;
 mod detach;
+mod index;
 mod insert;
 mod pair;
 mod props;

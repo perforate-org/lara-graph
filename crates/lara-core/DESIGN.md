@@ -205,9 +205,10 @@ the same on every side). Both halves hold the value. The design and its reasons 
   - Declaring a width costs O(1) and writes nothing.
   - A bucket gets its plane on its first value write.
   - Any write allocates at most the path to its page: `PAGES_PER_WRITE`, 9 pages.
-- **Where a plane is found.** A bucket with values keeps a 32-byte header (slot descriptor, plane
-  root, width) and its list entry says `Valued(header)` (`stored`).
-  - Buckets without values are unchanged.
+- **Where a plane is found.** A bucket with values or a target index keeps a 32-byte header (slot
+  descriptor, plane root, width, index root) and its list entry says `Extended(header)`
+  (`stored`).
+  - Buckets with neither are unchanged.
   - A bucket with values is never tiny.
 - **The width table.** Widths live in a table in the list store, referenced from the vertices
   header and mirrored in the heap. Only 0 → w is allowed.
@@ -235,10 +236,39 @@ skipping dead pages.
   touched run or page once, from its first wanted position to its last. Gleaph uses this for the
   second phase of property-first expansion.
 
+## Target index
+
+A paged bucket keeps a **counted B+ tree of postings** (`targets`, `graph/index`). A posting
+`(target, block, count)` says that `count` live entries to `target` sit among the 64 positions of
+`block`. Rank and selection of a target's entries are therefore logarithmic, followed by one block
+scan. This matches halves in `counterpart`, removal and detach without scanning a hub.
+
+- **Coverage.** The index covers the bucket's complete blocks; the last, partial block is scanned
+  instead.
+  - An append that completes a block brings the block's live entries in as one batch, sized
+    beforehand by a counting pass.
+  - Removals rewrite counts in place: counts are fixed-width per segment, and a posting that
+    reaches zero stays until its segment is rewritten.
+  - Batches are planned once in memory, reserved exactly and committed. A block's batch is planned
+    before the insert that completes the block; compaction plans its moves.
+- **Leaves are slotted pages of coded segments.** Each segment holds 16-32 postings, coded as
+  Rice target gaps, gamma counts and fixed-width blocks.
+  - A change reads and writes only the segments it touches.
+  - Internal nodes keep keys, pages and counts in separate arrays, so a lookup reads only what it
+    probes.
+- **A detaching vertex drops its buckets' indexes**, since all their edges are going. Lookups into
+  such a bucket scan it.
+- **Costs.** Measurements and the space it takes are in
+  `docs/target-index-design-2026-11-22.md`:
+  - pairing through a hub costs tens of thousands of instructions instead of a scan;
+  - hub inserts cost about 50-60 % more;
+  - removals from a hub's side cost one in-place index change each;
+  - the index takes 0.8-1.4× the slots for hubs of distinct targets.
+
 ## Not yet
 
-- A sorted target index for paged buckets, so `counterpart`, detaching a hub's neighbour and
-  joins on a target need not scan the bucket.
+- Reclaiming zero-count postings and index pages of hubs whose edges were mostly removed,
+  short of demotion.
 - Detaching many vertices at once with one pass over each shared hub.
 - Recovering the ~7% values added to removal with compaction and to detach: compaction still
   allocates its buffers (`docs/ic-measurements-2026-11-22.md`).

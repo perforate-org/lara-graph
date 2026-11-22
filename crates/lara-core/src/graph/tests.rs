@@ -4,11 +4,14 @@ use crate::id::{Cursor, Halves, Order, Placement, Position, Width};
 use crate::memory::{PAGE_SIZE, VecMemory};
 use crate::page_store::{ByteClass, Extent, Pages};
 use crate::paged;
-use crate::stored::Bucket;
+use crate::stored::{Bucket, Index};
+use crate::targets;
+use crate::values;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use core::num::NonZeroU32;
 use core::ops::ControlFlow;
+use index::indexed;
 
 /// The backing memories of a test graph; graphs borrow them so they can be reopened.
 #[derive(Default)]
@@ -569,9 +572,10 @@ fn the_page_index_deepens_past_one_page_of_entries() {
             .unwrap();
         most = most.max(g.edges.minted() - before);
     }
+    let bound = insert::pages_per_half(None);
     assert!(
-        most <= bucket::PAGES_PER_INSERT,
-        "an insert took {most} pages"
+        most <= bound,
+        "an insert took {most} pages, more than {bound}"
     );
     check(&g);
     let positions: Vec<u32> = edges_on(&g, v(0), l(0), Side::Undirected)
