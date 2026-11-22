@@ -156,24 +156,25 @@ fn search<M: Memory>(
     key: BucketKey,
     leaf: u16,
 ) -> Lookup {
-    let bytes = pages.read(base, count * ENTRY_BYTES);
-    let (entries, _) = bytes.as_chunks::<ENTRY_BYTES>();
-    let found =
-        entries.binary_search_by(|&[k0, k1, k2, ..]| BucketKey::decode([k0, k1, k2]).cmp(&key));
     let place = |index| EntryAt {
         leaf,
         index,
         at: entry_offset(base, index),
     };
-    match found {
-        Ok(index) => Lookup::Present {
-            entry: place(index),
-            stored: entries
-                .get(index)
-                .map_or_else(|| corrupt("list entry"), |&e| decode_entry(e).1),
-        },
-        Err(index) => Lookup::Absent { gap: place(index) },
-    }
+    pages.with_read(base, count * ENTRY_BYTES, |bytes| {
+        let (entries, _) = bytes.as_chunks::<ENTRY_BYTES>();
+        let found =
+            entries.binary_search_by(|&[k0, k1, k2, ..]| BucketKey::decode([k0, k1, k2]).cmp(&key));
+        match found {
+            Ok(index) => Lookup::Present {
+                entry: place(index),
+                stored: entries
+                    .get(index)
+                    .map_or_else(|| corrupt("list entry"), |&e| decode_entry(e).1),
+            },
+            Err(index) => Lookup::Absent { gap: place(index) },
+        }
+    })
 }
 
 /// A vertex's first bucket in key order, with one small read (two for a tiered list).
@@ -319,26 +320,26 @@ fn add_flat<M: Memory>(
     let count = list.map_or(0, |(_, c)| usize::from(c));
     let new_count = u8::try_from(count + 1).unwrap_or_else(|_| corrupt("flat list count"));
     let bytes = (count + 1) * ENTRY_BYTES;
-    let mut all: Vec<u8> = list.map_or_else(Vec::new, |(extent, _)| {
-        store.pages().read(extent.offset(), count * ENTRY_BYTES)
-    });
-    let split = index * ENTRY_BYTES;
-    let tail = all.split_off(split.min(all.len()));
-    all.extend(encode_entry(key, d));
-    all.extend(tail);
     if let Some((extent, _)) = list.filter(|(e, _)| bytes <= class_len(*e)) {
-        // Room in place: rewrite from the new entry on.
-        let at = entry_offset(extent.offset(), index);
-        store.write(at, all.get(split..).unwrap_or(&[]));
+        // Room in place: shift the tail up one entry and write the new one.
+        shift_in(store, extent.offset(), count, index, (key, d));
         return Ok(flat(extent, new_count));
     }
     let class = ByteClass::for_bytes(u32::try_from(bytes).unwrap_or(u32::MAX))
         .unwrap_or_else(|| corrupt("list beyond a page"));
     let extent = store.allocate(class)?;
-    store.write(extent.offset(), &all);
     if let Some((old, _)) = list {
+        // Copy the old entries around the gap, then write the new one into it.
+        let view = store.pages();
+        let head = index * ENTRY_BYTES;
+        view.with_read(old.offset(), count * ENTRY_BYTES, |all| {
+            let (before, after) = all.split_at(head.min(all.len()));
+            store.write(extent.offset(), before);
+            store.write(entry_offset(extent.offset(), index + 1), after);
+        });
         store.release(old);
     }
+    write_entry(store, entry_offset(extent.offset(), index), key, d);
     Ok(flat(extent, new_count))
 }
 
@@ -364,11 +365,11 @@ pub(crate) fn remove<M: Memory>(
 
 /// Closes the gap entry `index` leaves among `count` entries at `base`.
 fn shift_out<M: Memory>(store: &PageStore<M>, base: ByteOffset, count: usize, index: usize) {
-    let tail = store.pages().read(
-        entry_offset(base, index + 1),
-        (count - index - 1) * ENTRY_BYTES,
-    );
-    store.write(entry_offset(base, index), &tail);
+    let view = store.pages();
+    let len = (count - index - 1) * ENTRY_BYTES;
+    view.with_read(entry_offset(base, index + 1), len, |tail| {
+        store.write(entry_offset(base, index), tail);
+    });
 }
 
 /// Opens a gap at entry `index` among `count` entries at `base` and writes the new entry there.
@@ -379,11 +380,21 @@ fn shift_in<M: Memory>(
     index: usize,
     (key, d): (BucketKey, &Stored),
 ) {
-    let tail = store
-        .pages()
-        .read(entry_offset(base, index), (count - index) * ENTRY_BYTES);
-    let bytes: Vec<u8> = encode_entry(key, d).chain(tail).collect();
-    store.write(entry_offset(base, index), &bytes);
+    let view = store.pages();
+    let len = (count - index) * ENTRY_BYTES;
+    view.with_read(entry_offset(base, index), len, |tail| {
+        store.write(entry_offset(base, index + 1), tail);
+    });
+    write_entry(store, entry_offset(base, index), key, d);
+}
+
+/// Writes one entry at `at`.
+fn write_entry<M: Memory>(store: &PageStore<M>, at: ByteOffset, key: BucketKey, d: &Stored) {
+    let mut bytes = [0u8; ENTRY_BYTES];
+    for (dst, src) in bytes.iter_mut().zip(encode_entry(key, d)) {
+        *dst = src;
+    }
+    store.write(at, &bytes);
 }
 
 const fn flat(extent: Extent, count: u8) -> BucketList {

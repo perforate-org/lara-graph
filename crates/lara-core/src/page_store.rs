@@ -24,6 +24,8 @@ use record::{PageRecord, RECORD_BYTES, decode_link, encode_link};
 
 /// Bytes per page.
 pub(crate) const PAGE_BYTES: u32 = 4096;
+/// Bytes a stack buffer covers in [`Pages::with_read`]: three bucket-list entries.
+const SMALL_READ: usize = 64;
 
 const MAGIC: [u8; 3] = *b"LPS";
 const VERSION: u8 = 1;
@@ -522,6 +524,17 @@ impl<M: Memory> Pages<'_, M> {
 
     pub(crate) fn read_array<const N: usize>(&self, at: ByteOffset) -> [u8; N] {
         Region::new(self.memory).read_array(at)
+    }
+
+    /// Calls `f` with `len` bytes read at `at`: from a small stack buffer when they fit (the usual
+    /// short bucket list), else from the heap.
+    pub(crate) fn with_read<R>(&self, at: ByteOffset, len: usize, f: impl FnOnce(&[u8]) -> R) -> R {
+        let mut small = [0u8; SMALL_READ];
+        if let Some(buf) = small.get_mut(..len) {
+            self.read_into(at, buf);
+            return f(buf);
+        }
+        f(&self.read(at, len))
     }
 
     /// Fills `buf` from `at`, with one memory read and no allocation.

@@ -206,3 +206,26 @@ slot page's live edges with one read of their values brought them to the figures
   skipping value reads for labels without a width recovered about half of it.
 - Removing the heap allocations from the insert path is the next lever.
 - Scans and lookups did not change.
+
+## Fifth round: no heap allocation on the insert path
+
+Changes:
+- **Admission** uses fixed arrays: an edge has at most two halves and touches at most two
+  vertices.
+- **Bucket-list reads** go through a 64-byte stack buffer when the list fits, which covers three
+  entries (`Pages::with_read`).
+- **Adding a list entry** shifts the tail in place and writes the entry. It no longer rebuilds the
+  list in a `Vec`.
+
+| Scenario | Before values | With values | Now |
+| --- | ---: | ---: | ---: |
+| Hub insert, 1024 / 4096 / 65536 | 11.4 / 46.6 / 740 M | 12.2 / 49.3 / 789 M | **9.8 / 39.9 / 641 M** |
+| Insert, parallel edges, 4096 | 34.4 M | 37.3 M | **30.8 M** |
+| Hub insert with 8-byte values, 4096 | — | 109.5 M | 99.8 M |
+| Remove half and compact, 4096 | 16.5 M | 19.0 M | 17.7 M |
+| Detach a hub, 4096 | 52.1 M | 56.9 M | 55.6 M |
+| Edge lookup, 65536 | 2.2 K | 2.2 K | 1.9 K |
+
+Insert costs ~4.9 K per half; ic-stable-lara's one-sided steady state is ~3.6-4.5 K. Removal with
+compaction and detach remain ~7 % above their cost before values. Compaction's own buffers (live
+edges, packed bytes, moves) are the next allocations to remove.

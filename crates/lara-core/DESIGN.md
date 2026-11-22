@@ -238,12 +238,10 @@ skipping dead pages.
 - A sorted target index for paged buckets, so `counterpart`, detaching a hub's neighbour and
   joins on a target need not scan the bucket.
 - Detaching many vertices at once with one pass over each shared hub.
-- Closing the insert gap with ic-stable-lara (~1.25× per half): the insert path still allocates
-  several `Vec`s (`docs/ic-stable-lara-adoption-2026-11-22.md`).
 - Releasing value pages of positions that compaction left behind (a demoted bucket's value plane
   keeps its pages until the bucket goes).
-- Recovering the cost values added to plain inserts (~7%) and removals (~14%); see
-  `docs/ic-measurements-2026-11-22.md`.
+- Recovering the ~7% values added to removal with compaction and to detach: compaction still
+  allocates its buffers (`docs/ic-measurements-2026-11-22.md`).
 - Descending scans of a paged bucket read its whole leaf list; a reverse index walk would read
   only the pages wanted.
 - Settling the constants (descriptor size, inline slots, page threshold) by measuring on the IC

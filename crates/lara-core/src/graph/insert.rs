@@ -11,7 +11,6 @@ use crate::page_store::Pages;
 use crate::stored::{Bucket, HEADER_CLASS, Stored, Values};
 use crate::values::{self, Plane};
 use crate::vertex::Record;
-use alloc::vec::Vec;
 
 impl<M: Memory> Graph<M> {
     /// Adds the edge `from -[label]-> to`, placed by `placement` in both buckets, with `value`
@@ -80,17 +79,17 @@ impl<M: Memory> Graph<M> {
         self.edges.reserve(pages_per_half(width) * n)?;
         self.lists.reserve(labels::PAGES_PER_ADD * n)?;
         let mut places = places.into_iter();
-        let mut touched: Vec<VertexId> = Vec::new();
+        let mut touched: Option<VertexId> = None;
         Ok(halves.map(|half| {
             let planned = places.next().unwrap_or_else(|| corrupt("an admitted half"));
             // An earlier half at the same vertex may have changed its list: look again.
-            let place = if touched.contains(&half.vertex) {
+            let place = if touched == Some(half.vertex) {
                 self.place(half)
                     .unwrap_or_else(|_| corrupt("an admitted vertex"))
             } else {
                 planned
             };
-            touched.push(half.vertex);
+            touched = Some(half.vertex);
             self.insert_half(half, place, width.map(|w| (w, value)))
         }))
     }
@@ -111,26 +110,26 @@ impl<M: Memory> Graph<M> {
     }
 
     /// Fails as an insert of `halves` would, before anything changes; otherwise returns where
-    /// each half goes. Reads each vertex record once.
-    fn admit(&self, halves: &[Half]) -> Result<Vec<Place>, Error> {
+    /// each half goes. Reads each vertex record once, and allocates nothing.
+    fn admit<const N: usize>(&self, halves: &[Half; N]) -> Result<[Place; N], Error> {
         let mut records = Records::default();
-        let mut places = Vec::with_capacity(halves.len());
-        let mut fresh: Vec<(VertexId, Option<BucketList>)> = Vec::new();
-        for &half in halves {
+        let mut places: [Option<Place>; N] = [None; N];
+        let mut fresh: [Option<(VertexId, Option<BucketList>)>; N] = [None; N];
+        for ((&half, place), new) in halves.iter().zip(&mut places).zip(&mut fresh) {
             let own = records.get(self, half.vertex)?;
             records.get(self, half.target)?;
-            let place = self.place_in(own, half);
-            match place.target {
+            let planned = self.place_in(own, half);
+            match planned.target {
                 Target::Present(_, stored) if self.stored_positions(stored) == u32::MAX => {
                     return Err(Error::AddressSpaceExhausted);
                 }
                 Target::Present(..) => {}
-                Target::Absent(_) => fresh.push((half.vertex, own.list)),
+                Target::Absent(_) => *new = Some((half.vertex, own.list)),
             }
-            places.push(place);
+            *place = Some(planned);
         }
         check_room(&self.lists.pages(), &fresh)?;
-        Ok(places)
+        Ok(places.map(|p| p.unwrap_or_else(|| corrupt("an admitted half"))))
     }
 
     fn place(&self, half: Half) -> Result<Place, Error> {
@@ -339,14 +338,15 @@ impl Half {
     }
 }
 
-/// The records of an insert's vertices, each read once; a detaching vertex fails the insert.
+/// The records of an insert's vertices (an edge touches at most two), each read once; a
+/// detaching or deleted vertex fails the insert.
 #[derive(Default)]
-struct Records(Vec<(VertexId, Record)>);
+struct Records([Option<(VertexId, Record)>; 2]);
 
 impl Records {
     fn get<M: Memory>(&mut self, g: &Graph<M>, v: VertexId) -> Result<Record, Error> {
-        if let Some(&(_, record)) = self.0.iter().find(|(w, _)| *w == v) {
-            return Ok(record);
+        if let Some((_, record)) = self.0.iter().flatten().find(|(w, _)| *w == v) {
+            return Ok(*record);
         }
         let record = g.record(v)?;
         match record.state {
@@ -354,7 +354,12 @@ impl Records {
             VertexState::Detaching => return Err(Error::Detaching(v)),
             VertexState::Deleted => return Err(Error::Deleted(v)),
         }
-        self.0.push((v, record));
+        let free = self
+            .0
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .unwrap_or_else(|| corrupt("an edge with more than two vertices"));
+        *free = Some((v, record));
         Ok(record)
     }
 }
@@ -363,10 +368,10 @@ impl Records {
 /// with its current list.
 fn check_room<M: Memory>(
     pages: &Pages<'_, M>,
-    fresh: &[(VertexId, Option<BucketList>)],
+    fresh: &[Option<(VertexId, Option<BucketList>)>],
 ) -> Result<(), Error> {
-    for &(v, list) in fresh {
-        let adding = fresh.iter().filter(|(w, _)| *w == v).count();
+    for &(v, list) in fresh.iter().flatten() {
+        let adding = fresh.iter().flatten().filter(|(w, _)| *w == v).count();
         if !labels::has_room(pages, list, adding) {
             return Err(Error::TooManyBuckets(v));
         }
