@@ -4,6 +4,7 @@ members = [
     "crates/dgap",
     "crates/lara",
     "crates/lara-core",
+    "crates/lara-core-bench",
     "crates/lara-graph-macros",
     "crates/benches",
 ]

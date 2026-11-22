@@ -7,3 +7,6 @@ plans/
 
 # OS
 .DS_Store
+
+# canbench downloads its runtime here
+.canbench/

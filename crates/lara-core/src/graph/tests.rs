@@ -7,6 +7,7 @@ use crate::paged;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use core::num::NonZeroU32;
+use core::ops::ControlFlow;
 
 /// The backing memories of a test graph; graphs borrow them so they can be reopened.
 #[derive(Default)]
@@ -296,6 +297,35 @@ fn parallel_edges_pair_by_rank() {
         assert_eq!(g.counterpart(e.target()), Ok(Some(e.source())));
     }
     check(&g);
+}
+
+#[test]
+fn visiting_neighbors_sees_live_edges_in_order_and_stops_on_break() {
+    let backing = Backing::default();
+    let mut g = backing.create(3);
+    for target in [1, 2, 1, 2] {
+        insert(&mut g, v(0), l(0), v(target));
+    }
+    remove(&mut g, v(0), l(0), p(1));
+    let mut seen = Vec::new();
+    let none = g.visit_neighbors(v(0), l(0), Side::Out, |e| {
+        seen.push((e.position().index(), e.target().index()));
+        ControlFlow::<()>::Continue(())
+    });
+    assert_eq!(none, Ok(None));
+    assert_eq!(seen, edges(&g, v(0), l(0)));
+    let second_to_2 = g.visit_neighbors(v(0), l(0), Side::Out, |e| {
+        if e.target() == v(2) {
+            ControlFlow::Break(e.position())
+        } else {
+            ControlFlow::Continue(())
+        }
+    });
+    assert_eq!(second_to_2, Ok(Some(p(3))));
+    assert_eq!(
+        g.visit_neighbors(v(1), l(5), Side::In, |_| ControlFlow::Break(())),
+        Ok(None)
+    );
 }
 
 #[test]

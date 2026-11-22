@@ -493,6 +493,11 @@ impl<M: Memory> Pages<'_, M> {
     pub(crate) fn read_array<const N: usize>(&self, at: ByteOffset) -> [u8; N] {
         Region::new(self.memory).read_array(at)
     }
+
+    /// Fills `buf` from `at`, with one memory read and no allocation.
+    pub(crate) fn read_into(&self, at: ByteOffset, buf: &mut [u8]) {
+        Region::new(self.memory).read(at, buf);
+    }
 }
 
 impl<M: Memory> Allocator for PageStore<M> {

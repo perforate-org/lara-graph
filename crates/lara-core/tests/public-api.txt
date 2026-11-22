@@ -54,20 +54,24 @@ pub struct lara_core::Graph<M: lara_core::Memory>
 impl<M: lara_core::Memory> lara_core::Graph<M>
 pub fn lara_core::Graph<M>::add_vertex(&mut self) -> core::result::Result<lara_core::VertexId, lara_core::Error>
 pub fn lara_core::Graph<M>::compact(&mut self, lara_core::VertexId, lara_core::Label, lara_core::Side) -> core::result::Result<lara_core::Compaction, lara_core::Error>
-pub fn lara_core::Graph<M>::counterpart(&self, lara_core::EdgeRef) -> core::result::Result<core::option::Option<lara_core::EdgeRef>, lara_core::Error>
 pub fn lara_core::Graph<M>::create(lara_core::Memories<M>) -> core::result::Result<Self, lara_core::CreateError>
 pub fn lara_core::Graph<M>::degree(&self, lara_core::VertexId, lara_core::Label, lara_core::Side) -> core::result::Result<u32, lara_core::Error>
-pub fn lara_core::Graph<M>::detach(&mut self, lara_core::VertexId) -> core::result::Result<(), lara_core::Error>
-pub fn lara_core::Graph<M>::detach_step(&mut self, lara_core::VertexId, core::num::nonzero::NonZeroU32) -> core::result::Result<lara_core::Detachment, lara_core::Error>
 pub fn lara_core::Graph<M>::edge(&self, lara_core::EdgeRef) -> core::result::Result<core::option::Option<lara_core::VertexId>, lara_core::Error>
 pub fn lara_core::Graph<M>::holes(&self, lara_core::VertexId, lara_core::Label, lara_core::Side) -> core::result::Result<u32, lara_core::Error>
-pub fn lara_core::Graph<M>::insert_directed(&mut self, lara_core::VertexId, lara_core::Label, lara_core::VertexId) -> core::result::Result<lara_core::Halves, lara_core::Error>
-pub fn lara_core::Graph<M>::insert_undirected(&mut self, lara_core::VertexId, lara_core::Label, lara_core::VertexId) -> core::result::Result<lara_core::Halves, lara_core::Error>
 pub fn lara_core::Graph<M>::labels(&self, lara_core::VertexId, lara_core::Side, &mut alloc::vec::Vec<lara_core::Label>) -> core::result::Result<(), lara_core::Error>
 pub fn lara_core::Graph<M>::neighbors(&self, lara_core::VertexId, lara_core::Label, lara_core::Side, &mut alloc::vec::Vec<lara_core::Edge>) -> core::result::Result<(), lara_core::Error>
 pub fn lara_core::Graph<M>::open(lara_core::Memories<M>) -> core::result::Result<Self, lara_core::OpenError>
-pub fn lara_core::Graph<M>::remove_edge(&mut self, lara_core::EdgeRef) -> core::result::Result<lara_core::Removal, lara_core::Error>
 pub fn lara_core::Graph<M>::vertex_count(&self) -> u32
+pub fn lara_core::Graph<M>::visit_neighbors<B>(&self, lara_core::VertexId, lara_core::Label, lara_core::Side, impl core::ops::function::FnMut(lara_core::Edge) -> core::ops::control_flow::ControlFlow<B>) -> core::result::Result<core::option::Option<B>, lara_core::Error>
+impl<M: lara_core::Memory> lara_core::Graph<M>
+pub fn lara_core::Graph<M>::counterpart(&self, lara_core::EdgeRef) -> core::result::Result<core::option::Option<lara_core::EdgeRef>, lara_core::Error>
+pub fn lara_core::Graph<M>::remove_edge(&mut self, lara_core::EdgeRef) -> core::result::Result<lara_core::Removal, lara_core::Error>
+impl<M: lara_core::Memory> lara_core::Graph<M>
+pub fn lara_core::Graph<M>::detach(&mut self, lara_core::VertexId) -> core::result::Result<(), lara_core::Error>
+pub fn lara_core::Graph<M>::detach_step(&mut self, lara_core::VertexId, core::num::nonzero::NonZeroU32) -> core::result::Result<lara_core::Detachment, lara_core::Error>
+impl<M: lara_core::Memory> lara_core::Graph<M>
+pub fn lara_core::Graph<M>::insert_directed(&mut self, lara_core::VertexId, lara_core::Label, lara_core::VertexId) -> core::result::Result<lara_core::Halves, lara_core::Error>
+pub fn lara_core::Graph<M>::insert_undirected(&mut self, lara_core::VertexId, lara_core::Label, lara_core::VertexId) -> core::result::Result<lara_core::Halves, lara_core::Error>
 pub struct lara_core::GrowFailed
 impl lara_core::GrowFailed
 pub const fn lara_core::GrowFailed::current_pages(&self) -> u64

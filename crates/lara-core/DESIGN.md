@@ -88,8 +88,10 @@ both halves before writing either.
 **Halves pair by rank.** The k-th live entry to `v` in `u`'s out bucket is the same edge as the
 k-th live entry to `u` in `v`'s in bucket (Gleaph ADR 0048). Inserts place an entry after every
 live entry to the same vertex, removal takes both halves, and compaction keeps order, so the
-ranks stay aligned without links between halves. `Graph::counterpart` finds the other half by
-counting in one bucket and selecting in the other: each scan stops at the edge it needs.
+ranks stay aligned without links between halves. `Graph::counterpart` first looks at the smaller of the two
+buckets. If that bucket holds exactly one live entry back to the half's vertex, that entry is the
+other half. Otherwise it counts in one bucket and selects in the other, and each scan stops at the
+edge it needs. Removing a hub's edge to a leaf therefore never scans the hub.
 
 **Inserts are all or nothing.** First every check (vertices, bucket count, position overflow),
 then the page stores grow far enough that the inserts cannot fail: an edge-bucket insert takes at
@@ -161,6 +163,8 @@ together and rewrites all of them when one outgrows its slack.
 
 Reading one bucket costs a vertex read, a list read and one data read (index and page reads past
 1024 edges).
+`Graph::visit_neighbors` reads without collecting, at about 30 instructions per edge on the IC.
+`neighbors`, which fills a `Vec`, costs about twice that (`docs/ic-measurements-2026-11-22.md`).
 
 ## Not yet
 
@@ -168,4 +172,7 @@ Reading one bucket costs a vertex read, a list read and one data read (index and
   joins on a target need not scan the bucket.
 - Detaching many vertices at once with one pass over each shared hub.
 - Inline edge properties.
-- Instruction measurements on the IC (canbench) to settle constants.
+- Closing the insert gap with ic-stable-lara (~1.5× per half; `docs/ic-measurements-2026-11-22.md`)
+  and letting a paged search jump to the data page holding its start position.
+- Settling the constants (descriptor size, inline slots, page threshold) by measuring on the IC
+  with canbench (`crates/lara-core-bench`).

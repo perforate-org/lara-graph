@@ -126,57 +126,105 @@ pub(crate) fn get<M: Memory>(
     }
 }
 
-/// Appends the bucket's live edges to `out`, in position order. Reads the descriptor and page
-/// data only: one read for a run; for a paged bucket, the index and each page that is not all
-/// tombstones.
+/// How much one read of a bucket covers.
+#[derive(Clone, Copy)]
+pub(crate) enum Window {
+    /// A whole run or data page: for scans that read everything.
+    Page,
+    /// 128 slots: for searches that usually stop early.
+    Short,
+}
+
+impl Window {
+    const fn slots(self) -> u32 {
+        match self {
+            Self::Page => PAGE_SLOTS,
+            Self::Short => 128,
+        }
+    }
+}
+
+/// Calls `f` with each live edge at `from` or later, in position order, until it breaks.
+/// Reads the descriptor and page data only, skipping pages that are all tombstones.
+pub(crate) fn visit<M: Memory, B>(
+    d: &Descriptor,
+    view: &Pages<'_, M>,
+    from: Position,
+    window: Window,
+    mut f: impl FnMut(Edge) -> ControlFlow<B>,
+) -> Option<B> {
+    scan(d, view, from.index(), window.slots(), |first, bytes| {
+        for (at, slot) in (first..).zip(Slot::decode_all(bytes)) {
+            if let Slot::Live(target) = slot {
+                f(Edge::new(Position::new(at), target))?;
+            }
+        }
+        ControlFlow::Continue(())
+    })
+}
+
+/// Appends the bucket's live edges to `out`, in position order: one read for a run; for a
+/// paged bucket, the index and each page that is not all tombstones.
 pub(crate) fn read<M: Memory>(d: &Descriptor, view: &Pages<'_, M>, out: &mut Vec<Edge>) {
-    scan(d, view, 0, |first, bytes| {
-        push_live(Slot::decode_all(bytes), first, out);
+    out.reserve(usize::try_from(d.live()).unwrap_or(0));
+    visit(d, view, Position::new(0), Window::Page, |e| {
+        out.push(e);
         ControlFlow::<()>::Continue(())
     });
 }
 
 /// The first live edge at `from` or later that `wanted` accepts; `wanted` sees each live edge
-/// in position order until then. Reads only up to it, skipping pages that are all tombstones.
+/// in position order until then. Reads from `from` up to it, a short window at a time.
 pub(crate) fn find<M: Memory>(
     d: &Descriptor,
     view: &Pages<'_, M>,
     from: Position,
     mut wanted: impl FnMut(Edge) -> bool,
 ) -> Option<Edge> {
-    let from = from.index();
-    scan(d, view, from, |first, bytes| {
-        let hit = (first..)
-            .zip(Slot::decode_all(bytes))
-            .skip_while(|(at, _)| *at < from)
-            .find_map(|(at, slot)| match slot {
-                Slot::Live(target) => {
-                    Some(Edge::new(Position::new(at), target)).filter(|e| wanted(*e))
-                }
-                Slot::Tombstone => None,
-            });
-        hit.map_or(ControlFlow::Continue(()), ControlFlow::Break)
+    visit(d, view, from, Window::Short, |e| {
+        if wanted(e) {
+            ControlFlow::Break(e)
+        } else {
+            ControlFlow::Continue(())
+        }
     })
 }
 
-/// Feeds the bucket's stored slots, as bytes with the position of the first, to `visit` until it
-/// breaks: the tiny slots, the run, or each data page that is not all tombstones and does not end
-/// before `from`.
+/// Feeds the bucket's stored slots from `from` on, as bytes with the position of the first, to
+/// `visit` until it breaks: the tiny slots, or reads of at most `window` slots of the run and of
+/// each data page that is not all tombstones.
 fn scan<M: Memory, T>(
     d: &Descriptor,
     view: &Pages<'_, M>,
     from: u32,
+    window: u32,
     mut visit: impl FnMut(u32, &[u8]) -> ControlFlow<T>,
 ) -> Option<T> {
+    // One buffer serves every read: sized by the first, never zeroed again.
+    let mut buf = Vec::new();
+    let mut span = |at: ByteOffset, first: u32, count: u32| {
+        let mut lo = from.saturating_sub(first).min(count);
+        while lo < count {
+            let n = (count - lo).min(window);
+            visit(first + lo, fill(view, &mut buf, slot_offset(at, lo), n))?;
+            lo += n;
+        }
+        ControlFlow::Continue(())
+    };
     let flow = match d {
         Descriptor::Tiny(tiny) => {
-            let bytes: Vec<u8> = tiny.slots().iter().flat_map(|s| s.encode()).collect();
-            visit(0, &bytes)
+            let mut bytes = [0u8; TINY_SLOTS * 4];
+            let encoded = tiny.slots().iter().flat_map(|s| s.encode());
+            let len = bytes
+                .iter_mut()
+                .zip(encoded)
+                .map(|(dst, src)| *dst = src)
+                .count();
+            let slots = bytes.get(..len).unwrap_or(&[]);
+            let skip = byte_len(from).min(slots.len());
+            visit(from, slots.get(skip..).unwrap_or(&[]))
         }
-        Descriptor::Run(run) => visit(
-            0,
-            &view.read(run.extent.offset(), byte_len(u32::from(run.stored))),
-        ),
+        Descriptor::Run(run) => span(run.extent.offset(), 0, u32::from(run.stored)),
         Descriptor::Paged(paged) => {
             (0u32..)
                 .zip(paged::leaves(view, paged))
@@ -185,9 +233,7 @@ fn scan<M: Memory, T>(
                     let count = (paged.stored - first).min(PAGE_SLOTS);
                     let live_page = leaf.page.filter(|_| u32::from(leaf.tombstones) < count);
                     match live_page {
-                        Some(page) if first + count > from => {
-                            visit(first, &view.read(page.offset(), byte_len(count)))
-                        }
+                        Some(page) if first + count > from => span(page.offset(), first, count),
                         Some(_) | None => ControlFlow::Continue(()),
                     }
                 })
@@ -197,6 +243,22 @@ fn scan<M: Memory, T>(
         ControlFlow::Break(found) => Some(found),
         ControlFlow::Continue(()) => None,
     }
+}
+
+/// Reads `count` slots at `at` into `buf`, growing it only when it is too short.
+fn fill<'b, M: Memory>(
+    view: &Pages<'_, M>,
+    buf: &'b mut Vec<u8>,
+    at: ByteOffset,
+    count: u32,
+) -> &'b [u8] {
+    let len = byte_len(count);
+    if buf.len() < len {
+        buf.resize(len, 0);
+    }
+    let bytes = buf.get_mut(..len).unwrap_or(&mut []);
+    view.read_into(at, bytes);
+    bytes
 }
 
 // --- runs --------------------------------------------------------------------------------------
@@ -352,14 +414,6 @@ fn reusable_hole(slots: &[Slot], target: VertexId) -> Option<usize> {
     hole
 }
 
-fn push_live(slots: impl Iterator<Item = Slot>, first: u32, out: &mut Vec<Edge>) {
-    for (i, slot) in (first..).zip(slots) {
-        if let Slot::Live(target) = slot {
-            out.push(Edge::new(Position::new(i), target));
-        }
-    }
-}
-
 /// The class of a run holding `slots` slots.
 pub(crate) fn run_class(slots: u32) -> ByteClass {
     ByteClass::for_bytes(slots * SLOT_BYTES).unwrap_or_else(|| corrupt("run beyond a page"))
@@ -403,6 +457,31 @@ pub(crate) fn owned_extents<M: Memory>(
                 .collect();
             out.extend(paged::index_extents(view, paged));
             out
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::VecMemory;
+
+    /// `find` and `visit` start at `from` in every bucket form, including past a page boundary.
+    #[test]
+    fn searches_start_at_their_position() {
+        let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+        for total in [3, 10, PAGE_SLOTS * 2 + 7] {
+            let mut d = Descriptor::EMPTY;
+            for _ in 0..total {
+                d = insert(d, VertexId::new(1), &mut store).unwrap().0;
+            }
+            let view = store.pages();
+            for from in [0, 1, total / 2, PAGE_SLOTS + 1, total - 1, total] {
+                let found = find(&d, &view, Position::new(from), |_| true);
+                let expected =
+                    (from < total).then(|| Edge::new(Position::new(from), VertexId::new(1)));
+                assert_eq!(found, expected, "{total} edges, from {from}");
+            }
         }
     }
 }

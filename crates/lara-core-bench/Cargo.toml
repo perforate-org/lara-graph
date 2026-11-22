@@ -1,0 +1,19 @@
+[package]
+name = "lara-core-bench"
+description = "canbench instruction measurements for lara-core on the Internet Computer."
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+canbench-rs = "0.7"
+candid = "0.10"
+ic-cdk = "0.20"
+ic-stable-structures = "0.7.2"
+lara-core = { path = "../lara-core" }
+
+[lints]
+workspace = true

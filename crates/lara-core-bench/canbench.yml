@@ -1,0 +1,3 @@
+# A dedicated target dir keeps the wasm build apart from host builds.
+build_cmd: "sh -c 'CARGO_TARGET_DIR=../../target/canbench cargo build --release --target wasm32-unknown-unknown -p lara-core-bench'"
+wasm_path: "../../target/canbench/wasm32-unknown-unknown/release/lara_core_bench.wasm"

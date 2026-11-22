@@ -129,13 +129,14 @@ pub(crate) fn lookup<M: Memory>(
     let Some(list) = list else {
         return Lookup::Absent { index: 0 };
     };
-    let entries = entries(pages, list);
-    match entries.binary_search_by_key(&key, |(k, _)| *k) {
+    // One read; keys are compared in place and one descriptor is decoded.
+    let bytes = pages.read(list.extent.offset(), usize::from(list.count) * ENTRY_BYTES);
+    let (entries, _) = bytes.as_chunks::<ENTRY_BYTES>();
+    match entries.binary_search_by(|&[k0, k1, k2, ..]| BucketKey::decode([k0, k1, k2]).cmp(&key)) {
         Ok(index) => {
             let (_, descriptor) = entries
                 .get(index)
-                .copied()
-                .unwrap_or_else(|| corrupt("list entry"));
+                .map_or_else(|| corrupt("list entry"), |&entry| decode_entry(entry));
             Lookup::Present { index, descriptor }
         }
         Err(index) => Lookup::Absent { index },

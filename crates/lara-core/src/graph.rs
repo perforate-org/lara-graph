@@ -1,19 +1,18 @@
 //! The graph: labeled buckets of edge halves per vertex and side, over five memories.
 
-use crate::bucket;
+use crate::bucket::{self, Window};
 use crate::compact::{self, Outcome};
-use crate::corrupt::{corrupt, reservation_exceeded};
+use crate::corrupt::corrupt;
 use crate::descriptor::Descriptor;
 use crate::id::{Edge, EdgeRef, Halves, Label, Move, Position, Progress, Side, VertexId};
 use crate::labels::{self, BucketKey, BucketList, Lookup};
 use crate::memory::{GrowFailed, Memory, Region, WriteError};
 use crate::page_store::{self, PageStore};
 use crate::units::{ByteOffset, Overflow};
-use crate::vertex::{RECORD_BYTES, Record, State};
-use alloc::collections::BTreeMap;
+use crate::vertex::{RECORD_BYTES, Record};
 use alloc::vec::Vec;
 use core::fmt;
-use core::num::NonZeroU32;
+use core::ops::ControlFlow;
 
 const MAGIC: [u8; 3] = *b"LGV";
 const VERSION: u8 = 4;
@@ -264,6 +263,8 @@ impl<M: Memory> Graph<M> {
 
     /// Replaces the contents of `out` with the live edges of `v`'s `(label, side)` bucket, in
     /// position order. Each edge's target is the vertex at its other end.
+    /// [`Self::visit_neighbors`] reads the same edges in about half the instructions when they
+    /// need not be kept.
     ///
     /// # Errors
     ///
@@ -282,6 +283,24 @@ impl<M: Memory> Graph<M> {
         Ok(())
     }
 
+    /// Calls `f` with each live edge of `v`'s `(label, side)` bucket in position order, until
+    /// it breaks; returns the break value. Reads like [`Self::neighbors`] without collecting.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownVertex`].
+    pub fn visit_neighbors<B>(
+        &self,
+        v: VertexId,
+        label: Label,
+        side: Side,
+        f: impl FnMut(Edge) -> ControlFlow<B>,
+    ) -> Result<Option<B>, Error> {
+        Ok(self.bucket(v, BucketKey { label, side })?.and_then(|d| {
+            bucket::visit(&d, &self.edges.pages(), Position::new(0), Window::Page, f)
+        }))
+    }
+
     /// The vertex at the other end of `half`, if it is live.
     ///
     /// # Errors
@@ -291,103 +310,6 @@ impl<M: Memory> Graph<M> {
         Ok(self
             .bucket(half.vertex(), key_of(half))?
             .and_then(|d| bucket::get(&d, half.position(), &self.edges.pages())))
-    }
-
-    /// Adds the edge `from -[label]-> to`. Parallel edges are kept in insertion order.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnknownVertex`] for either endpoint, [`Error::TooManyBuckets`],
-    /// [`Error::OutOfMemory`] or [`Error::AddressSpaceExhausted`]. On error the graph is
-    /// unchanged.
-    pub fn insert_directed(
-        &mut self,
-        from: VertexId,
-        label: Label,
-        to: VertexId,
-    ) -> Result<Halves, Error> {
-        let out = Half::new(from, label, Side::Out, to);
-        let into = Half::new(to, label, Side::In, from);
-        let [source, target] = self.insert_halves([out, into])?;
-        Ok(Halves::new(source, target))
-    }
-
-    /// Adds the undirected edge `a -[label]- b`. Parallel edges are kept in insertion order.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::insert_directed`]. On error the graph is unchanged.
-    pub fn insert_undirected(
-        &mut self,
-        a: VertexId,
-        label: Label,
-        b: VertexId,
-    ) -> Result<Halves, Error> {
-        let (low, high) = (a.min(b), a.max(b));
-        let at_low = Half::new(low, label, Side::Undirected, high);
-        if low == high {
-            let [half] = self.insert_halves([at_low])?;
-            return Ok(Halves::new(half, half));
-        }
-        let at_high = Half::new(high, label, Side::Undirected, low);
-        let [source, target] = self.insert_halves([at_low, at_high])?;
-        Ok(Halves::new(source, target))
-    }
-
-    /// The other half of the edge `half` belongs to, or `None` when `half` is not live. Scans
-    /// both buckets up to the edge.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnknownVertex`].
-    pub fn counterpart(&self, half: EdgeRef) -> Result<Option<EdgeRef>, Error> {
-        let Some(other) = self.edge(half)? else {
-            return Ok(None);
-        };
-        let owner = half.vertex();
-        let view = self.edges.pages();
-        let own = self.present(owner, key_of(half));
-        // Live entries to `other` before `half`: its rank among them.
-        let mut rank = 0usize;
-        bucket::find(&own, &view, Position::new(0), |e| {
-            let reached = e.position() >= half.position();
-            if !reached && e.target() == other {
-                rank += 1;
-            }
-            reached
-        });
-        let side = opposite(half.side());
-        let key = BucketKey {
-            label: half.label(),
-            side,
-        };
-        // The entry to `owner` with the same rank on the other side.
-        let mut seen = 0usize;
-        let at = bucket::find(&self.present(other, key), &view, Position::new(0), |e| {
-            if e.target() != owner {
-                return false;
-            }
-            seen += 1;
-            seen > rank
-        })
-        .unwrap_or_else(|| corrupt("an edge half without its counterpart"));
-        Ok(Some(EdgeRef::new(other, half.label(), side, at.position())))
-    }
-
-    /// Removes the edge `half` belongs to: both its halves. Other edges keep their positions.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnknownVertex`].
-    pub fn remove_edge(&mut self, half: EdgeRef) -> Result<Removal, Error> {
-        let Some(other) = self.counterpart(half)? else {
-            return Ok(Removal::Absent);
-        };
-        self.remove_half(half);
-        if other != half {
-            self.remove_half(other);
-        }
-        Ok(Removal::Removed(order(half, other)))
     }
 
     /// Removed edges `v`'s `(label, side)` bucket still holds positions for: the work compaction
@@ -430,182 +352,6 @@ impl<M: Memory> Graph<M> {
         Ok(Step::new(step.moves, step.progress))
     }
 
-    /// Starts detaching `v`: from now on it takes no new edges, and [`Self::detach_step`]
-    /// removes its edges. Constant time; calling it again changes nothing.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnknownVertex`].
-    pub fn detach(&mut self, v: VertexId) -> Result<(), Error> {
-        let record = self.record(v)?;
-        self.write_record(
-            v,
-            Record {
-                state: State::Detaching,
-                ..record
-            },
-        );
-        Ok(())
-    }
-
-    /// Removes up to `budget` of a detaching vertex's edges, both halves of each, and reports
-    /// them. Between steps the graph is whole: every edge is either present at both ends or gone.
-    /// When `v` has no edges left it takes edges again and the step is [`Progress::Done`].
-    ///
-    /// Each edge costs a read of `v`'s next live entry and a scan of the neighbour's bucket up to
-    /// the other half.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnknownVertex`], or [`Error::NotDetaching`] unless [`Self::detach`] was called.
-    pub fn detach_step(&mut self, v: VertexId, budget: NonZeroU32) -> Result<Detachment, Error> {
-        if self.record(v)?.state != State::Detaching {
-            return Err(Error::NotDetaching(v));
-        }
-        let mut removed = Vec::new();
-        let mut hints = BTreeMap::new();
-        for _ in 0..budget.get() {
-            let Some((key, d)) = labels::first(&self.lists.pages(), self.list(v)?) else {
-                break;
-            };
-            let first = bucket::find(&d, &self.edges.pages(), Position::new(0), |_| true);
-            let Some(edge) = first else {
-                // All holes: compaction drops the bucket without moving anything.
-                self.compact(v, key.label, key.side)?;
-                hints.clear();
-                continue;
-            };
-            let half = EdgeRef::new(v, key.label, key.side, edge.position());
-            let other = self.first_half_to(v, half, edge.target(), &mut hints);
-            self.remove_half(half);
-            if other != half {
-                self.remove_half(other);
-            }
-            removed.push(order(half, other));
-        }
-        let progress = if self.list(v)?.is_none() {
-            self.write_record(v, Record::NEW);
-            Progress::Done
-        } else {
-            Progress::Remaining
-        };
-        Ok(Step::new(removed, progress))
-    }
-
-    /// The other half of `half`, `v`'s first live edge in its bucket: the first live entry to
-    /// `v` in `other`'s opposite bucket, since `v`'s earlier entries to `other` are gone. For an
-    /// undirected self-loop that is `half` itself. `hints` remembers where each scan stopped
-    /// within one step; positions before it hold no live entry to `v`.
-    fn first_half_to(
-        &self,
-        v: VertexId,
-        half: EdgeRef,
-        other: VertexId,
-        hints: &mut BTreeMap<(VertexId, BucketKey), Position>,
-    ) -> EdgeRef {
-        let key = BucketKey {
-            label: half.label(),
-            side: opposite(half.side()),
-        };
-        let from = hints
-            .get(&(other, key))
-            .copied()
-            .unwrap_or(Position::new(0));
-        let d = self.present(other, key);
-        let found = bucket::find(&d, &self.edges.pages(), from, |e| e.target() == v)
-            .unwrap_or_else(|| corrupt("an edge half without its counterpart"));
-        // Now a hole, so the next scan starts there.
-        hints.insert((other, key), found.position());
-        EdgeRef::new(other, key.label, key.side, found.position())
-    }
-
-    /// Inserts every half or none: checks and reserves memory first, then applies them.
-    fn insert_halves<const N: usize>(&mut self, halves: [Half; N]) -> Result<[EdgeRef; N], Error> {
-        self.admit(&halves)?;
-        let n = u32::try_from(N).map_err(|_| Error::AddressSpaceExhausted)?;
-        self.edges.reserve(bucket::PAGES_PER_INSERT * n)?;
-        self.lists.reserve(labels::PAGES_PER_ADD * n)?;
-        Ok(halves.map(|half| self.insert_half(half)))
-    }
-
-    /// Fails as an insert of `halves` would, before anything changes.
-    fn admit(&self, halves: &[Half]) -> Result<(), Error> {
-        let mut fresh: Vec<VertexId> = Vec::new();
-        for half in halves {
-            for end in [half.vertex, half.target] {
-                if self.record(end)?.state == State::Detaching {
-                    return Err(Error::Detaching(end));
-                }
-            }
-            match labels::lookup(&self.lists.pages(), self.list(half.vertex)?, half.key) {
-                Lookup::Present { descriptor, .. } if descriptor.stored() == u32::MAX => {
-                    return Err(Error::AddressSpaceExhausted);
-                }
-                Lookup::Present { .. } => {}
-                Lookup::Absent { .. } => fresh.push(half.vertex),
-            }
-        }
-        for &v in &fresh {
-            let adding = fresh.iter().filter(|&&w| w == v).count();
-            if labels::len(self.list(v)?) + adding > labels::MAX_BUCKETS {
-                return Err(Error::TooManyBuckets(v));
-            }
-        }
-        Ok(())
-    }
-
-    /// Applies one admitted half within reserved memory. Cannot fail.
-    fn insert_half(&mut self, half: Half) -> EdgeRef {
-        let Half {
-            vertex,
-            key,
-            target,
-        } = half;
-        let list = self
-            .list(vertex)
-            .unwrap_or_else(|_| corrupt("admitted vertex"));
-        let at = match labels::lookup(&self.lists.pages(), list, key) {
-            Lookup::Present { index, descriptor } => {
-                let (next, at) = reserved(bucket::insert(descriptor, target, &mut self.edges));
-                let list = list.unwrap_or_else(|| corrupt("present bucket without a list"));
-                labels::set(&self.lists, list, index, &next);
-                at
-            }
-            Lookup::Absent { index } => {
-                let (next, at) =
-                    reserved(bucket::insert(Descriptor::EMPTY, target, &mut self.edges));
-                let list = reserved(labels::add(&mut self.lists, list, index, key, &next));
-                self.set_list(vertex, Some(list));
-                at
-            }
-        };
-        EdgeRef::new(vertex, key.label, key.side, at)
-    }
-
-    /// Tombstones one live half. Cannot fail.
-    fn remove_half(&mut self, half: EdgeRef) {
-        let list = self
-            .list(half.vertex())
-            .unwrap_or_else(|_| corrupt("live half's vertex"));
-        let Lookup::Present { index, descriptor } =
-            labels::lookup(&self.lists.pages(), list, key_of(half))
-        else {
-            corrupt("live half without a bucket")
-        };
-        let (next, _) = bucket::remove(descriptor, half.position(), &self.edges)
-            .unwrap_or_else(|| corrupt("live half not in its bucket"));
-        let list = list.unwrap_or_else(|| corrupt("present bucket without a list"));
-        labels::set(&self.lists, list, index, &next);
-    }
-
-    /// The bucket a live half proves exists.
-    fn present(&self, v: VertexId, key: BucketKey) -> Descriptor {
-        self.bucket(v, key)
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| corrupt("an edge half without its bucket"))
-    }
-
     fn region(&self) -> Region<'_, M> {
         Region::new(&self.vertices)
     }
@@ -643,66 +389,8 @@ impl<M: Memory> Graph<M> {
     }
 
     fn bucket(&self, v: VertexId, key: BucketKey) -> Result<Option<Descriptor>, Error> {
-        Ok(
-            match labels::lookup(&self.lists.pages(), self.list(v)?, key) {
-                Lookup::Present { descriptor, .. } => Some(descriptor),
-                Lookup::Absent { .. } => None,
-            },
-        )
+        Ok(self.find_bucket(v, key)?.map(|found| found.descriptor))
     }
-}
-
-/// One half to insert: an entry to `target` in `vertex`'s bucket `key`.
-#[derive(Clone, Copy)]
-struct Half {
-    vertex: VertexId,
-    key: BucketKey,
-    target: VertexId,
-}
-
-impl Half {
-    const fn new(vertex: VertexId, label: Label, side: Side, target: VertexId) -> Self {
-        Self {
-            vertex,
-            key: BucketKey { label, side },
-            target,
-        }
-    }
-}
-
-const fn key_of(half: EdgeRef) -> BucketKey {
-    BucketKey {
-        label: half.label(),
-        side: half.side(),
-    }
-}
-
-/// The side the other half of an edge is on.
-const fn opposite(side: Side) -> Side {
-    match side {
-        Side::Out => Side::In,
-        Side::In => Side::Out,
-        Side::Undirected => Side::Undirected,
-    }
-}
-
-/// An edge's halves from any half and its counterpart.
-fn order(half: EdgeRef, other: EdgeRef) -> Halves {
-    let half_first = match half.side() {
-        Side::Out => true,
-        Side::In => false,
-        Side::Undirected => half.vertex() <= other.vertex(),
-    };
-    if half_first {
-        Halves::new(half, other)
-    } else {
-        Halves::new(other, half)
-    }
-}
-
-/// The result of an update that runs within reserved memory.
-fn reserved<T>(result: Result<T, WriteError>) -> T {
-    result.unwrap_or_else(|_| reservation_exceeded())
 }
 
 fn record_at(v: VertexId) -> ByteOffset {
@@ -769,6 +457,14 @@ impl fmt::Display for OpenError {
 impl core::error::Error for Error {}
 impl core::error::Error for CreateError {}
 impl core::error::Error for OpenError {}
+
+mod detach;
+mod insert;
+mod pair;
+
+use pair::key_of;
+#[cfg(test)]
+use pair::{opposite, order};
 
 #[cfg(test)]
 mod tests;
