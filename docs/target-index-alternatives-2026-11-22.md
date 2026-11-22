@@ -125,8 +125,7 @@ bound.
 
 ## Prototype B: measured (2026-11-22)
 
-The prototype is in a separate worktree, on the branch `hash-index-prototype`, which has no
-commits yet; nothing is merged here. It works as follows:
+The prototype was built in a separate worktree and never merged. It worked as follows:
 - **Layout.** An extendible hash with a one-page directory of up to 1024 buckets. Each bucket page
   is a linear-probing table of `(hash u32, position u32)` entries, splitting at 80 % load. Buckets
   that cannot be split chain extra pages.
@@ -183,8 +182,8 @@ Together that is about 2× the slots: still well above the tree's 0.8-1.4×.
 - A bucket that a split cannot thin (one target's many postings) chains leaves in key order.
 - A lookup reads one directory entry and one leaf, and gets all of a target's postings at once.
 
-It is in a separate worktree, on the branch `dir-index-prototype`, which has no commits yet. The
-lib tests pass there, including the 680K self-loop hub, which exercises chains.
+It was built in a separate worktree and never merged. Its lib tests passed, including the 680K
+self-loop hub, which exercises chains.
 
 canbench against the tree:
 
@@ -235,8 +234,7 @@ cannot be implied:
 - **Growth.** Full pages split on the next target bit. Buckets that cannot split (one target,
   or the deepest directory) chain pages, with a tail pointer for appends.
 
-It is in a separate worktree, on the branch `compact-index-prototype`, which has no commits yet;
-the lib tests pass there.
+It was built in a separate worktree and never merged; its lib tests passed.
 
 canbench (the tree's persisted results as the baseline; the hash and directory columns repeat
 earlier runs):
@@ -383,5 +381,5 @@ The rest of E3's share, from a native profile:
 **Improvements adopted from the comparison.** Removals rewrite counts in place, and batches are
 planned once and committed, without a counting pass. See the design doc's costs.
 
-The prototypes stay on their worktree branches for reference: `hash-index-prototype`,
-`dir-index-prototype` and `compact-index-prototype`.
+The prototypes' worktrees and branches were deleted once these results were recorded: this
+document is what remains of them.
