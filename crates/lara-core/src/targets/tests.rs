@@ -118,7 +118,7 @@ fn random_batches_match_a_map_of_postings() {
                 }
             })
             .collect();
-        root = apply_reserved(&mut store, root, &changes).unwrap();
+        root = commit_planned(&mut store, root, &changes);
         deepest = deepest.max(depth(root));
         if round % 10 == 9 {
             check(&store, root, &model);
@@ -128,16 +128,50 @@ fn random_batches_match_a_map_of_postings() {
     drain(&mut store, root, &model);
 }
 
-/// Drains every posting: counts drop to zero in place, and releasing the tree frees every page.
+/// Plans `changes`, commits the plan, and checks that the commit took no more pages than the plan
+/// counted.
+fn commit_planned(
+    store: &mut PageStore<VecMemory>,
+    root: Option<Root>,
+    changes: &[Change],
+) -> Option<Root> {
+    let before = store.allocated().len();
+    let planned = plan(&store.pages(), root, changes);
+    let pages = usize::try_from(planned.pages()).unwrap();
+    let root = commit(store, planned).unwrap();
+    assert!(
+        store.allocated().len() <= before + pages,
+        "a commit took more pages than its plan counted"
+    );
+    root
+}
+
+/// Drains every posting. One new posting goes in with the removals, so its leaf is rewritten and
+/// drops the zero counts there, while the other leaves are lowered in place. Lowering that last
+/// posting leaves a count of zero too, and releasing the tree frees every page.
 fn drain(store: &mut PageStore<VecMemory>, root: Option<Root>, model: &BTreeMap<(u32, u32), u32>) {
-    let all: Vec<Change> = model
+    let last = (u32::MAX - 1, 0);
+    let mut all: Vec<Change> = model
         .iter()
         .map(|(&key, &count)| Change {
             key,
             delta: -i64::from(count),
         })
         .collect();
-    let root = apply_reserved(store, root, &all).unwrap();
+    all.push(Change {
+        key: last,
+        delta: 1,
+    });
+    let root = commit_planned(store, root, &all);
+    check(store, root, &BTreeMap::from([(last, 1)]));
+    let root = commit_planned(
+        store,
+        root,
+        &[Change {
+            key: last,
+            delta: -1,
+        }],
+    );
     check(store, root, &BTreeMap::new());
     if let Some(root) = root {
         release(store, root);

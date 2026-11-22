@@ -214,11 +214,11 @@ pub(super) struct Image {
 
 /// What a batch of changes does to a leaf.
 pub(super) enum Update {
-    /// The leaf stays on its page with these `(offset, bytes)` writes; its new first key if that
-    /// changed, and the change in its total.
+    /// The leaf stays on its page with these `(offset, bytes)` writes, and the change in its
+    /// total. Its parent's key for it stays a valid lower bound whatever the changes did to its
+    /// first key, so that key is left as it is.
     InPlace {
         writes: Vec<(usize, Vec<u8>)>,
-        first: Option<(u32, u32)>,
         delta: i64,
     },
     /// Whole leaves replace it: none when it empties, more than one when it outgrows a page.
@@ -266,23 +266,19 @@ pub(super) fn update(old: Option<Read<'_>>, changes: &[Change]) -> Update {
         .unwrap_or_else(|| Update::Replace(pack(&gather(&leaf, touched), split)))
 }
 
-/// The writes that apply every group's changes by rewriting counts in place, or `None` when one
-/// of them cannot be: it adds a posting, or a count outgrows its width.
+/// The writes that apply every group's decrements by lowering counts in place, or `None` when one
+/// of them names a posting its segment lacks.
 fn patched(leaf: &Leaf<'_>, groups: &[(usize, &[Change])]) -> Option<Update> {
     let mut writes = Vec::with_capacity(2 * groups.len());
     let mut delta = 0;
     for &(index, changes) in groups {
         let entry = leaf.entry(index)?;
-        let (from, bytes, entry) = entry.patch(leaf.read, changes)?;
+        let (from, bytes, entry) = entry.lower(leaf.read, changes)?;
         writes.push((entry.offset + from, bytes));
         writes.push((table_end(index), entry.to_bytes().to_vec()));
         delta += changes.iter().map(|c| c.delta).sum::<i64>();
     }
-    Some(Update::InPlace {
-        writes,
-        first: None,
-        delta,
-    })
+    Some(Update::InPlace { writes, delta })
 }
 
 /// Segment `index` re-coded with `changes`; a single replacement that still fits keeps its slot.

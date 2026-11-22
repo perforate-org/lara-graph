@@ -157,18 +157,7 @@ pub(super) fn write_node<M: Memory>(store: &PageStore<M>, page: PageId, children
     store.write(at(page, COUNTS), &counts);
 }
 
-/// Writes child `i`'s count, and its first key when that changed.
-pub(super) fn write_child<M: Memory>(
-    store: &PageStore<M>,
-    page: PageId,
-    i: usize,
-    count: u32,
-    first: Option<(u32, u32)>,
-) {
+/// Writes child `i`'s count.
+pub(super) fn write_child<M: Memory>(store: &PageStore<M>, page: PageId, i: usize, count: u32) {
     store.write(at(page, COUNTS + 4 * i), &count.to_le_bytes());
-    if let Some((t, b)) = first {
-        let [t0, t1, t2, t3] = t.to_le_bytes();
-        let [b0, b1, b2, b3] = b.to_le_bytes();
-        store.write(at(page, KEYS + 8 * i), &[t0, t1, t2, t3, b0, b1, b2, b3]);
-    }
 }

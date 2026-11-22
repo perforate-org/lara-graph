@@ -69,21 +69,17 @@ pub(crate) fn apply_reserved<M: Memory>(
 /// reserve, and [`commit`] writes it.
 pub(crate) fn plan<M: Memory>(view: &Pages<'_, M>, root: Option<Root>, changes: &[Change]) -> Plan {
     let changes = combine(changes);
-    let mut freed = Vec::new();
     let depth = root.map_or(0, |r| r.depth);
     if changes.is_empty() {
         return Plan {
             top: Top::Unchanged(root),
-            freed,
             depth,
         };
     }
     let outcome = match root {
-        Some(root) => node(view, (root.page, root.depth), &changes, &mut freed),
+        Some(root) => node(view, (root.page, root.depth), &changes),
         None => match leaf::update(None, &changes) {
-            leaf::Update::Replace(images) => {
-                Outcome::Replaced(fresh_leaves(None, images, &mut freed))
-            }
+            leaf::Update::Replace(images) => Outcome::Replaced(fresh_leaves(None, images)),
             leaf::Update::InPlace { .. } => corrupt("a new index leaf in place"),
         },
     };
@@ -92,19 +88,19 @@ pub(crate) fn plan<M: Memory>(view: &Pages<'_, M>, root: Option<Root>, changes: 
         (Outcome::Same(_), None) => corrupt("a new index kept in place"),
         (Outcome::Replaced(nodes), _) => grow(nodes, depth),
     };
-    Plan { top, freed, depth }
+    Plan { top, depth }
 }
 
 /// A new top for `nodes` at `depth`: none when empty; levels above them while there are several.
 fn grow(mut nodes: Vec<Fresh>, mut depth: u8) -> (Top, u8) {
     while nodes.len() > 1 {
         let kids: Vec<Kid> = nodes.into_iter().map(Kid::Fresh).collect();
-        nodes = pack(None, kids, &mut Vec::new());
+        nodes = pack(None, kids);
         depth += 1;
     }
     match nodes.pop() {
         Some(top) => (Top::Fresh(top), depth),
-        None => (Top::Empty, 0),
+        None => corrupt("an index rewritten to nothing"),
     }
 }
 
@@ -121,63 +117,43 @@ fn node<M: Memory>(
     view: &Pages<'_, M>,
     (page, level): (PageId, u8),
     changes: &[Change],
-    freed: &mut Vec<PageId>,
 ) -> Outcome {
     if level == 0 {
-        return leaf_node(view, page, changes, freed);
+        return leaf_node(view, page, changes);
     }
-    let results = descend(view, (page, level), changes, freed);
+    let results = descend(view, (page, level), changes);
     if results.iter().all(|(_, r)| matches!(r, Outcome::Same(_))) {
         Outcome::Same(kept_node(page, results))
     } else {
-        Outcome::Replaced(relist(view, page, results, freed))
+        Outcome::Replaced(relist(view, page, results))
     }
 }
 
 /// Plans `changes` in the leaf at `page`.
-fn leaf_node<M: Memory>(
-    view: &Pages<'_, M>,
-    page: PageId,
-    changes: &[Change],
-    freed: &mut Vec<PageId>,
-) -> Outcome {
+fn leaf_node<M: Memory>(view: &Pages<'_, M>, page: PageId, changes: &[Change]) -> Outcome {
     let read = |offset, buf: &mut [u8]| read_into(view, page, offset, buf);
     match leaf::update(Some(&read), changes) {
-        leaf::Update::InPlace {
-            writes,
-            first,
-            delta,
-        } => Outcome::Same(Kept {
+        leaf::Update::InPlace { writes, delta } => Outcome::Same(Kept {
             page,
-            first,
             delta,
             work: Work::Leaf(writes),
         }),
-        leaf::Update::Replace(images) => Outcome::Replaced(fresh_leaves(Some(page), images, freed)),
+        leaf::Update::Replace(images) => Outcome::Replaced(fresh_leaves(Some(page), images)),
     }
 }
 
 /// An internal node whose changed children all stay on their pages.
 fn kept_node(page: PageId, results: Vec<(usize, Outcome)>) -> Kept {
-    let mut first = None;
-    let mut delta = 0;
     let kids: Vec<(usize, Kept)> = results
         .into_iter()
         .filter_map(|(i, r)| match r {
             Outcome::Same(k) => Some((i, k)),
             Outcome::Replaced(_) => None,
         })
-        .inspect(|(i, k)| {
-            delta += k.delta;
-            if *i == 0 {
-                first = k.first;
-            }
-        })
         .collect();
     Kept {
         page,
-        first,
-        delta,
+        delta: kids.iter().map(|(_, k)| k.delta).sum(),
         work: Work::Node(kids),
     }
 }
@@ -187,7 +163,6 @@ fn relist<M: Memory>(
     view: &Pages<'_, M>,
     page: PageId,
     results: Vec<(usize, Outcome)>,
-    freed: &mut Vec<PageId>,
 ) -> Vec<Fresh> {
     let mut next: Vec<Kid> = children(view, page).into_iter().map(Kid::Old).collect();
     for (i, result) in results.into_iter().rev() {
@@ -198,7 +173,6 @@ fn relist<M: Memory>(
         match result {
             Outcome::Same(kept) => {
                 let child = Child {
-                    first: kept.first.unwrap_or(old.first),
                     count: shifted(old.count, kept.delta),
                     ..old
                 };
@@ -211,7 +185,7 @@ fn relist<M: Memory>(
             }
         }
     }
-    pack(Some(page), next, freed)
+    pack(Some(page), next)
 }
 
 /// Hands each child of the internal node at `page` the changes that fall in it; returns what
@@ -220,7 +194,6 @@ fn descend<M: Memory>(
     view: &Pages<'_, M>,
     (page, level): (PageId, u8),
     changes: &[Change],
-    freed: &mut Vec<PageId>,
 ) -> Vec<(usize, Outcome)> {
     let n = node_len(view, page);
     let mut results = Vec::new();
@@ -232,22 +205,16 @@ fn descend<M: Memory>(
         let split = bound.map_or(rest.len(), |b| rest.partition_point(|c| c.key < b));
         let (mine, later) = rest.split_at(split.max(1));
         rest = later;
-        results.push((
-            i,
-            node(view, (page_at(view, page, i), level - 1), mine, freed),
-        ));
+        results.push((i, node(view, (page_at(view, page, i), level - 1), mine)));
     }
     results
 }
 
-/// Fresh leaves for `images`, the first on `page`; `page` is freed when there are none.
-fn fresh_leaves(
-    page: Option<PageId>,
-    images: Vec<leaf::Image>,
-    freed: &mut Vec<PageId>,
-) -> Vec<Fresh> {
+/// Fresh leaves for `images`, the first on `page`. A rewrite never empties a leaf: a leaf is
+/// rewritten only for a change that is not a decrement, and that leaves its posting.
+fn fresh_leaves(page: Option<PageId>, images: Vec<leaf::Image>) -> Vec<Fresh> {
     if images.is_empty() {
-        freed.extend(page);
+        corrupt("an index leaf emptied by a rewrite");
     }
     let mut reuse = page;
     images
@@ -261,13 +228,8 @@ fn fresh_leaves(
         .collect()
 }
 
-/// Internal nodes for `kids`, packed evenly, the first on `page`; `page` is freed when there are
-/// none.
-fn pack(page: Option<PageId>, kids: Vec<Kid>, freed: &mut Vec<PageId>) -> Vec<Fresh> {
-    if kids.is_empty() {
-        freed.extend(page);
-        return Vec::new();
-    }
+/// Internal nodes for `kids` (some), packed evenly, the first on `page`.
+fn pack(page: Option<PageId>, kids: Vec<Kid>) -> Vec<Fresh> {
     let parts = kids.len().div_ceil(FANOUT);
     let per = kids.len().div_ceil(parts);
     let mut reuse = page;

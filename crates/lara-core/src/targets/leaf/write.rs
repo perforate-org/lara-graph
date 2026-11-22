@@ -51,11 +51,7 @@ pub(super) fn in_place(leaf: &Leaf<'_>, touched: &[Touched]) -> Option<Update> {
         .map(|e| i64::from(e.total))
         .sum::<i64>()
         - touched.iter().map(|t| i64::from(t.old.total)).sum::<i64>();
-    Some(Update::InPlace {
-        writes,
-        first: new_first(leaf, &placed),
-        delta,
-    })
+    Some(Update::InPlace { writes, delta })
 }
 
 /// Each replacement's table entries after placing its slots (its own slot when it may keep it,
@@ -113,19 +109,6 @@ fn table_writes(leaf: &Leaf<'_>, placed: &[(usize, Vec<Entry>)], segments: usize
     }
     table.extend((next..leaf.len()).flat_map(raw));
     alloc::vec![(table_end(from), table)]
-}
-
-/// The leaf's new first key, when its first segment was replaced: that of the first segment left.
-fn new_first(leaf: &Leaf<'_>, placed: &[(usize, Vec<Entry>)]) -> Option<(u32, u32)> {
-    placed.first().filter(|p| p.0 == 0)?;
-    let mut replaced = placed.iter().peekable();
-    let first = (0..leaf.len())
-        .find_map(|i| match replaced.next_if(|p| p.0 == i) {
-            Some((_, entries)) => entries.first().map(|e| e.first),
-            None => leaf.first(i),
-        })
-        .unwrap_or_else(|| corrupt("index leaf"));
-    Some(first)
 }
 
 /// A slot's capacity for `len` coded bytes: room for a few more postings.

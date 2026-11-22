@@ -89,12 +89,12 @@ impl<M: Memory> Graph<M> {
 
     /// The index changes the next step's moves make, and their plan with its pages reserved.
     fn plan_index(&mut self, bucket: &Bucket) -> Result<(Vec<Change>, Option<Plan>), Error> {
-        let Some(end) = indexed(bucket) else {
+        if indexed(bucket).is_none() {
             return Ok((Vec::new(), None));
-        };
+        }
         let planned: Vec<Change> = compact::preview(bucket.slots, &self.edges)
             .iter()
-            .flat_map(|m| moved(m.target(), (m.from(), m.to()), end))
+            .flat_map(|m| moved(m.target(), (m.from(), m.to())))
             .collect();
         if planned.is_empty() {
             return Ok((planned, None));
@@ -131,13 +131,13 @@ impl<M: Memory> Graph<M> {
 /// that the planned index changes are the right ones.
 fn verify(bucket: &Bucket, step: &compact::Step, planned: &[Change]) {
     let stays_paged = matches!(step.outcome, Outcome::Bucket(Descriptor::Paged(_)));
-    let Some(end) = indexed(bucket).filter(|_| stays_paged) else {
+    if indexed(bucket).is_none() || !stays_paged {
         return;
-    };
+    }
     let expected: Vec<Change> = step
         .moves
         .iter()
-        .flat_map(|m| moved(m.target(), (m.from(), m.to()), end))
+        .flat_map(|m| moved(m.target(), (m.from(), m.to())))
         .collect();
     if expected != planned {
         corrupt("compaction moved other edges than it previewed");

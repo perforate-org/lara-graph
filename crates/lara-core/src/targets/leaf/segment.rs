@@ -257,11 +257,11 @@ impl Entry {
         self.scan(&self.padded(read), |p, _| f(p));
     }
 
-    /// Applies `changes` (sorted, all to postings it holds) by rewriting their counts in place:
-    /// the code's changed bytes (from the slot's start) and the entry with its new total, or
-    /// `None` when a change names a posting it lacks or a count outgrows its width. A count
-    /// that reaches zero stays until the segment is rewritten.
-    pub(super) fn patch(
+    /// Lowers the counts of postings it holds by `changes` (sorted, all decrements) in place: the
+    /// code's changed bytes (from the slot's start) and the entry with its new total, or `None`
+    /// when a change names a posting it lacks. A lower count always fits its field; one that
+    /// reaches zero stays until the segment is rewritten.
+    pub(super) fn lower(
         &self,
         read: Read<'_>,
         changes: &[Change],
@@ -278,13 +278,11 @@ impl Entry {
         if found.len() != changes.len() {
             return None;
         }
-        let limit = (1u64 << self.c) - 1;
         let mut total = i64::from(self.total);
         let (mut low, mut high) = (usize::MAX, 0);
         for (&(at, count), c) in found.iter().zip(changes) {
             let next = u64::try_from(i64::from(count) + c.delta)
-                .ok()
-                .filter(|&n| n <= limit)?;
+                .unwrap_or_else(|_| corrupt("an index count below zero"));
             set_bits(&mut code, at, self.c, next);
             total += c.delta;
             low = low.min(at / 8);

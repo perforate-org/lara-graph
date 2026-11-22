@@ -8,6 +8,7 @@
 
 use super::{Graph, reserved};
 use crate::bucket;
+use crate::corrupt::corrupt;
 use crate::descriptor::Descriptor;
 use crate::id::{Position, VertexId};
 use crate::memory::Memory;
@@ -69,13 +70,12 @@ impl<M: Memory> Graph<M> {
                 self.index_apply(None, &changes)
             }
             Some(before) if before < end => {
-                if let Some(b) = batch.filter(|b| b.at == at) {
-                    // Planned before the insert, with its pages reserved.
-                    Index::of(reserved(targets::commit(&mut self.edges, *b.plan)))
-                } else {
-                    let changes = self.block_changes(&bucket.slots, before..end);
-                    self.index_apply(root, &changes)
-                }
+                // Only an append completes a block, and its batch was planned before the insert
+                // with its pages reserved.
+                let b = batch
+                    .filter(|b| b.at == at)
+                    .unwrap_or_else(|| corrupt("a completed block without its planned batch"));
+                Index::of(reserved(targets::commit(&mut self.edges, *b.plan)))
             }
             Some(_) if at.index() < end => self.index_apply(root, &[change(target, at, 1)]),
             Some(_) => bucket.index,
@@ -143,10 +143,11 @@ impl<M: Memory> Graph<M> {
     pub(super) fn rank_to(&self, b: &Bucket, t: VertexId, p: Position) -> u32 {
         let view = self.edges.pages();
         let (low, before) = match indexed(b) {
-            Some(end) => {
-                // The index counts whole blocks before `p` (all of them past the end); the rest
-                // is scanned.
-                let block = p.index().min(end) / BLOCK;
+            Some(_) => {
+                // The index counts the whole blocks before `p`'s, which all lie below the
+                // indexed end (`p` is below the bucket's end, so its block is at most the last);
+                // the rest of `p`'s block is scanned.
+                let block = p.index() / BLOCK;
                 let before = b.index.tree().map_or(0, |root| {
                     targets::count_before(&view, root, (t.index(), block))
                         - targets::count_before(&view, root, (t.index(), 0))
@@ -216,14 +217,11 @@ pub(super) fn change(target: VertexId, at: Position, delta: i64) -> Change {
     }
 }
 
-/// The index changes of compaction moving an edge to `target` from `from` to `to` in a bucket
-/// whose index covers positions below `end`.
-pub(super) fn moved(target: VertexId, (from, to): (Position, Position), end: u32) -> Vec<Change> {
-    [(from, -1), (to, 1)]
-        .into_iter()
-        .filter(|(at, _)| at.index() < end)
-        .map(|(at, delta)| change(target, at, delta))
-        .collect()
+/// The index changes of compaction moving an edge to `target` from `from` to `to`. Both are
+/// indexed positions: compaction never merges a bucket's last page, which holds its unindexed
+/// last block, and moves only into earlier pages.
+pub(super) fn moved(target: VertexId, (from, to): (Position, Position)) -> [Change; 2] {
+    [change(target, from, -1), change(target, to, 1)]
 }
 
 #[cfg(feature = "bench-internals")]

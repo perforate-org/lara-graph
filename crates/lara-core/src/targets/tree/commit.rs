@@ -13,11 +13,11 @@ use alloc::vec::Vec;
 
 type Key = (u32, u32);
 
-/// A node that stays on its page: what changes in it, its new first key if that changed, and the
-/// change in its total.
+/// A node that stays on its page: what changes in it, and the change in its total. Its parent's
+/// key for it stays: routing only ever sends a node keys at or above that key, so whatever the
+/// changes do to its first key, the parent's stays a valid lower bound.
 pub(super) struct Kept {
     pub(super) page: PageId,
-    pub(super) first: Option<Key>,
     pub(super) delta: i64,
     pub(super) work: Work,
 }
@@ -72,8 +72,6 @@ impl Kid {
 /// What a batch of changes does to the tree.
 pub(crate) struct Plan {
     pub(super) top: Top,
-    /// Pages whose nodes emptied.
-    pub(super) freed: Vec<PageId>,
     /// The depth of the tree the plan writes.
     pub(super) depth: u8,
 }
@@ -85,15 +83,13 @@ pub(super) enum Top {
     Kept(Root, Kept),
     /// A new root, written in full (with any new levels above the old one).
     Fresh(Fresh),
-    /// Every posting went.
-    Empty,
 }
 
 impl Plan {
     /// The pages committing the plan allocates.
     pub(crate) fn pages(&self) -> u32 {
         match &self.top {
-            Top::Unchanged(_) | Top::Empty => 0,
+            Top::Unchanged(_) => 0,
             Top::Kept(_, kept) => kept_pages(kept),
             Top::Fresh(fresh) => fresh_pages(fresh),
         }
@@ -138,11 +134,7 @@ pub(crate) fn commit<M: Memory>(
             page: write_fresh(store, fresh)?.page,
             depth: plan.depth,
         }),
-        Top::Empty => None,
     };
-    for page in plan.freed {
-        store.release(Extent::whole(page));
-    }
     Ok(root.map(|r| shrink(store, r)))
 }
 
@@ -157,7 +149,7 @@ fn write_kept<M: Memory>(store: &PageStore<M>, kept: &Kept) {
             for (i, kid) in kids {
                 write_kept(store, kid);
                 let count = shifted(count_at(&store.pages(), kept.page, *i), kid.delta);
-                write_child(store, kept.page, *i, count, kid.first);
+                write_child(store, kept.page, *i, count);
             }
         }
     }
