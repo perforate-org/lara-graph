@@ -371,9 +371,56 @@ fn assert_matches_model<M: Memory>(g: &Graph<M>, model: &Model, n: u32) {
                     expected,
                     "vertex {x} {label:?} {side:?}"
                 );
+                assert_other_reads(g, (v(x), label, side), &expected);
             }
         }
     }
+}
+
+/// Descending visits, windows of 7 positions both ways, and positional reads agree with the
+/// ascending scan `expected`.
+fn assert_other_reads<M: Memory>(
+    g: &Graph<M>,
+    (x, label, side): (VertexId, Label, Side),
+    expected: &[(u32, u32)],
+) {
+    let mut down = Vec::new();
+    g.visit_neighbors(x, label, side, Order::Descending, |e| {
+        down.push((e.position().index(), e.target().index()));
+        ControlFlow::<()>::Continue(())
+    })
+    .unwrap();
+    let mut reversed = expected.to_vec();
+    reversed.reverse();
+    assert_eq!(down, reversed, "descending");
+    let span = NonZeroU32::new(7).unwrap();
+    for (order, want) in [
+        (Order::Ascending, expected),
+        (Order::Descending, &reversed[..]),
+    ] {
+        let mut seen = Vec::new();
+        let mut cursor = Some(Cursor::first(order, span));
+        while let Some(at) = cursor {
+            cursor = g
+                .visit_window(x, label, side, at, |e| {
+                    seen.push((e.position().index(), e.target().index()));
+                })
+                .unwrap();
+        }
+        assert_eq!(seen, want, "{order:?} windows");
+    }
+    let stored = g.degree(x, label, side).unwrap() + g.holes(x, label, side).unwrap();
+    // Every position and two past the end, highest first, with a repeat.
+    let positions: Vec<Position> = (0..stored + 2).rev().chain([0]).map(p).collect();
+    let mut targets = Vec::new();
+    g.targets_at(x, label, side, &positions, &mut targets)
+        .unwrap();
+    let live: BTreeMap<u32, u32> = expected.iter().copied().collect();
+    let want: Vec<Option<VertexId>> = positions
+        .iter()
+        .map(|at| live.get(&at.index()).map(|&t| v(t)))
+        .collect();
+    assert_eq!(targets, want, "targets_at");
 }
 
 /// Compacts a bucket until done; a bounded number of steps must get there.

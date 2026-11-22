@@ -37,6 +37,66 @@ impl Label {
     }
 }
 
+/// Which way a read goes through a bucket's positions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Order {
+    /// Lowest position first: insertion order under [`Placement::Append`].
+    Ascending,
+    /// Highest position first: newest first under [`Placement::Append`].
+    Descending,
+}
+
+/// A window of a bucket's positions for [`Graph::visit_window`](crate::Graph::visit_window):
+/// `span` positions from `from` on in `order`, holes included, so a window's cost is bounded
+/// whatever was removed. Positions are stable, so a cursor stays valid until the bucket is
+/// compacted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Cursor {
+    order: Order,
+    from: Option<Position>,
+    span: core::num::NonZeroU32,
+}
+
+impl Cursor {
+    /// The first window: from the lowest position ascending, or the highest descending.
+    #[must_use]
+    pub const fn first(order: Order, span: core::num::NonZeroU32) -> Self {
+        Self {
+            order,
+            from: None,
+            span,
+        }
+    }
+
+    /// The window starting at `from` (included).
+    #[must_use]
+    pub const fn at(order: Order, from: Position, span: core::num::NonZeroU32) -> Self {
+        Self {
+            order,
+            from: Some(from),
+            span,
+        }
+    }
+
+    /// The direction.
+    #[must_use]
+    pub const fn order(&self) -> Order {
+        self.order
+    }
+
+    /// The first position, or `None` for the bucket's first in [`Self::order`].
+    #[must_use]
+    pub const fn from(&self) -> Option<Position> {
+        self.from
+    }
+
+    /// Positions per window.
+    #[must_use]
+    pub const fn span(&self) -> core::num::NonZeroU32 {
+        self.span
+    }
+}
+
 /// Where an insert may put an edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Placement {

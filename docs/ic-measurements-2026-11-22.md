@@ -153,3 +153,27 @@ to each read.
 **Insert is about 1.25× ic-stable-lara per half.** That is ~5.7 K for a half going to a new
 vertex, against ~4.5 K for one-sided inserts at 4096 edges. What remains is mostly computation,
 not memory calls.
+
+## Third round: reads in either order, windows and chosen positions
+
+| Scenario | Before | Now |
+| --- | ---: | ---: |
+| 51 visits, 1024-edge run / 65536 paged | 1.68 / 88.5 M | **1.35 / 66.9 M** |
+| 51 visits of 65536, descending | — | 79.1 M |
+| All 65536 in descending windows of 256 positions | — | 5.08 M (~78 per edge: a lookup and leaf list per window) |
+| 256 scattered positions of 65536 (`targets_at`) | — | 235 K |
+| 51 `neighbors` of 1024 | 2.94 M | 2.84 M |
+| `counterpart` into a hub of 4096 / satellite detach of 65536 | 146 K / 2.19 M | 138 K / 2.12 M |
+
+**Three loops over the same bytes.** The visitor, the search (`find`) and the collecting read
+(`read`) each run their own decode loop.
+- One shared loop was always slower for one of the three uses.
+- An `enumerate` + `try_for_each` loop, in a function of its own per direction, is the fastest
+  visitor: ~26 instructions per edge, against ic-stable-lara's ~34.
+- A `zip` over positions is the fastest search and collecting read.
+
+As in the second round, the IC instruction counts follow codegen more than logic.
+
+**`targets_at` choice.** It reads a page's wanted range in one read when the positions are dense.
+When there are more than 16 slots per wanted position, it reads each slot instead: 3.09 M fell to
+235 K.

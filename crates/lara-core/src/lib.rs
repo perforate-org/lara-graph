@@ -43,6 +43,7 @@ pub use graph::{
     Compaction, CreateError, Detachment, Error, Graph, Memories, OpenError, Removal, Step,
 };
 pub use id::{
-    Edge, EdgeRef, Halves, Label, Move, Placement, Position, Progress, Side, VertexId, VertexState,
+    Cursor, Edge, EdgeRef, Halves, Label, Move, Order, Placement, Position, Progress, Side,
+    VertexId, VertexState,
 };
 pub use memory::{GrowFailed, Memory, PAGE_SIZE, VecMemory};

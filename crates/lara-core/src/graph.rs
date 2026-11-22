@@ -1,12 +1,10 @@
 //! The graph: labeled buckets of edge halves per vertex and side, over five memories.
 
-use crate::bucket::{self, Window};
+use crate::bucket;
 use crate::compact::{self, Outcome};
 use crate::corrupt::corrupt;
 use crate::descriptor::Descriptor;
-use crate::id::{
-    Edge, EdgeRef, Halves, Label, Move, Position, Progress, Side, VertexId, VertexState,
-};
+use crate::id::{Edge, EdgeRef, Halves, Label, Move, Progress, Side, VertexId, VertexState};
 use crate::labels::{self, BucketKey, BucketList, Lookup};
 use crate::memory::{GrowFailed, Memory, Region, WriteError};
 use crate::page_store::{self, PageStore};
@@ -14,7 +12,6 @@ use crate::units::{ByteOffset, Overflow};
 use crate::vertex::{RECORD_BYTES, Record};
 use alloc::vec::Vec;
 use core::fmt;
-use core::ops::ControlFlow;
 
 const MAGIC: [u8; 3] = *b"LGV";
 const VERSION: u8 = 4;
@@ -305,24 +302,6 @@ impl<M: Memory> Graph<M> {
         Ok(())
     }
 
-    /// Calls `f` with each live edge of `v`'s `(label, side)` bucket in position order, until
-    /// it breaks; returns the break value. Reads like [`Self::neighbors`] without collecting.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnknownVertex`].
-    pub fn visit_neighbors<B>(
-        &self,
-        v: VertexId,
-        label: Label,
-        side: Side,
-        f: impl FnMut(Edge) -> ControlFlow<B>,
-    ) -> Result<Option<B>, Error> {
-        Ok(self.bucket(v, BucketKey { label, side })?.and_then(|d| {
-            bucket::visit(&d, &self.edges.pages(), Position::new(0), Window::Page, f)
-        }))
-    }
-
     /// The vertex at the other end of `half`, if it is live.
     ///
     /// # Errors
@@ -484,6 +463,7 @@ impl core::error::Error for OpenError {}
 mod detach;
 mod insert;
 mod pair;
+mod read;
 
 use pair::key_of;
 #[cfg(test)]

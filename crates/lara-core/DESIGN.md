@@ -187,6 +187,21 @@ Reading one bucket costs a vertex read, a list read and one data read (index and
 `Graph::visit_neighbors` reads without collecting, at about 30 instructions per edge on the IC.
 `neighbors`, which fills a `Vec`, costs about twice that (`docs/ic-measurements-2026-11-22.md`).
 
+## Reads
+
+Every read walks a range of positions in either `Order`, and reads pages through the index,
+skipping dead pages.
+
+- **`visit_neighbors`** visits a whole bucket, ascending or descending. Descending is newest
+  first under `Placement::Append`.
+- **`visit_window`** reads a `Cursor` window: `span` positions from a start, holes included. Each
+  call therefore reads at most `span` slots, however many edges were removed, and returns the next
+  cursor. Positions are stable, so a cursor holds until the bucket is compacted. A descending
+  start past the end is clamped to the last position.
+- **`targets_at`** returns the targets at chosen positions, in the order given. It reads each
+  touched run or page once, from its first wanted position to its last. Gleaph uses this for the
+  second phase of property-first expansion.
+
 ## Not yet
 
 - A sorted target index for paged buckets, so `counterpart`, detaching a hub's neighbour and
@@ -194,7 +209,9 @@ Reading one bucket costs a vertex read, a list read and one data read (index and
 - Detaching many vertices at once with one pass over each shared hub.
 - Closing the insert gap with ic-stable-lara (~1.25× per half): the insert path still allocates
   several `Vec`s (`docs/ic-stable-lara-adoption-2026-11-22.md`).
-- Descending scans, cursor windows, batch reads of chosen positions, and inline edge properties
-  stored by position beside the slots (`docs/ic-stable-lara-adoption-2026-11-22.md`).
+- Inline edge properties stored by position beside the slots
+  (`docs/ic-stable-lara-adoption-2026-11-22.md`).
+- Descending scans of a paged bucket read its whole leaf list; a reverse index walk would read
+  only the pages wanted.
 - Settling the constants (descriptor size, inline slots, page threshold) by measuring on the IC
   with canbench (`crates/lara-core-bench`).

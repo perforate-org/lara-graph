@@ -12,13 +12,18 @@
 
 use crate::corrupt::corrupt;
 use crate::descriptor::{Descriptor, PAGE_SLOTS, Paged, Run, SLOT_BYTES, Slot, TINY_SLOTS, Tiny};
-use crate::id::{Edge, Placement, Position, VertexId};
+use crate::id::{Placement, Position, VertexId};
 use crate::memory::{Memory, WriteError};
 use crate::page_store::{ByteClass, PageStore, Pages};
 use crate::paged::{self, Leaf, TombstoneChange};
 use crate::units::{ByteOffset, Overflow};
 use alloc::vec::Vec;
-use core::ops::ControlFlow;
+
+mod positions;
+mod scan;
+
+pub(crate) use positions::read_positions;
+pub(crate) use scan::{Span, Window, find, read, visit};
 
 /// Pages one [`insert`] can take from the store. The worst case is a paged bucket whose index
 /// deepens: a data page, a new top and the fresh nodes on the path below it (two at most, as
@@ -128,163 +133,6 @@ pub(crate) fn get<M: Memory>(
         Slot::Live(target) => Some(target),
         Slot::Tombstone => None,
     }
-}
-
-/// How much one read of a bucket covers.
-#[derive(Clone, Copy)]
-pub(crate) enum Window {
-    /// A whole run or data page: for scans that read everything.
-    Page,
-    /// 128 slots: for searches that usually stop early.
-    Short,
-}
-
-impl Window {
-    const fn slots(self) -> u32 {
-        match self {
-            Self::Page => PAGE_SLOTS,
-            Self::Short => 128,
-        }
-    }
-}
-
-/// Calls `f` with each live edge at `from` or later, in position order, until it breaks.
-/// Reads the descriptor and page data only, skipping pages that are all tombstones.
-pub(crate) fn visit<M: Memory, B>(
-    d: &Descriptor,
-    view: &Pages<'_, M>,
-    from: Position,
-    window: Window,
-    mut f: impl FnMut(Edge) -> ControlFlow<B>,
-) -> Option<B> {
-    scan(d, view, from.index(), window.slots(), |first, bytes| {
-        for (at, slot) in (first..).zip(Slot::decode_all(bytes)) {
-            if let Slot::Live(target) = slot {
-                f(Edge::new(Position::new(at), target))?;
-            }
-        }
-        ControlFlow::Continue(())
-    })
-}
-
-/// Appends the bucket's live edges to `out`, in position order: one read for a run; for a
-/// paged bucket, the index and each page that is not all tombstones.
-pub(crate) fn read<M: Memory>(d: &Descriptor, view: &Pages<'_, M>, out: &mut Vec<Edge>) {
-    out.reserve(usize::try_from(d.live()).unwrap_or(0));
-    visit(d, view, Position::new(0), Window::Page, |e| {
-        out.push(e);
-        ControlFlow::<()>::Continue(())
-    });
-}
-
-/// The first live edge at `from` or later that `wanted` accepts; `wanted` sees each live edge
-/// in position order until then. Reads from `from` up to it, a short window at a time.
-pub(crate) fn find<M: Memory>(
-    d: &Descriptor,
-    view: &Pages<'_, M>,
-    from: Position,
-    mut wanted: impl FnMut(Edge) -> bool,
-) -> Option<Edge> {
-    visit(d, view, from, Window::Short, |e| {
-        if wanted(e) {
-            ControlFlow::Break(e)
-        } else {
-            ControlFlow::Continue(())
-        }
-    })
-}
-
-/// Feeds the bucket's stored slots from `from` on, as bytes with the position of the first, to
-/// `visit` until it breaks: the tiny slots, or reads of at most `window` slots of the run and of
-/// each data page that is not all tombstones.
-fn scan<M: Memory, T>(
-    d: &Descriptor,
-    view: &Pages<'_, M>,
-    from: u32,
-    window: u32,
-    mut visit: impl FnMut(u32, &[u8]) -> ControlFlow<T>,
-) -> Option<T> {
-    // One buffer serves every read: sized by the first, never zeroed again.
-    let mut buf = Vec::new();
-    let reads = Reads { view, from, window };
-    let flow = match d {
-        Descriptor::Tiny(tiny) => {
-            let mut bytes = [0u8; TINY_SLOTS * 4];
-            let encoded = tiny.slots().iter().flat_map(|s| s.encode());
-            let len = bytes
-                .iter_mut()
-                .zip(encoded)
-                .map(|(dst, src)| *dst = src)
-                .count();
-            let slots = bytes.get(..len).unwrap_or(&[]);
-            let skip = byte_len(from).min(slots.len());
-            visit(from, slots.get(skip..).unwrap_or(&[]))
-        }
-        Descriptor::Run(run) => reads.span(
-            &mut buf,
-            &mut visit,
-            run.extent.offset(),
-            0,
-            u32::from(run.stored),
-        ),
-        Descriptor::Paged(paged) => {
-            paged::visit_leaves(view, paged, from / PAGE_SLOTS, |number, leaf| {
-                let first = number * PAGE_SLOTS;
-                let count = (paged.stored - first).min(PAGE_SLOTS);
-                match leaf.page.filter(|_| u32::from(leaf.tombstones) < count) {
-                    Some(page) => reads.span(&mut buf, &mut visit, page.offset(), first, count),
-                    None => ControlFlow::Continue(()),
-                }
-            })
-        }
-    };
-    match flow {
-        ControlFlow::Break(found) => Some(found),
-        ControlFlow::Continue(()) => None,
-    }
-}
-
-/// Where one [`scan`] reads from.
-struct Reads<'v, 'm, M: Memory> {
-    view: &'v Pages<'m, M>,
-    from: u32,
-    window: u32,
-}
-
-impl<M: Memory> Reads<'_, '_, M> {
-    /// Feeds `count` slots at `at`, the first of them at position `first`, from `from` on.
-    fn span<T>(
-        &self,
-        buf: &mut Vec<u8>,
-        visit: &mut impl FnMut(u32, &[u8]) -> ControlFlow<T>,
-        at: ByteOffset,
-        first: u32,
-        count: u32,
-    ) -> ControlFlow<T> {
-        let mut lo = self.from.saturating_sub(first).min(count);
-        while lo < count {
-            let n = (count - lo).min(self.window);
-            visit(first + lo, fill(self.view, buf, slot_offset(at, lo), n))?;
-            lo += n;
-        }
-        ControlFlow::Continue(())
-    }
-}
-
-/// Reads `count` slots at `at` into `buf`, growing it only when it is too short.
-fn fill<'b, M: Memory>(
-    view: &Pages<'_, M>,
-    buf: &'b mut Vec<u8>,
-    at: ByteOffset,
-    count: u32,
-) -> &'b [u8] {
-    let len = byte_len(count);
-    if buf.len() < len {
-        buf.resize(len, 0);
-    }
-    let bytes = buf.get_mut(..len).unwrap_or(&mut []);
-    view.read_into(at, bytes);
-    bytes
 }
 
 // --- runs --------------------------------------------------------------------------------------
@@ -492,7 +340,46 @@ pub(crate) fn owned_extents<M: Memory>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::id::{Edge, Order};
     use crate::memory::VecMemory;
+    use core::ops::ControlFlow;
+
+    /// Short windows read a span in either order, across pages and with holes.
+    #[test]
+    fn short_windows_read_spans_both_ways() {
+        let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+        let mut d = Descriptor::EMPTY;
+        let total = PAGE_SLOTS + 300;
+        for i in 0..total {
+            d = insert(d, VertexId::new(i), Placement::Append, &mut store)
+                .unwrap()
+                .0;
+        }
+        for at in (0..total).step_by(7) {
+            d = remove(d, Position::new(at), &store).unwrap().0;
+        }
+        let (low, high) = (900, PAGE_SLOTS + 200);
+        let live: Vec<u32> = (low..high).filter(|at| at % 7 != 0).collect();
+        for order in [Order::Ascending, Order::Descending] {
+            let mut seen = Vec::new();
+            visit(
+                &d,
+                &store.pages(),
+                Span::new(low, high, order),
+                Window::Short,
+                |e| {
+                    assert_eq!(e.target().index(), e.position().index());
+                    seen.push(e.position().index());
+                    ControlFlow::<()>::Continue(())
+                },
+            );
+            let mut want = live.clone();
+            if order == Order::Descending {
+                want.reverse();
+            }
+            assert_eq!(seen, want, "{order:?}");
+        }
+    }
 
     /// `find` and `visit` start at `from` in every bucket form, including past a page boundary.
     #[test]
