@@ -1,0 +1,44 @@
+# qlty runs code-smell analysis (duplication and complexity) only; clippy and rustfmt run through
+# cargo directly (`just gate`). The gate fails on any finding, so these thresholds are the rule.
+config_version = "0"
+
+# Only `lara-core` is gated. `lara-graph` and `dgap` are frozen as the oracle and the paper's
+# reference implementation; the rest is paper, experiments and generated output.
+exclude_patterns = [
+  "**/target/**",
+  "crates/lara/**",
+  "crates/lara-graph-macros/**",
+  "crates/dgap/**",
+  "crates/benches/**",
+  "dgap/**",
+  "experiments/**",
+  "charged-ieee/**",
+  "paper/**",
+  "docs/**",
+  "plans/**",
+]
+
+# Integration tests; unit tests inside `src` are analyzed like the code they test.
+test_patterns = ["crates/*/tests/**"]
+
+[smells]
+mode = "comment"
+
+# [DRY] Defaults are 64 nodes and mass 15; on `lara-graph` they reported nothing, while these
+# values surfaced six real copies. Token similarity cannot see the same algorithm written over
+# different types; that kind of duplication is prevented by design (one labeled core), not here.
+[smells.duplication]
+nodes_threshold = 30
+
+[smells.identical_code]
+threshold = 10
+
+[smells.similar_code]
+threshold = 10
+
+# Small functions are what keep the rest reviewable. Defaults are 18 and 5.
+[smells.function_complexity]
+threshold = 12
+
+[smells.nested_control_flow]
+threshold = 4

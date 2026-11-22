@@ -1,0 +1,128 @@
+pub mod lara_core
+pub enum lara_core::CreateError
+pub lara_core::CreateError::NotEmpty
+pub lara_core::CreateError::OutOfMemory(lara_core::GrowFailed)
+impl core::error::Error for lara_core::CreateError
+impl core::fmt::Display for lara_core::CreateError
+pub fn lara_core::CreateError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum lara_core::Error
+pub lara_core::Error::AddressSpaceExhausted
+pub lara_core::Error::Detaching(lara_core::VertexId)
+pub lara_core::Error::NotDetaching(lara_core::VertexId)
+pub lara_core::Error::OutOfMemory(lara_core::GrowFailed)
+pub lara_core::Error::TooManyBuckets(lara_core::VertexId)
+pub lara_core::Error::UnknownVertex(lara_core::VertexId)
+impl core::error::Error for lara_core::Error
+impl core::fmt::Display for lara_core::Error
+pub fn lara_core::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum lara_core::Halves
+pub lara_core::Halves::Pair
+pub lara_core::Halves::Pair::source: lara_core::EdgeRef
+pub lara_core::Halves::Pair::target: lara_core::EdgeRef
+pub lara_core::Halves::Single(lara_core::EdgeRef)
+impl lara_core::Halves
+pub const fn lara_core::Halves::source(&self) -> lara_core::EdgeRef
+pub const fn lara_core::Halves::target(&self) -> lara_core::EdgeRef
+pub enum lara_core::OpenError
+pub lara_core::OpenError::NotAGraph
+pub lara_core::OpenError::UnsupportedVersion(u8)
+impl core::error::Error for lara_core::OpenError
+impl core::fmt::Display for lara_core::OpenError
+pub fn lara_core::OpenError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum lara_core::Progress
+pub lara_core::Progress::Done
+pub lara_core::Progress::Remaining
+pub enum lara_core::Removal
+pub lara_core::Removal::Absent
+pub lara_core::Removal::Removed(lara_core::Halves)
+pub enum lara_core::Side
+pub lara_core::Side::In
+pub lara_core::Side::Out
+pub lara_core::Side::Undirected
+pub struct lara_core::Edge
+impl lara_core::Edge
+pub const fn lara_core::Edge::position(&self) -> lara_core::Position
+pub const fn lara_core::Edge::target(&self) -> lara_core::VertexId
+pub struct lara_core::EdgeRef
+impl lara_core::EdgeRef
+pub const fn lara_core::EdgeRef::label(&self) -> lara_core::Label
+pub const fn lara_core::EdgeRef::new(lara_core::VertexId, lara_core::Label, lara_core::Side, lara_core::Position) -> Self
+pub const fn lara_core::EdgeRef::position(&self) -> lara_core::Position
+pub const fn lara_core::EdgeRef::side(&self) -> lara_core::Side
+pub const fn lara_core::EdgeRef::vertex(&self) -> lara_core::VertexId
+pub struct lara_core::Graph<M: lara_core::Memory>
+impl<M: lara_core::Memory> lara_core::Graph<M>
+pub fn lara_core::Graph<M>::add_vertex(&mut self) -> core::result::Result<lara_core::VertexId, lara_core::Error>
+pub fn lara_core::Graph<M>::compact(&mut self, lara_core::VertexId, lara_core::Label, lara_core::Side) -> core::result::Result<lara_core::Compaction, lara_core::Error>
+pub fn lara_core::Graph<M>::counterpart(&self, lara_core::EdgeRef) -> core::result::Result<core::option::Option<lara_core::EdgeRef>, lara_core::Error>
+pub fn lara_core::Graph<M>::create(lara_core::Memories<M>) -> core::result::Result<Self, lara_core::CreateError>
+pub fn lara_core::Graph<M>::degree(&self, lara_core::VertexId, lara_core::Label, lara_core::Side) -> core::result::Result<u32, lara_core::Error>
+pub fn lara_core::Graph<M>::detach(&mut self, lara_core::VertexId) -> core::result::Result<(), lara_core::Error>
+pub fn lara_core::Graph<M>::detach_step(&mut self, lara_core::VertexId, core::num::nonzero::NonZeroU32) -> core::result::Result<lara_core::Detachment, lara_core::Error>
+pub fn lara_core::Graph<M>::edge(&self, lara_core::EdgeRef) -> core::result::Result<core::option::Option<lara_core::VertexId>, lara_core::Error>
+pub fn lara_core::Graph<M>::holes(&self, lara_core::VertexId, lara_core::Label, lara_core::Side) -> core::result::Result<u32, lara_core::Error>
+pub fn lara_core::Graph<M>::insert_directed(&mut self, lara_core::VertexId, lara_core::Label, lara_core::VertexId) -> core::result::Result<lara_core::Halves, lara_core::Error>
+pub fn lara_core::Graph<M>::insert_undirected(&mut self, lara_core::VertexId, lara_core::Label, lara_core::VertexId) -> core::result::Result<lara_core::Halves, lara_core::Error>
+pub fn lara_core::Graph<M>::labels(&self, lara_core::VertexId, lara_core::Side, &mut alloc::vec::Vec<lara_core::Label>) -> core::result::Result<(), lara_core::Error>
+pub fn lara_core::Graph<M>::neighbors(&self, lara_core::VertexId, lara_core::Label, lara_core::Side, &mut alloc::vec::Vec<lara_core::Edge>) -> core::result::Result<(), lara_core::Error>
+pub fn lara_core::Graph<M>::open(lara_core::Memories<M>) -> core::result::Result<Self, lara_core::OpenError>
+pub fn lara_core::Graph<M>::remove_edge(&mut self, lara_core::EdgeRef) -> core::result::Result<lara_core::Removal, lara_core::Error>
+pub fn lara_core::Graph<M>::vertex_count(&self) -> u32
+pub struct lara_core::GrowFailed
+impl lara_core::GrowFailed
+pub const fn lara_core::GrowFailed::current_pages(&self) -> u64
+pub const fn lara_core::GrowFailed::new(u64, u64) -> Self
+pub const fn lara_core::GrowFailed::requested_pages(&self) -> u64
+impl core::error::Error for lara_core::GrowFailed
+impl core::fmt::Display for lara_core::GrowFailed
+pub fn lara_core::GrowFailed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct lara_core::Label(_)
+impl lara_core::Label
+pub const fn lara_core::Label::get(self) -> u16
+pub const fn lara_core::Label::new(u16) -> Self
+pub struct lara_core::Memories<M>
+impl<M> lara_core::Memories<M>
+pub const fn lara_core::Memories<M>::new(M, M, M, M, M) -> Self
+pub struct lara_core::Move
+impl lara_core::Move
+pub const fn lara_core::Move::from(&self) -> lara_core::Position
+pub const fn lara_core::Move::target(&self) -> lara_core::VertexId
+pub const fn lara_core::Move::to(&self) -> lara_core::Position
+pub struct lara_core::Position(_)
+impl lara_core::Position
+pub const fn lara_core::Position::index(self) -> u32
+pub const fn lara_core::Position::new(u32) -> Self
+pub struct lara_core::Step<T>
+impl<T> lara_core::Step<T>
+pub fn lara_core::Step<T>::changes(&self) -> &[T]
+pub const fn lara_core::Step<T>::progress(&self) -> lara_core::Progress
+pub struct lara_core::VecMemory
+impl lara_core::VecMemory
+pub fn lara_core::VecMemory::new() -> Self
+impl lara_core::Memory for lara_core::VecMemory
+pub fn lara_core::VecMemory::grow(&self, u64) -> core::result::Result<u64, lara_core::GrowFailed>
+pub fn lara_core::VecMemory::read(&self, u64, &mut [u8])
+pub fn lara_core::VecMemory::size(&self) -> u64
+pub fn lara_core::VecMemory::write(&self, u64, &[u8])
+pub struct lara_core::VertexId(_)
+impl lara_core::VertexId
+pub const fn lara_core::VertexId::index(self) -> u32
+pub const fn lara_core::VertexId::new(u32) -> Self
+pub const lara_core::PAGE_SIZE: u64
+pub trait lara_core::Memory
+pub fn lara_core::Memory::grow(&self, u64) -> core::result::Result<u64, lara_core::GrowFailed>
+pub fn lara_core::Memory::read(&self, u64, &mut [u8])
+pub fn lara_core::Memory::size(&self) -> u64
+pub fn lara_core::Memory::write(&self, u64, &[u8])
+impl lara_core::Memory for lara_core::VecMemory
+pub fn lara_core::VecMemory::grow(&self, u64) -> core::result::Result<u64, lara_core::GrowFailed>
+pub fn lara_core::VecMemory::read(&self, u64, &mut [u8])
+pub fn lara_core::VecMemory::size(&self) -> u64
+pub fn lara_core::VecMemory::write(&self, u64, &[u8])
+impl<M: lara_core::Memory + ?core::marker::Sized> lara_core::Memory for &M
+pub fn &M::grow(&self, u64) -> core::result::Result<u64, lara_core::GrowFailed>
+pub fn &M::read(&self, u64, &mut [u8])
+pub fn &M::size(&self) -> u64
+pub fn &M::write(&self, u64, &[u8])
+pub type lara_core::Compaction = lara_core::Step<lara_core::Move>
+pub type lara_core::Detachment = lara_core::Step<lara_core::Halves>

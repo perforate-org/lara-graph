@@ -1,0 +1,13 @@
+# Thresholds for the lints enabled in `[workspace.lints]` (Cargo.toml).
+
+# Stricter than Gleaph (which allows one): any `bool` parameter is a two-variant enum without a
+# name. Predicates that *return* `bool` (`is_empty`) are unaffected.
+max-fn-params-bools = 0
+
+# Flags on a struct encode a state machine; model it as an enum or a typestate.
+max-struct-bools = 0
+
+# Tests may assert with `unwrap`/`expect`/indexing; library code may not.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-indexing-slicing-in-tests = true
