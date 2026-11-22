@@ -4,27 +4,31 @@ use super::pair::{Found, opposite, order};
 use super::{Detachment, Error, Graph, Step};
 use crate::bucket;
 use crate::corrupt::corrupt;
-use crate::id::{EdgeRef, Position, Progress, VertexId};
+use crate::id::{EdgeRef, Position, Progress, VertexId, VertexState};
 use crate::labels::{self, BucketKey};
 use crate::memory::Memory;
-use crate::vertex::{Record, State};
+use crate::vertex::Record;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::num::NonZeroU32;
 
 impl<M: Memory> Graph<M> {
-    /// Starts detaching `v`: from now on it takes no new edges, and [`Self::detach_step`]
-    /// removes its edges. Constant time; calling it again changes nothing.
+    /// Starts deleting `v` (DETACH DELETE): from now on it takes no new edges, and
+    /// [`Self::detach_step`] removes its edges, then marks it deleted. Constant time; calling it
+    /// again while it is detaching changes nothing.
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`].
+    /// [`Error::UnknownVertex`], or [`Error::Deleted`] if it is already deleted.
     pub fn detach(&mut self, v: VertexId) -> Result<(), Error> {
         let record = self.record(v)?;
+        if record.state == VertexState::Deleted {
+            return Err(Error::Deleted(v));
+        }
         self.write_record(
             v,
             Record {
-                state: State::Detaching,
+                state: VertexState::Detaching,
                 ..record
             },
         );
@@ -33,7 +37,8 @@ impl<M: Memory> Graph<M> {
 
     /// Removes up to `budget` of a detaching vertex's edges, both halves of each, and reports
     /// them. Between steps the graph is whole: every edge is either present at both ends or gone.
-    /// When `v` has no edges left it takes edges again and the step is [`Progress::Done`].
+    /// When `v` has no edges left it is [`VertexState::Deleted`] and the step is
+    /// [`Progress::Done`].
     ///
     /// Each edge costs a read of `v`'s next live entry and a scan of the neighbour's bucket up to
     /// the other half.
@@ -42,7 +47,7 @@ impl<M: Memory> Graph<M> {
     ///
     /// [`Error::UnknownVertex`], or [`Error::NotDetaching`] unless [`Self::detach`] was called.
     pub fn detach_step(&mut self, v: VertexId, budget: NonZeroU32) -> Result<Detachment, Error> {
-        if self.record(v)?.state != State::Detaching {
+        if self.record(v)?.state != VertexState::Detaching {
             return Err(Error::NotDetaching(v));
         }
         let mut removed = Vec::new();
@@ -52,19 +57,8 @@ impl<M: Memory> Graph<M> {
         let mut hints = BTreeMap::new();
         for _ in 0..budget.get() {
             let list = self.list(v)?;
-            let Some((index, key, descriptor)) = list
-                .and_then(|list| labels::first(&self.lists.pages(), Some(list)).map(|f| (list, f)))
-                .map(|(list, (key, descriptor))| {
-                    (
-                        Found {
-                            list,
-                            index: 0,
-                            descriptor,
-                        },
-                        key,
-                        descriptor,
-                    )
-                })
+            let Some((entry, key, descriptor)) =
+                list.map(|list| labels::first(&self.lists.pages(), list))
             else {
                 break;
             };
@@ -80,14 +74,20 @@ impl<M: Memory> Graph<M> {
             cursors.insert(key, edge.position());
             let half = EdgeRef::new(v, key.label, key.side, edge.position());
             let (theirs, other) = self.first_half_to(v, half, edge.target(), &mut hints);
-            self.tombstone(index, half.position());
+            self.tombstone(Found { entry, descriptor }, half.position());
             if other != half {
                 self.tombstone(theirs, other.position());
             }
             removed.push(order(half, other));
         }
         let progress = if self.list(v)?.is_none() {
-            self.write_record(v, Record::NEW);
+            self.write_record(
+                v,
+                Record {
+                    list: None,
+                    state: VertexState::Deleted,
+                },
+            );
             Progress::Done
         } else {
             Progress::Remaining

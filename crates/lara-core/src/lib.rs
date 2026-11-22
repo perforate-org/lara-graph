@@ -42,5 +42,7 @@ mod vertex;
 pub use graph::{
     Compaction, CreateError, Detachment, Error, Graph, Memories, OpenError, Removal, Step,
 };
-pub use id::{Edge, EdgeRef, Halves, Label, Move, Position, Progress, Side, VertexId};
+pub use id::{
+    Edge, EdgeRef, Halves, Label, Move, Placement, Position, Progress, Side, VertexId, VertexState,
+};
 pub use memory::{GrowFailed, Memory, PAGE_SIZE, VecMemory};

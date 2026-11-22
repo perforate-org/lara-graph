@@ -4,18 +4,21 @@ use super::{Error, Graph};
 use crate::bucket;
 use crate::corrupt::{corrupt, reservation_exceeded};
 use crate::descriptor::Descriptor;
-use crate::id::{EdgeRef, Halves, Label, Side, VertexId};
+use crate::id::{EdgeRef, Halves, Label, Placement, Side, VertexId, VertexState};
 use crate::labels::{self, BucketKey, BucketList, Lookup};
 use crate::memory::{Memory, WriteError};
-use crate::vertex::{Record, State};
+use crate::page_store::Pages;
+use crate::vertex::Record;
 use alloc::vec::Vec;
 
 impl<M: Memory> Graph<M> {
-    /// Adds the edge `from -[label]-> to`. Parallel edges are kept in insertion order.
+    /// Adds the edge `from -[label]-> to`, placed by `placement` in both buckets. Parallel edges
+    /// keep their relative order either way.
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`] for either endpoint, [`Error::TooManyBuckets`],
+    /// [`Error::UnknownVertex`] for either endpoint, [`Error::Detaching`] or [`Error::Deleted`]
+    /// for an endpoint being or already deleted, [`Error::TooManyBuckets`],
     /// [`Error::OutOfMemory`] or [`Error::AddressSpaceExhausted`]. On error the graph is
     /// unchanged.
     pub fn insert_directed(
@@ -23,14 +26,16 @@ impl<M: Memory> Graph<M> {
         from: VertexId,
         label: Label,
         to: VertexId,
+        placement: Placement,
     ) -> Result<Halves, Error> {
-        let out = Half::new(from, label, Side::Out, to);
-        let into = Half::new(to, label, Side::In, from);
-        let [source, target] = self.insert_halves([out, into])?;
-        Ok(Halves::new(source, target))
+        let out = Half::new(from, (label, Side::Out), to, placement);
+        let into = Half::new(to, (label, Side::In), from, placement);
+        let [canonical, other] = self.insert_halves([out, into])?;
+        Ok(Halves::new(canonical, other))
     }
 
-    /// Adds the undirected edge `a -[label]- b`. Parallel edges are kept in insertion order.
+    /// Adds the undirected edge `a -[label]- b`, placed by `placement` in both buckets.
+    /// Parallel edges keep their relative order either way.
     ///
     /// # Errors
     ///
@@ -40,16 +45,17 @@ impl<M: Memory> Graph<M> {
         a: VertexId,
         label: Label,
         b: VertexId,
+        placement: Placement,
     ) -> Result<Halves, Error> {
         let (low, high) = (a.min(b), a.max(b));
-        let at_low = Half::new(low, label, Side::Undirected, high);
+        let at_high = Half::new(high, (label, Side::Undirected), low, placement);
         if low == high {
-            let [half] = self.insert_halves([at_low])?;
+            let [half] = self.insert_halves([at_high])?;
             return Ok(Halves::new(half, half));
         }
-        let at_high = Half::new(high, label, Side::Undirected, low);
-        let [source, target] = self.insert_halves([at_low, at_high])?;
-        Ok(Halves::new(source, target))
+        let at_low = Half::new(low, (label, Side::Undirected), high, placement);
+        let [canonical, other] = self.insert_halves([at_high, at_low])?;
+        Ok(Halves::new(canonical, other))
     }
 
     /// Inserts every half or none: checks and reserves memory first, then applies them.
@@ -96,7 +102,7 @@ impl<M: Memory> Graph<M> {
                 lookup,
             });
         }
-        check_room(&fresh)?;
+        check_room(&self.lists.pages(), &fresh)?;
         Ok(places)
     }
 
@@ -114,20 +120,29 @@ impl<M: Memory> Graph<M> {
             vertex,
             key,
             target,
+            placement,
         } = half;
         let Place { record, lookup } = place;
         let list = record.list;
         let at = match lookup {
-            Lookup::Present { index, descriptor } => {
-                let (next, at) = reserved(bucket::insert(descriptor, target, &mut self.edges));
-                let list = list.unwrap_or_else(|| corrupt("present bucket without a list"));
-                labels::set(&self.lists, list, index, &next);
+            Lookup::Present { entry, descriptor } => {
+                let (next, at) = reserved(bucket::insert(
+                    descriptor,
+                    target,
+                    placement,
+                    &mut self.edges,
+                ));
+                labels::set(&self.lists, entry, &next);
                 at
             }
-            Lookup::Absent { index } => {
-                let (next, at) =
-                    reserved(bucket::insert(Descriptor::EMPTY, target, &mut self.edges));
-                let list = reserved(labels::add(&mut self.lists, list, index, key, &next));
+            Lookup::Absent { gap } => {
+                let (next, at) = reserved(bucket::insert(
+                    Descriptor::EMPTY,
+                    target,
+                    placement,
+                    &mut self.edges,
+                ));
+                let list = reserved(labels::add(&mut self.lists, list, gap, key, &next));
                 let list = Some(list);
                 self.write_record(vertex, Record { list, ..record });
                 at
@@ -151,14 +166,21 @@ struct Half {
     vertex: VertexId,
     key: BucketKey,
     target: VertexId,
+    placement: Placement,
 }
 
 impl Half {
-    const fn new(vertex: VertexId, label: Label, side: Side, target: VertexId) -> Self {
+    const fn new(
+        vertex: VertexId,
+        (label, side): (Label, Side),
+        target: VertexId,
+        placement: Placement,
+    ) -> Self {
         Self {
             vertex,
             key: BucketKey { label, side },
             target,
+            placement,
         }
     }
 }
@@ -174,20 +196,25 @@ impl Records {
             return Ok(record);
         }
         let record = g.record(v)?;
-        if record.state == State::Detaching {
-            return Err(Error::Detaching(v));
+        match record.state {
+            VertexState::Live => {}
+            VertexState::Detaching => return Err(Error::Detaching(v)),
+            VertexState::Deleted => return Err(Error::Deleted(v)),
         }
         self.0.push((v, record));
         Ok(record)
     }
 }
 
-/// Fails when new buckets would take a vertex past [`labels::MAX_BUCKETS`]. `fresh` lists each
-/// new bucket's vertex with its current list.
-fn check_room(fresh: &[(VertexId, Option<BucketList>)]) -> Result<(), Error> {
+/// Fails when new buckets would not fit a vertex's list. `fresh` lists each new bucket's vertex
+/// with its current list.
+fn check_room<M: Memory>(
+    pages: &Pages<'_, M>,
+    fresh: &[(VertexId, Option<BucketList>)],
+) -> Result<(), Error> {
     for &(v, list) in fresh {
         let adding = fresh.iter().filter(|(w, _)| *w == v).count();
-        if labels::len(list) + adding > labels::MAX_BUCKETS {
+        if !labels::has_room(pages, list, adding) {
             return Err(Error::TooManyBuckets(v));
         }
     }

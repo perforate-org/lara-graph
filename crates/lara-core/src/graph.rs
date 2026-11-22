@@ -4,7 +4,9 @@ use crate::bucket::{self, Window};
 use crate::compact::{self, Outcome};
 use crate::corrupt::corrupt;
 use crate::descriptor::Descriptor;
-use crate::id::{Edge, EdgeRef, Halves, Label, Move, Position, Progress, Side, VertexId};
+use crate::id::{
+    Edge, EdgeRef, Halves, Label, Move, Position, Progress, Side, VertexId, VertexState,
+};
 use crate::labels::{self, BucketKey, BucketList, Lookup};
 use crate::memory::{GrowFailed, Memory, Region, WriteError};
 use crate::page_store::{self, PageStore};
@@ -85,6 +87,8 @@ pub enum Error {
     Detaching(VertexId),
     /// [`Graph::detach_step`] on a vertex that is not being detached.
     NotDetaching(VertexId),
+    /// The vertex was deleted ([`Graph::detach`]); ids are never reused.
+    Deleted(VertexId),
 }
 
 /// Creating a graph failed.
@@ -242,6 +246,15 @@ impl<M: Memory> Graph<M> {
         Ok(id)
     }
 
+    /// Whether `v` is live, being detached or deleted.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownVertex`].
+    pub fn vertex_state(&self, v: VertexId) -> Result<VertexState, Error> {
+        Ok(self.record(v)?.state)
+    }
+
     /// The labels `v` has buckets under on `side`, in order.
     ///
     /// # Errors
@@ -344,7 +357,7 @@ impl<M: Memory> Graph<M> {
     /// allocated. On error the graph is unchanged.
     pub fn compact(&mut self, v: VertexId, label: Label, side: Side) -> Result<Compaction, Error> {
         let list = self.list(v)?;
-        let Lookup::Present { index, descriptor } =
+        let Lookup::Present { entry, descriptor } =
             labels::lookup(&self.lists.pages(), list, BucketKey { label, side })
         else {
             return Ok(Step::new(Vec::new(), Progress::Done));
@@ -352,9 +365,9 @@ impl<M: Memory> Graph<M> {
         let list = list.unwrap_or_else(|| corrupt("present bucket without a list"));
         let step = compact::step(descriptor, &mut self.edges)?;
         match step.outcome {
-            Outcome::Bucket(next) => labels::set(&self.lists, list, index, &next),
+            Outcome::Bucket(next) => labels::set(&self.lists, entry, &next),
             Outcome::Empty => {
-                let list = labels::remove(&mut self.lists, list, index);
+                let list = labels::remove(&mut self.lists, list, entry);
                 self.set_list(v, list);
             }
         }
@@ -441,6 +454,7 @@ impl fmt::Display for Error {
             Self::TooManyBuckets(v) => write!(f, "vertex {} has too many buckets", v.index()),
             Self::Detaching(v) => write!(f, "vertex {} is being detached", v.index()),
             Self::NotDetaching(v) => write!(f, "vertex {} is not being detached", v.index()),
+            Self::Deleted(v) => write!(f, "vertex {} is deleted", v.index()),
         }
     }
 }

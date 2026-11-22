@@ -68,9 +68,14 @@ and are stable: removal writes a tombstone in place; a run grows by copying its 
 included; a full one-page run becomes data page 0 without copying. Only compaction renumbers
 positions, and it reports each move.
 
-**Equal-target edges stay in insertion order.** An insert reuses a hole only if no live edge to
-the same target lies after it (otherwise it appends); paged buckets reuse holes in their last page
-only. Gleaph pairs forward and reverse entries of parallel edges by their rank among equal-target
+**Each insert says where it may go** (`Placement`). `Append` always goes after every stored
+position, so position order is insertion order: this is Gleaph's `Insertion` order, and
+compaction keeps it. `ReuseHoles` refills a hole when one is safe, without waiting for
+compaction; this is Gleaph's `Unordered`. Appending never reads the bucket's slots.
+
+**Equal-target edges stay in insertion order** either way. `ReuseHoles` takes a hole only if no
+live edge to the same target lies after it, and otherwise appends; paged buckets reuse holes in
+their last page only. Gleaph pairs forward and reverse entries of parallel edges by their rank among equal-target
 edges (ADR 0048), so this invariant keeps both sides aligned without coordinating them.
 
 The descriptor size is set by memory: on sparse graphs per-vertex descriptors dominate, and 16
@@ -93,15 +98,22 @@ buckets. If that bucket holds exactly one live entry back to the half's vertex, 
 other half. Otherwise it counts in one bucket and selects in the other, and each scan stops at the
 edge it needs. Removing a hub's edge to a leaf therefore never scans the hub.
 
+**The canonical half** is where a caller keys what belongs to the edge (properties, index
+postings): the out half of a directed edge, and the half at the **larger** vertex id of an
+undirected one. Ids grow in creation order, and hubs tend to be old. So the canonical halves of a
+hub's undirected edges sit in its newer neighbours' small buckets: the keyed data spreads out,
+and compacting a hub moves few canonical halves. `Halves` lists the canonical half first.
+
 **Inserts are all or nothing.** First every check (vertices, bucket count, position overflow),
 then the page stores grow far enough that the inserts cannot fail: an edge-bucket insert takes at
-most `PAGES_PER_INSERT` (4) pages, a new bucket-list entry one. Then both halves are written.
+most `PAGES_PER_INSERT` (4) pages, a bucket-list change three. Then both halves are written.
 Removal and the reads never allocate.
 
 ## Detaching a vertex
 
-`Graph::detach(v)` marks the vertex in constant time (a spare bit of its record); from then on
-inserts touching it fail with `Error::Detaching`. `Graph::detach_step(v, budget)` removes up to
+A vertex is `Live`, `Detaching` or `Deleted` (`Graph::vertex_state`; two spare bits of its record).
+Ids are never reused. `Graph::detach(v)` marks the vertex `Detaching` in constant time; from then
+on inserts touching it fail with `Error::Detaching`. `Graph::detach_step(v, budget)` removes up to
 `budget` of its edges and reports each one's `Halves`. For each edge:
 
 1. Take v's first live entry in its first bucket. Paged buckets skip dead pages through the index,
@@ -111,7 +123,8 @@ inserts touching it fail with `Error::Detaching`. `Graph::detach_step(v, budget)
    `Halves` are the true ones.
 3. Tombstone both halves. A bucket of v left with only holes is compacted away.
 
-When v has no buckets left, the mark is cleared. The vertex's own buckets are the cursor: nothing
+When v has no buckets left, it is `Deleted` for good: inserts touching it fail with
+`Error::Deleted`. The vertex's own buckets are the cursor: nothing
 else is persisted, so compaction or reopening between steps cannot invalidate a step. Every edge
 is whole or gone at each step boundary, so reads need no filter for half-removed edges.
 
@@ -155,10 +168,18 @@ hollowed or merged: inserts reuse its holes and append after it.
 
 ## Bucket lists
 
-A vertex's buckets are listed in its own extent in the list page store: 19-byte entries (label,
-side and descriptor) sorted by `(label, side)`, up to 215 (one page). A lookup reads the vertex record and the
-list once each and searches in memory; adding a label shifts entries or moves the list to the next
-class. Lists are independent per vertex, unlike ic-stable-lara, which packs 16 vertices' lists
+A vertex's buckets are listed in the list page store: 19-byte entries (label, side and
+descriptor) sorted by `(label, side)`.
+
+- **Flat**, up to 215 entries (one page). A lookup reads the vertex record and the list once each
+  and searches in memory. Adding a bucket shifts entries or moves the list to the next class.
+- **Tiered**, past that. A top extent lists leaf pages, each with its first key and entry count
+  (8 bytes per leaf), and each leaf holds up to a page of entries.
+  - A lookup reads the top and one leaf.
+  - A full leaf splits into two half-full pages.
+  - An emptied leaf is released, and a list down to one leaf turns flat again.
+  - Every change copies at most one page. The top holds 511 leaves: at least ~55 000 buckets
+    when every leaf is half full, and up to ~110 000. Lists are independent per vertex, unlike ic-stable-lara, which packs 16 vertices' lists
 together and rewrites all of them when one outgrows its slack.
 
 Reading one bucket costs a vertex read, a list read and one data read (index and page reads past
@@ -171,8 +192,9 @@ Reading one bucket costs a vertex read, a list read and one data read (index and
 - A sorted target index for paged buckets, so `counterpart`, detaching a hub's neighbour and
   joins on a target need not scan the bucket.
 - Detaching many vertices at once with one pass over each shared hub.
-- Inline edge properties.
-- Closing the insert gap with ic-stable-lara (~1.5× per half; `docs/ic-measurements-2026-11-22.md`)
-  and letting a paged search jump to the data page holding its start position.
+- Closing the insert gap with ic-stable-lara (~1.25× per half): the insert path still allocates
+  several `Vec`s (`docs/ic-stable-lara-adoption-2026-11-22.md`).
+- Descending scans, cursor windows, batch reads of chosen positions, and inline edge properties
+  stored by position beside the slots (`docs/ic-stable-lara-adoption-2026-11-22.md`).
 - Settling the constants (descriptor size, inline slots, page threshold) by measuring on the IC
   with canbench (`crates/lara-core-bench`).

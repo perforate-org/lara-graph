@@ -39,6 +39,17 @@ struct Model {
     next_id: u64,
     /// The vertex being detached, if any.
     detaching: Option<u32>,
+    /// Vertices detached for good.
+    deleted: Vec<u32>,
+}
+
+/// Odd labels append; even ones (the hub's among them) reuse holes.
+fn placement_of(label: Label) -> Placement {
+    if label.get() % 2 == 1 {
+        Placement::Append
+    } else {
+        Placement::ReuseHoles
+    }
 }
 
 /// The bucket the random test grows past one page.
@@ -56,6 +67,13 @@ impl Model {
         let key = (half.vertex().index(), half.label(), half.side());
         let bucket = self.buckets.entry(key).or_default();
         let i = usize::try_from(half.position().index()).unwrap();
+        if placement_of(half.label()) == Placement::Append {
+            assert_eq!(
+                i,
+                bucket.len(),
+                "an append goes after every stored position"
+            );
+        }
         if i == bucket.len() {
             bucket.push(Some(slot));
         } else {
@@ -113,6 +131,17 @@ impl Model {
         self.buckets.get_mut(&key).unwrap()[at] = None;
     }
 
+    /// Why an insert touching `x` fails, if it does.
+    fn blocked(&self, x: u32) -> Option<Error> {
+        if self.detaching == Some(x) {
+            Some(Error::Detaching(v(x)))
+        } else if self.deleted.contains(&x) {
+            Some(Error::Deleted(v(x)))
+        } else {
+            None
+        }
+    }
+
     /// A random live half, from the hub half the time.
     fn live_half(&self, rng: &mut Rng) -> Option<EdgeRef> {
         let live_in = |key: &Key| -> Vec<usize> {
@@ -162,8 +191,10 @@ fn random_step<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n:
         model_detach_step(g, model, x, rng);
         return;
     }
-    if model.detaching.is_none() && rng.below(400) == 0 {
-        let x = rng.below(n);
+    // Detach a vertex now and then; never an insert target (0..3), so the hub keeps growing.
+    // Targets' in-buckets are detached in the targeted tests.
+    let x = 3 + rng.below(n - 3);
+    if model.detaching.is_none() && !model.deleted.contains(&x) && rng.below(400) == 0 {
         g.detach(v(x)).unwrap();
         model.detaching = Some(x);
         return;
@@ -193,35 +224,39 @@ fn model_insert<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n
         (rng.below(n), l(u16::try_from(rng.below(3)).unwrap()))
     };
     let to = rng.below(3);
-    if let Some(x) = model.detaching.filter(|x| [from, to].contains(x)) {
+    if let Some(error) = [from, to].into_iter().find_map(|x| model.blocked(x)) {
         assert_eq!(
-            g.insert_directed(v(from), label, v(to)),
-            Err(Error::Detaching(v(x)))
+            g.insert_directed(v(from), label, v(to), placement_of(label)),
+            Err(error)
         );
         return;
     }
     let id = model.next_id;
     model.next_id += 1;
     let halves = if label == HUB.1 || rng.below(4) != 0 {
-        let halves = g.insert_directed(v(from), label, v(to)).unwrap();
+        let halves = g
+            .insert_directed(v(from), label, v(to), placement_of(label))
+            .unwrap();
         assert_eq!(
-            halves.source(),
-            Model::half((from, label, Side::Out), at(halves.source()))
+            halves.canonical(),
+            Model::half((from, label, Side::Out), at(halves.canonical()))
         );
         assert_eq!(
-            halves.target(),
-            Model::half((to, label, Side::In), at(halves.target()))
+            halves.other(),
+            Model::half((to, label, Side::In), at(halves.other()))
         );
         halves
     } else {
-        let halves = g.insert_undirected(v(from), label, v(to)).unwrap();
+        let halves = g
+            .insert_undirected(v(from), label, v(to), placement_of(label))
+            .unwrap();
         let (low, high) = (from.min(to), from.max(to));
-        assert_eq!(halves.source().vertex(), v(low));
-        assert_eq!(halves.target().vertex(), v(high));
-        assert_eq!(halves.source().side(), Side::Undirected);
+        assert_eq!(halves.canonical().vertex(), v(high));
+        assert_eq!(halves.other().vertex(), v(low));
+        assert_eq!(halves.canonical().side(), Side::Undirected);
         halves
     };
-    let (source, target) = (halves.source(), halves.target());
+    let (source, target) = (halves.canonical(), halves.other());
     model.place(
         source,
         Slot {
@@ -246,14 +281,14 @@ fn model_detach_step<M: Memory>(g: &mut Graph<M>, model: &mut Model, x: u32, rng
     let step = g.detach_step(v(x), budget).unwrap();
     assert!(step.changes().len() <= usize::try_from(budget.get()).unwrap());
     for &halves in step.changes() {
-        let source = halves.source();
+        let source = halves.canonical();
         assert!(
-            [source.vertex(), halves.target().vertex()].contains(&v(x)),
+            [source.vertex(), halves.other().vertex()].contains(&v(x)),
             "an edge of the detaching vertex"
         );
         assert_eq!(halves, order(source, model.counterpart(source)));
         model.clear(source);
-        model.clear(halves.target());
+        model.clear(halves.other());
     }
     if step.progress() == Progress::Done {
         let left = model
@@ -262,7 +297,9 @@ fn model_detach_step<M: Memory>(g: &mut Graph<M>, model: &mut Model, x: u32, rng
             .filter(|((owner, _, _), _)| *owner == x)
             .any(|(_, slots)| slots.iter().any(Option::is_some));
         assert!(!left, "a detached vertex has no edges");
+        assert_eq!(g.vertex_state(v(x)), Ok(VertexState::Deleted));
         model.detaching = None;
+        model.deleted.push(x);
     }
 }
 

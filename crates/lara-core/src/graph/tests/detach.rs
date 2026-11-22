@@ -25,7 +25,7 @@ fn detach_fully<M: Memory>(g: &mut Graph<M>, x: VertexId, n: u32) -> Vec<Halves>
 
 fn sorted(mut halves: Vec<Halves>) -> Vec<Halves> {
     halves.sort_by_key(|h| {
-        let (s, t) = (h.source(), h.target());
+        let (s, t) = (h.canonical(), h.other());
         (
             s.vertex(),
             s.label(),
@@ -46,22 +46,49 @@ fn detaching_removes_every_edge_and_reports_its_true_halves() {
     let mut incident = Vec::new();
     // Parallel edges x→1 interleaved with 4→1, so the in halves at 1 sit at other positions.
     for _ in 0..3 {
-        incident.push(g.insert_directed(x, l(0), v(1)).unwrap());
-        g.insert_directed(v(4), l(0), v(1)).unwrap();
+        incident.push(
+            g.insert_directed(x, l(0), v(1), Placement::ReuseHoles)
+                .unwrap(),
+        );
+        g.insert_directed(v(4), l(0), v(1), Placement::ReuseHoles)
+            .unwrap();
     }
     let gone = incident.remove(0);
-    g.remove_edge(gone.source()).unwrap();
-    incident.push(g.insert_directed(v(3), l(0), x).unwrap());
-    incident.push(g.insert_directed(x, l(1), x).unwrap());
-    incident.push(g.insert_directed(x, l(1), x).unwrap());
-    incident.push(g.insert_undirected(v(2), l(1), x).unwrap());
-    incident.push(g.insert_undirected(x, l(2), x).unwrap());
-    let other = g.insert_directed(v(1), l(0), v(2)).unwrap();
+    g.remove_edge(gone.canonical()).unwrap();
+    incident.push(
+        g.insert_directed(v(3), l(0), x, Placement::ReuseHoles)
+            .unwrap(),
+    );
+    incident.push(
+        g.insert_directed(x, l(1), x, Placement::ReuseHoles)
+            .unwrap(),
+    );
+    incident.push(
+        g.insert_directed(x, l(1), x, Placement::ReuseHoles)
+            .unwrap(),
+    );
+    incident.push(
+        g.insert_undirected(v(2), l(1), x, Placement::ReuseHoles)
+            .unwrap(),
+    );
+    incident.push(
+        g.insert_undirected(x, l(2), x, Placement::ReuseHoles)
+            .unwrap(),
+    );
+    let other = g
+        .insert_directed(v(1), l(0), v(2), Placement::ReuseHoles)
+        .unwrap();
     g.detach(x).unwrap();
     for (from, to) in [(x, v(1)), (v(1), x)] {
-        assert_eq!(g.insert_directed(from, l(0), to), Err(Error::Detaching(x)));
+        assert_eq!(
+            g.insert_directed(from, l(0), to, Placement::ReuseHoles),
+            Err(Error::Detaching(x))
+        );
     }
-    assert_eq!(g.insert_undirected(x, l(9), x), Err(Error::Detaching(x)));
+    assert_eq!(
+        g.insert_undirected(x, l(9), x, Placement::ReuseHoles),
+        Err(Error::Detaching(x))
+    );
     let removed = detach_fully(&mut g, x, 1);
     assert_eq!(sorted(removed), sorted(incident));
     for side in [Side::Out, Side::In, Side::Undirected] {
@@ -69,10 +96,17 @@ fn detaching_removes_every_edge_and_reports_its_true_halves() {
         g.labels(x, side, &mut labels).unwrap();
         assert_eq!(labels, Vec::<Label>::new(), "{side:?}");
     }
-    assert_eq!(g.counterpart(other.source()), Ok(Some(other.target())));
+    assert_eq!(g.counterpart(other.canonical()), Ok(Some(other.other())));
     assert_eq!(edges_on(&g, v(1), l(0), Side::In), [(1, 4), (3, 4), (5, 4)]);
-    // Detached: the vertex takes edges again.
-    g.insert_directed(x, l(0), v(1)).unwrap();
+    // Deleted for good: no new edges, no second detach, and the id is not reused.
+    assert_eq!(g.vertex_state(x), Ok(VertexState::Deleted));
+    assert_eq!(
+        g.insert_directed(v(1), l(0), x, Placement::ReuseHoles),
+        Err(Error::Deleted(x))
+    );
+    assert_eq!(g.detach(x), Err(Error::Deleted(x)));
+    assert_eq!(g.detach_step(x, budget(1)), Err(Error::NotDetaching(x)));
+    assert_eq!(g.add_vertex(), Ok(v(5)));
     check(&g);
 }
 
@@ -85,9 +119,13 @@ fn a_step_needs_a_detaching_vertex_and_an_isolated_one_finishes_at_once() {
         Err(Error::NotDetaching(v(0)))
     );
     assert_eq!(g.detach(v(2)), Err(Error::UnknownVertex(v(2))));
+    assert_eq!(g.vertex_state(v(0)), Ok(VertexState::Live));
     g.detach(v(0)).unwrap();
+    g.detach(v(0)).unwrap();
+    assert_eq!(g.vertex_state(v(0)), Ok(VertexState::Detaching));
     let step = g.detach_step(v(0), budget(1)).unwrap();
     assert_eq!((step.changes().len(), step.progress()), (0, Progress::Done));
+    assert_eq!(g.vertex_state(v(0)), Ok(VertexState::Deleted));
     assert_eq!(
         g.detach_step(v(0), budget(1)),
         Err(Error::NotDetaching(v(0)))
@@ -119,7 +157,7 @@ fn a_hub_detaches_in_bounded_steps_across_reopens() {
         // The mark survives a reopen.
         g = backing.open();
         assert_eq!(
-            g.insert_directed(v(1), l(0), v(0)),
+            g.insert_directed(v(1), l(0), v(0), Placement::ReuseHoles),
             Err(Error::Detaching(v(0)))
         );
     }

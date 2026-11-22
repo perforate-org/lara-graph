@@ -37,6 +37,29 @@ impl Label {
     }
 }
 
+/// Where an insert may put an edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Placement {
+    /// Always after every stored position, so position order is insertion order (Gleaph's
+    /// `Insertion` order). Holes stay until compaction, which keeps the order.
+    Append,
+    /// Into a hole when one is safe (no live edge to the same vertex after it), else after
+    /// every stored position. Fills holes without compaction; positions do not follow insertion
+    /// order (Gleaph's `Unordered`).
+    ReuseHoles,
+}
+
+/// Where a vertex is in its life. Vertex ids are never reused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VertexState {
+    /// Takes and holds edges.
+    Live,
+    /// Being deleted: its edges are removed step by step and it takes no new ones.
+    Detaching,
+    /// Deleted: it has no edges and takes none.
+    Deleted,
+}
+
 /// Which of a vertex's adjacencies a bucket holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Side {
@@ -172,43 +195,46 @@ impl EdgeRef {
     }
 }
 
-/// The halves of one edge. For a directed edge, `source` is the out half and `target` the in
-/// half; for an undirected edge, `source` is the half at the smaller vertex id.
+/// The halves of one edge, the canonical one first: where a caller keys what belongs to the
+/// edge (properties, index postings). For a directed edge it is the out half; for an undirected
+/// edge, the half at the larger vertex id. Ids grow in creation order and hubs tend to be old, so
+/// this puts a hub's undirected edges' canonical halves in its newer neighbours' small buckets:
+/// the keyed data spreads out, and compacting a hub moves few canonical halves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Halves {
     /// An edge stored at both ends.
     Pair {
-        /// The out half, or the undirected half at the smaller vertex.
-        source: EdgeRef,
-        /// The in half, or the undirected half at the larger vertex.
-        target: EdgeRef,
+        /// The out half, or the undirected half at the larger vertex.
+        canonical: EdgeRef,
+        /// The in half, or the undirected half at the smaller vertex.
+        other: EdgeRef,
     },
     /// An undirected self-loop: its one entry is both halves.
     Single(EdgeRef),
 }
 
 impl Halves {
-    pub(crate) fn new(source: EdgeRef, target: EdgeRef) -> Self {
-        if source == target {
-            Self::Single(source)
+    pub(crate) fn new(canonical: EdgeRef, other: EdgeRef) -> Self {
+        if canonical == other {
+            Self::Single(canonical)
         } else {
-            Self::Pair { source, target }
+            Self::Pair { canonical, other }
         }
     }
 
-    /// The half at the source (directed) or smaller vertex (undirected).
+    /// The canonical half: the out half, or the undirected half at the larger vertex.
     #[must_use]
-    pub const fn source(&self) -> EdgeRef {
+    pub const fn canonical(&self) -> EdgeRef {
         match *self {
-            Self::Pair { source, .. } | Self::Single(source) => source,
+            Self::Pair { canonical, .. } | Self::Single(canonical) => canonical,
         }
     }
 
-    /// The half at the other end.
+    /// The other half (the canonical one again for an undirected self-loop).
     #[must_use]
-    pub const fn target(&self) -> EdgeRef {
+    pub const fn other(&self) -> EdgeRef {
         match *self {
-            Self::Pair { target, .. } | Self::Single(target) => target,
+            Self::Pair { other, .. } | Self::Single(other) => other,
         }
     }
 }

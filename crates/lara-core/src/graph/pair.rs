@@ -5,7 +5,7 @@ use crate::bucket;
 use crate::corrupt::corrupt;
 use crate::descriptor::Descriptor;
 use crate::id::{EdgeRef, Halves, Position, Side, VertexId};
-use crate::labels::{self, BucketKey, BucketList, Lookup};
+use crate::labels::{self, BucketKey, EntryAt, Lookup};
 use crate::memory::Memory;
 use crate::page_store::Pages;
 
@@ -71,7 +71,7 @@ impl<M: Memory> Graph<M> {
     pub(super) fn tombstone(&self, found: Found, at: Position) {
         let (next, _) = bucket::remove(found.descriptor, at, &self.edges)
             .unwrap_or_else(|| corrupt("live half not in its bucket"));
-        labels::set(&self.lists, found.list, found.index, &next);
+        labels::set(&self.lists, found.entry, &next);
     }
 
     /// The bucket a live half proves exists.
@@ -85,11 +85,7 @@ impl<M: Memory> Graph<M> {
     pub(super) fn find_bucket(&self, v: VertexId, key: BucketKey) -> Result<Option<Found>, Error> {
         let list = self.list(v)?;
         Ok(match labels::lookup(&self.lists.pages(), list, key) {
-            Lookup::Present { index, descriptor } => Some(Found {
-                list: list.unwrap_or_else(|| corrupt("present bucket without a list")),
-                index,
-                descriptor,
-            }),
+            Lookup::Present { entry, descriptor } => Some(Found { entry, descriptor }),
             Lookup::Absent { .. } => None,
         })
     }
@@ -98,8 +94,7 @@ impl<M: Memory> Graph<M> {
 /// A bucket found in its vertex's list.
 #[derive(Clone, Copy)]
 pub(super) struct Found {
-    pub(super) list: BucketList,
-    pub(super) index: usize,
+    pub(super) entry: EntryAt,
     pub(super) descriptor: Descriptor,
 }
 
@@ -182,7 +177,7 @@ pub(super) fn order(half: EdgeRef, other: EdgeRef) -> Halves {
     let half_first = match half.side() {
         Side::Out => true,
         Side::In => false,
-        Side::Undirected => half.vertex() <= other.vertex(),
+        Side::Undirected => half.vertex() >= other.vertex(),
     };
     if half_first {
         Halves::new(half, other)

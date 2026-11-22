@@ -12,7 +12,7 @@
 
 use crate::corrupt::corrupt;
 use crate::descriptor::{Descriptor, PAGE_SLOTS, Paged, Run, SLOT_BYTES, Slot, TINY_SLOTS, Tiny};
-use crate::id::{Edge, Position, VertexId};
+use crate::id::{Edge, Placement, Position, VertexId};
 use crate::memory::{Memory, WriteError};
 use crate::page_store::{ByteClass, PageStore, Pages};
 use crate::paged::{self, Leaf, TombstoneChange};
@@ -26,16 +26,20 @@ use core::ops::ControlFlow;
 /// one.
 pub(crate) const PAGES_PER_INSERT: u32 = 4;
 
-/// Adds an edge to `target`. Returns the bucket's next descriptor and the edge's position.
+/// Adds an edge to `target` where `placement` allows. Returns the bucket's next descriptor and
+/// the edge's position. [`Placement::Append`] never reads the bucket's slots.
 pub(crate) fn insert<M: Memory>(
     d: Descriptor,
     target: VertexId,
+    placement: Placement,
     store: &mut PageStore<M>,
 ) -> Result<(Descriptor, Position), WriteError> {
     let edge = Slot::Live(target);
+    let reuse = placement == Placement::ReuseHoles;
     match d {
         Descriptor::Tiny(tiny) => {
-            if let Some(hole) = reusable_hole(tiny.slots(), target) {
+            let hole = reuse.then(|| reusable_hole(tiny.slots(), target)).flatten();
+            if let Some(hole) = hole {
                 return Ok((Descriptor::Tiny(tiny.set(hole, edge)), position(hole)));
             }
             if !tiny.is_full() {
@@ -44,8 +48,8 @@ pub(crate) fn insert<M: Memory>(
             }
             tiny_to_run(tiny, edge, store)
         }
-        Descriptor::Run(run) => run_insert(run, target, store),
-        Descriptor::Paged(paged) => paged_insert(paged, target, store),
+        Descriptor::Run(run) => run_insert(run, target, placement, store),
+        Descriptor::Paged(paged) => paged_insert(paged, target, placement, store),
     }
 }
 
@@ -311,12 +315,13 @@ fn tiny_to_run<M: Memory>(
 fn run_insert<M: Memory>(
     run: Run,
     target: VertexId,
+    placement: Placement,
     store: &mut PageStore<M>,
 ) -> Result<(Descriptor, Position), WriteError> {
     let edge = Slot::Live(target);
     let stored = u32::from(run.stored);
     let live = run.live + 1;
-    if run.live < run.stored {
+    if placement == Placement::ReuseHoles && run.live < run.stored {
         let bytes = store.pages().read(run.extent.offset(), byte_len(stored));
         let slots: Vec<Slot> = Slot::decode_all(&bytes).collect();
         if let Some(hole) = reusable_hole(&slots, target) {
@@ -365,6 +370,7 @@ fn run_insert<M: Memory>(
 fn paged_insert<M: Memory>(
     paged: Paged,
     target: VertexId,
+    placement: Placement,
     store: &mut PageStore<M>,
 ) -> Result<(Descriptor, Position), WriteError> {
     let edge = Slot::Live(target);
@@ -379,7 +385,7 @@ fn paged_insert<M: Memory>(
     // The last data page is never hollow: compaction keeps it.
     let last_page = leaf.present();
     // Holes are reused in the last page only: earlier holes precede every edge of that page.
-    if leaf.tombstones > 0 {
+    if placement == Placement::ReuseHoles && leaf.tombstones > 0 {
         let bytes = store.pages().read(last_page.offset(), byte_len(in_last));
         let slots: Vec<Slot> = Slot::decode_all(&bytes).collect();
         if let Some(hole) = reusable_hole(&slots, target) {
@@ -495,7 +501,9 @@ mod tests {
         for total in [3, 10, PAGE_SLOTS * 2 + 7] {
             let mut d = Descriptor::EMPTY;
             for _ in 0..total {
-                d = insert(d, VertexId::new(1), &mut store).unwrap().0;
+                d = insert(d, VertexId::new(1), Placement::ReuseHoles, &mut store)
+                    .unwrap()
+                    .0;
             }
             let view = store.pages();
             for from in [0, 1, total / 2, PAGE_SLOTS + 1, total - 1, total] {

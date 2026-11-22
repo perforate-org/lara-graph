@@ -11,8 +11,8 @@ use core::ops::ControlFlow;
 use ic_stable_structures::DefaultMemoryImpl;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use lara_core::{
-    EdgeRef, Graph, GrowFailed, Halves, Label, Memories, Memory, Position, Progress, Side,
-    VecMemory, VertexId,
+    EdgeRef, Graph, GrowFailed, Halves, Label, Memories, Memory, Placement, Position, Progress,
+    Side, VecMemory, VertexId,
 };
 
 const LABEL: Label = Label::new(2);
@@ -72,7 +72,7 @@ fn last(edges: &[Halves]) -> Halves {
 }
 
 fn directed<M: Memory>(g: &mut Graph<M>, from: VertexId, to: VertexId) -> Halves {
-    g.insert_directed(from, LABEL, to)
+    g.insert_directed(from, LABEL, to, Placement::ReuseHoles)
         .unwrap_or_else(|e| panic!("insert: {e}"))
 }
 
@@ -192,7 +192,7 @@ fn remove_half_then_compact(degree: u32) -> BenchResult {
     bench_fn(|| {
         for halves in edges.iter().step_by(2) {
             black_box(
-                g.remove_edge(halves.source())
+                g.remove_edge(halves.canonical())
                     .unwrap_or_else(|e| panic!("{e}")),
             );
         }
@@ -222,7 +222,7 @@ fn counterpart_into_hub_4096() -> BenchResult {
     let mut g = heap_graph();
     let (_, edges) = seed_hub(&mut g, 4096);
     let last = last(&edges);
-    bench_fn(|| black_box(g.counterpart(last.target())))
+    bench_fn(|| black_box(g.counterpart(last.other())))
 }
 
 /// Finds the in half from the hub's out half at its last position: the count scans the whole
@@ -232,7 +232,7 @@ fn counterpart_from_hub_tail_4096() -> BenchResult {
     let mut g = heap_graph();
     let (_, edges) = seed_hub(&mut g, 4096);
     let last = last(&edges);
-    bench_fn(|| black_box(g.counterpart(last.source())))
+    bench_fn(|| black_box(g.counterpart(last.canonical())))
 }
 
 fn budget(n: u32) -> NonZeroU32 {
