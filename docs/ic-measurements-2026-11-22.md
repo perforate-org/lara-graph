@@ -115,3 +115,41 @@ What the numbers say now:
   straight to the data page that holds the cursor would remove that.
 - **Still open.** `counterpart` and removal into a hub, starting from the small side, still scan
   the hub up to the partner: 138 K at 4096 edges. A sorted target index would remove that scan.
+
+## Second round (same day)
+
+Changes:
+- The page store keeps its minted page count and the pages its memories hold in the heap, and
+  the graph keeps the vertex count there. Each owns its memories exclusively.
+  - An insert's memory calls fall from ~23 to ~13 when the target is a new vertex, and from ~18
+    to ~10 otherwise, measured with a counting `Memory`.
+- An insert writes the vertex record it already read instead of reading it again.
+- Paged searches walk the page index from their start page and stop early. Before, every search
+  built the full leaf list.
+
+| Scenario | First round | Now |
+| --- | ---: | ---: |
+| Hub insert, 1024 / 4096 / 65536 | 13.0 / 52.4 / 828 M | **11.4 / 46.3 / 740 M** |
+| Insert, parallel to 8 targets, 4096 | 37.5 M | 34.6 M |
+| Detach a hub, 4096 / 65536 | 55.5 M / 1.45 B | **51.6 M / 919 M** |
+| Remove half and compact, 65536 | 285 M | 274 M |
+| Edge lookup, 65536 | 2.4 K | 2.2 K |
+| 51 visits of a 1024-edge run / 65536 paged | 1.58 / 81.9 M | 1.68 / 88.5 M |
+
+**The visits regressed by 6-8%.** Only the codegen of `bucket::scan` explains it. Rebuilding the
+committed code reproduces 1.58 M exactly, and the run path's logic did not change. Every variant
+of the new paged branch measured 1.68 M:
+- a shared closure,
+- a reader struct,
+- the paged path in a function that is never inlined,
+- inline hints.
+
+Visits stay below ic-stable-lara's 1.77 M.
+
+**A fixed 1 KB stack buffer was tried and dropped.** It sped up full scans by ~5%, but slowed
+short searches by up to 16%. Zero-filling seems to cost per byte on the IC, so buffers are sized
+to each read.
+
+**Insert is about 1.25× ic-stable-lara per half.** That is ~5.7 K for a half going to a new
+vertex, against ~4.5 K for one-sided inserts at 4096 edges. What remains is mostly computation,
+not memory calls.

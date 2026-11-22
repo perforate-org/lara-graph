@@ -202,15 +202,7 @@ fn scan<M: Memory, T>(
 ) -> Option<T> {
     // One buffer serves every read: sized by the first, never zeroed again.
     let mut buf = Vec::new();
-    let mut span = |at: ByteOffset, first: u32, count: u32| {
-        let mut lo = from.saturating_sub(first).min(count);
-        while lo < count {
-            let n = (count - lo).min(window);
-            visit(first + lo, fill(view, &mut buf, slot_offset(at, lo), n))?;
-            lo += n;
-        }
-        ControlFlow::Continue(())
-    };
+    let reads = Reads { view, from, window };
     let flow = match d {
         Descriptor::Tiny(tiny) => {
             let mut bytes = [0u8; TINY_SLOTS * 4];
@@ -224,24 +216,54 @@ fn scan<M: Memory, T>(
             let skip = byte_len(from).min(slots.len());
             visit(from, slots.get(skip..).unwrap_or(&[]))
         }
-        Descriptor::Run(run) => span(run.extent.offset(), 0, u32::from(run.stored)),
+        Descriptor::Run(run) => reads.span(
+            &mut buf,
+            &mut visit,
+            run.extent.offset(),
+            0,
+            u32::from(run.stored),
+        ),
         Descriptor::Paged(paged) => {
-            (0u32..)
-                .zip(paged::leaves(view, paged))
-                .try_for_each(|(number, leaf)| {
-                    let first = number * PAGE_SLOTS;
-                    let count = (paged.stored - first).min(PAGE_SLOTS);
-                    let live_page = leaf.page.filter(|_| u32::from(leaf.tombstones) < count);
-                    match live_page {
-                        Some(page) if first + count > from => span(page.offset(), first, count),
-                        Some(_) | None => ControlFlow::Continue(()),
-                    }
-                })
+            paged::visit_leaves(view, paged, from / PAGE_SLOTS, |number, leaf| {
+                let first = number * PAGE_SLOTS;
+                let count = (paged.stored - first).min(PAGE_SLOTS);
+                match leaf.page.filter(|_| u32::from(leaf.tombstones) < count) {
+                    Some(page) => reads.span(&mut buf, &mut visit, page.offset(), first, count),
+                    None => ControlFlow::Continue(()),
+                }
+            })
         }
     };
     match flow {
         ControlFlow::Break(found) => Some(found),
         ControlFlow::Continue(()) => None,
+    }
+}
+
+/// Where one [`scan`] reads from.
+struct Reads<'v, 'm, M: Memory> {
+    view: &'v Pages<'m, M>,
+    from: u32,
+    window: u32,
+}
+
+impl<M: Memory> Reads<'_, '_, M> {
+    /// Feeds `count` slots at `at`, the first of them at position `first`, from `from` on.
+    fn span<T>(
+        &self,
+        buf: &mut Vec<u8>,
+        visit: &mut impl FnMut(u32, &[u8]) -> ControlFlow<T>,
+        at: ByteOffset,
+        first: u32,
+        count: u32,
+    ) -> ControlFlow<T> {
+        let mut lo = self.from.saturating_sub(first).min(count);
+        while lo < count {
+            let n = (count - lo).min(self.window);
+            visit(first + lo, fill(self.view, buf, slot_offset(at, lo), n))?;
+            lo += n;
+        }
+        ControlFlow::Continue(())
     }
 }
 

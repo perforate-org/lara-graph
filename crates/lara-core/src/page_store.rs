@@ -186,9 +186,15 @@ pub(crate) enum CreateError {
     Write(WriteError),
 }
 
+/// The store owns its memories exclusively, so it keeps two header values in the heap: how many
+/// pages were ever taken, and how many both memories can hold without growing.
 pub(crate) struct PageStore<M: Memory> {
     pages: M,
     directory: M,
+    /// Mirrors the directory's minted count.
+    minted: u32,
+    /// Pages both memories hold at their current size: taking pages below this never grows.
+    room: u32,
 }
 
 impl<M: Memory> PageStore<M> {
@@ -209,7 +215,7 @@ impl<M: Memory> PageStore<M> {
                 &encode_link(None),
             );
         }
-        Ok(Self { pages, directory })
+        Ok(Self::with_header(pages, directory, 0))
     }
 
     /// Opens memories written by [`Self::create`]. Reads the header only.
@@ -224,7 +230,28 @@ impl<M: Memory> PageStore<M> {
         if version != VERSION {
             return Err(OpenError::UnsupportedVersion(version));
         }
-        Ok(Self { pages, directory })
+        let minted =
+            u32::from_le_bytes(Region::new(&directory).read_array(ByteOffset::new(AT_MINTED)));
+        Ok(Self::with_header(pages, directory, minted))
+    }
+
+    fn with_header(pages: M, directory: M, minted: u32) -> Self {
+        let mut store = Self {
+            pages,
+            directory,
+            minted,
+            room: 0,
+        };
+        store.measure_room();
+        store
+    }
+
+    /// Recomputes [`Self::room`] from the memories' sizes.
+    fn measure_room(&mut self) {
+        let bytes = |m: &M| m.size().saturating_mul(crate::memory::PAGE_SIZE);
+        let pages = bytes(&self.pages) / u64::from(PAGE_BYTES);
+        let records = bytes(&self.directory).saturating_sub(RECORDS_START) / RECORD_BYTES;
+        self.room = u32::try_from(pages.min(records)).unwrap_or(u32::MAX);
     }
 
     /// Read-only access to page data, without the directory: what a scan is given.
@@ -298,13 +325,17 @@ impl<M: Memory> PageStore<M> {
 
     /// Grows both memories so that `pages` more pages can be taken without growing them: after
     /// this, allocations that take at most `pages` pages cannot fail. Changes no state.
-    pub(crate) fn reserve(&self, pages: u32) -> Result<(), WriteError> {
+    pub(crate) fn reserve(&mut self, pages: u32) -> Result<(), WriteError> {
         let end = self
-            .minted()
+            .minted
             .checked_add(pages)
             .ok_or(WriteError::Overflow(crate::units::Overflow))?;
-        Region::new(&self.pages).reserve(PageId(end).offset())?;
-        self.directory().reserve(record_at(PageId(end)))
+        if end > self.room {
+            Region::new(&self.pages).reserve(PageId(end).offset())?;
+            self.directory().reserve(record_at(PageId(end)))?;
+            self.measure_room();
+        }
+        Ok(())
     }
 
     /// Returns an extent. A chunk page that empties goes back to the free pages.
@@ -353,8 +384,8 @@ impl<M: Memory> PageStore<M> {
     // --- pages -------------------------------------------------------------------------------
 
     /// Pages ever taken from the memory.
-    pub(crate) fn minted(&self) -> u32 {
-        u32::from_le_bytes(self.directory().read_array(ByteOffset::new(AT_MINTED)))
+    pub(crate) const fn minted(&self) -> u32 {
+        self.minted
     }
 
     /// A free page, or a new one. Grows both memories before changing anything.
@@ -366,15 +397,12 @@ impl<M: Memory> PageStore<M> {
             self.set_link(AT_FREE_HEAD, next);
             return Ok(page);
         }
-        let minted = self.minted();
-        let page = PageId(minted);
-        let next = minted
-            .checked_add(1)
-            .ok_or(WriteError::Overflow(crate::units::Overflow))?;
-        Region::new(&self.pages).reserve(PageId(next).offset())?;
-        self.directory().reserve(record_at(PageId(next)))?;
+        let page = PageId(self.minted);
+        self.reserve(1)?;
+        let next = self.minted + 1;
         self.directory()
             .overwrite(ByteOffset::new(AT_MINTED), &next.to_le_bytes());
+        self.minted = next;
         Ok(page)
     }
 

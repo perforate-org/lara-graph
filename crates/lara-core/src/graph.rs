@@ -66,6 +66,8 @@ pub struct Graph<M: Memory> {
     vertices: M,
     edges: PageStore<M>,
     lists: PageStore<M>,
+    /// Mirrors the vertex count in the header: the graph owns its memories.
+    count: u32,
 }
 
 /// An operation failed; the graph is unchanged.
@@ -168,10 +170,13 @@ impl<M: Memory> Graph<M> {
         Region::new(&vertices)
             .write(ByteOffset::new(0), &[m0, m1, m2, VERSION])
             .map_err(|e| create_error(page_store::CreateError::Write(e)))?;
+        let count =
+            u32::from_le_bytes(Region::new(&vertices).read_array(ByteOffset::new(AT_COUNT)));
         Ok(Self {
             vertices,
             edges,
             lists,
+            count,
         })
     }
 
@@ -201,17 +206,20 @@ impl<M: Memory> Graph<M> {
         }
         let edges = PageStore::open(edge_pages, edge_directory).map_err(open_error)?;
         let lists = PageStore::open(list_pages, list_directory).map_err(open_error)?;
+        let count =
+            u32::from_le_bytes(Region::new(&vertices).read_array(ByteOffset::new(AT_COUNT)));
         Ok(Self {
             vertices,
             edges,
             lists,
+            count,
         })
     }
 
     /// Number of vertices; ids are `0..vertex_count`.
     #[must_use]
-    pub fn vertex_count(&self) -> u32 {
-        u32::from_le_bytes(self.region().read_array(ByteOffset::new(AT_COUNT)))
+    pub const fn vertex_count(&self) -> u32 {
+        self.count
     }
 
     /// Adds a vertex with no edges and returns its id.
@@ -230,6 +238,7 @@ impl<M: Memory> Graph<M> {
         self.region().write(record_at(id), &Record::NEW.encode())?;
         self.region()
             .overwrite(ByteOffset::new(AT_COUNT), &next.to_le_bytes());
+        self.count = next;
         Ok(id)
     }
 

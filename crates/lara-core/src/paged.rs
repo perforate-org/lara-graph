@@ -16,6 +16,7 @@ use crate::page_store::{ByteClass, Extent, PageId, PageStore, Pages};
 use crate::txn::SpanTxn;
 use crate::units::ByteOffset;
 use alloc::vec::Vec;
+use core::ops::ControlFlow;
 
 /// Bytes per index entry.
 const ENTRY_BYTES: u32 = 6;
@@ -111,48 +112,91 @@ impl Node {
     }
 }
 
-/// Visits every entry under `node` in order, parents before their children, as
-/// `(level, entry)`; level-1 entries are data pages.
-fn walk<M: Memory>(
+/// Visits the entries under `node` whose subtrees hold data pages numbered `from` or later, in
+/// order, parents before their children, as `(level, first data page covered, entry)`, until
+/// `on_entry` breaks. Level-1 entries are data pages. Reads each node from its first such entry.
+fn walk<M: Memory, B>(
     view: &Pages<'_, M>,
     node: Node,
     total: u32,
-    on_entry: &mut impl FnMut(u32, Leaf),
-) {
+    from: u64,
+    on_entry: &mut impl FnMut(u32, u64, Leaf) -> ControlFlow<B>,
+) -> ControlFlow<B> {
     let covered = span(node.level);
     let entries = (u64::from(total) - node.first)
         .div_ceil(covered)
         .min(u64::from(FANOUT));
-    let len =
-        usize::try_from(entries * u64::from(ENTRY_BYTES)).unwrap_or_else(|_| corrupt("index"));
-    let bytes = view.read(node.offset, len);
-    for (i, &raw) in (0u64..).zip(bytes.as_chunks::<6>().0) {
+    let start = from.saturating_sub(node.first) / covered;
+    if start >= entries {
+        return ControlFlow::Continue(());
+    }
+    let len = usize::try_from((entries - start) * u64::from(ENTRY_BYTES))
+        .unwrap_or_else(|_| corrupt("index"));
+    let bytes = view.read(entry_at(node.offset, start), len);
+    for (i, &raw) in (start..).zip(bytes.as_chunks::<6>().0) {
         let entry = decode(raw);
-        on_entry(node.level, entry);
+        let first = node.first + i * covered;
+        on_entry(node.level, first, entry)?;
         if node.level > 1 {
             let child = Node {
                 offset: entry.present().offset(),
                 level: node.level - 1,
-                first: node.first + i * covered,
+                first,
             };
-            walk(view, child, total, on_entry);
+            walk(view, child, total, from, on_entry)?;
         }
     }
+    ControlFlow::Continue(())
+}
+
+/// Visits every index entry, as `(level, entry)`.
+fn every_entry<M: Memory>(view: &Pages<'_, M>, paged: &Paged, mut f: impl FnMut(u32, Leaf)) {
+    let _: ControlFlow<()> = walk(
+        view,
+        Node::top(paged),
+        data_pages(paged.stored),
+        0,
+        &mut |level, _, entry| {
+            f(level, entry);
+            ControlFlow::Continue(())
+        },
+    );
+}
+
+/// Calls `f` with each data page numbered `from` or later, as `(number, leaf)`, until it
+/// breaks. Reads only the index entries from there on.
+pub(crate) fn visit_leaves<M: Memory, B>(
+    view: &Pages<'_, M>,
+    paged: &Paged,
+    from: u32,
+    mut f: impl FnMut(u32, Leaf) -> ControlFlow<B>,
+) -> ControlFlow<B> {
+    walk(
+        view,
+        Node::top(paged),
+        data_pages(paged.stored),
+        u64::from(from),
+        &mut |level, first, entry| {
+            if level == 1 {
+                f(
+                    u32::try_from(first).unwrap_or_else(|_| corrupt("page number")),
+                    entry,
+                )
+            } else {
+                ControlFlow::Continue(())
+            }
+        },
+    )
 }
 
 /// Every data page in order, with its tombstone count.
 pub(crate) fn leaves<M: Memory>(view: &Pages<'_, M>, paged: &Paged) -> Vec<Leaf> {
     let mut out = Vec::new();
-    walk(
-        view,
-        Node::top(paged),
-        data_pages(paged.stored),
-        &mut |level, entry| {
-            if level == 1 {
-                out.push(entry);
-            }
-        },
-    );
+    every_entry(view, paged, |level, entry| {
+        if level == 1 {
+            out.push(entry);
+        }
+    });
     out
 }
 
@@ -230,16 +274,11 @@ pub(crate) fn set_tombstones<M: Memory>(
 /// Every index node below the top (whole pages), for releasing a demoted bucket's index.
 pub(crate) fn index_nodes<M: Memory>(view: &Pages<'_, M>, paged: &Paged) -> Vec<PageId> {
     let mut out = Vec::new();
-    walk(
-        view,
-        Node::top(paged),
-        data_pages(paged.stored),
-        &mut |level, entry| {
-            if level > 1 {
-                out.push(entry.present());
-            }
-        },
-    );
+    every_entry(view, paged, |level, entry| {
+        if level > 1 {
+            out.push(entry.present());
+        }
+    });
     out
 }
 
@@ -388,16 +427,11 @@ fn link_path<M: Memory>(store: &PageStore<M>, growth: &Growth, grown: &Grown) {
 #[cfg(test)]
 pub(crate) fn index_extents<M: Memory>(view: &Pages<'_, M>, paged: &Paged) -> Vec<Extent> {
     let mut out = alloc::vec![paged.index];
-    walk(
-        view,
-        Node::top(paged),
-        data_pages(paged.stored),
-        &mut |level, entry| {
-            if level > 1 {
-                out.push(Extent::whole(entry.present()));
-            }
-        },
-    );
+    every_entry(view, paged, |level, entry| {
+        if level > 1 {
+            out.push(Extent::whole(entry.present()));
+        }
+    });
     out
 }
 

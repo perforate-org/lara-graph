@@ -92,7 +92,7 @@ impl<M: Memory> Graph<M> {
                 Lookup::Absent { .. } => fresh.push((half.vertex, own.list)),
             }
             places.push(Place {
-                list: own.list,
+                record: own,
                 lookup,
             });
         }
@@ -101,10 +101,10 @@ impl<M: Memory> Graph<M> {
     }
 
     fn place(&self, half: Half) -> Result<Place, Error> {
-        let list = self.list(half.vertex)?;
+        let record = self.record(half.vertex)?;
         Ok(Place {
-            list,
-            lookup: labels::lookup(&self.lists.pages(), list, half.key),
+            record,
+            lookup: labels::lookup(&self.lists.pages(), record.list, half.key),
         })
     }
 
@@ -115,7 +115,8 @@ impl<M: Memory> Graph<M> {
             key,
             target,
         } = half;
-        let Place { list, lookup } = place;
+        let Place { record, lookup } = place;
+        let list = record.list;
         let at = match lookup {
             Lookup::Present { index, descriptor } => {
                 let (next, at) = reserved(bucket::insert(descriptor, target, &mut self.edges));
@@ -127,7 +128,8 @@ impl<M: Memory> Graph<M> {
                 let (next, at) =
                     reserved(bucket::insert(Descriptor::EMPTY, target, &mut self.edges));
                 let list = reserved(labels::add(&mut self.lists, list, index, key, &next));
-                self.set_list(vertex, Some(list));
+                let list = Some(list);
+                self.write_record(vertex, Record { list, ..record });
                 at
             }
         };
@@ -138,7 +140,8 @@ impl<M: Memory> Graph<M> {
 /// Where a half goes: its vertex's list and the lookup of its bucket there.
 #[derive(Clone, Copy)]
 struct Place {
-    list: Option<BucketList>,
+    /// The vertex's record when the half was admitted.
+    record: Record,
     lookup: Lookup,
 }
 
