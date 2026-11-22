@@ -4,10 +4,12 @@ use super::{Error, Graph, Removal};
 use crate::bucket;
 use crate::corrupt::corrupt;
 use crate::descriptor::Descriptor;
-use crate::id::{EdgeRef, Halves, Position, Side, VertexId};
+use crate::id::{EdgeRef, Halves, Position, RemovedEdge, Side, VertexId};
 use crate::labels::{self, BucketKey, EntryAt, Lookup};
 use crate::memory::Memory;
 use crate::page_store::Pages;
+use crate::stored::Bucket;
+use alloc::vec::Vec;
 
 impl<M: Memory> Graph<M> {
     /// The other half of the edge `half` belongs to, or `None` when `half` is not live.
@@ -31,21 +33,33 @@ impl<M: Memory> Graph<M> {
         let Some(Pair { own, other, theirs }) = self.pair(half)? else {
             return Ok(Removal::Absent);
         };
+        let halves = order(half, other);
+        // Only a label with a width has a value to report.
+        let value = if self.widths.get(half.label()).is_some() {
+            let canonical = if halves.canonical() == half {
+                own
+            } else {
+                theirs
+            };
+            self.read_value(&canonical, half.label(), halves.canonical().position())
+        } else {
+            Vec::new()
+        };
         self.tombstone(own, half.position());
         if other != half {
             self.tombstone(theirs, other.position());
         }
-        Ok(Removal::Removed(order(half, other)))
+        Ok(Removal::Removed(RemovedEdge::new(halves, value)))
     }
 
     /// Both halves of the edge `half` belongs to, with their buckets; `None` when `half` is not
     /// live.
-    fn pair(&self, half: EdgeRef) -> Result<Option<Pair>, Error> {
+    pub(super) fn pair(&self, half: EdgeRef) -> Result<Option<Pair>, Error> {
         let Some(own) = self.find_bucket(half.vertex(), key_of(half))? else {
             return Ok(None);
         };
         let view = self.edges.pages();
-        let Some(other) = bucket::get(&own.descriptor, half.position(), &view) else {
+        let Some(other) = bucket::get(&own.bucket.slots, half.position(), &view) else {
             return Ok(None);
         };
         let key = BucketKey {
@@ -54,11 +68,16 @@ impl<M: Memory> Graph<M> {
         };
         let theirs = self.present(other, key);
         let owner = half.vertex();
-        let only = (theirs.descriptor.stored() <= own.descriptor.stored())
-            .then(|| only_entry_to(&theirs.descriptor, &view, owner))
+        let only = (theirs.bucket.slots.stored() <= own.bucket.slots.stored())
+            .then(|| only_entry_to(&theirs.bucket.slots, &view, owner))
             .flatten();
         let at = only.unwrap_or_else(|| {
-            partner_by_rank(half, other, (&own.descriptor, &theirs.descriptor), &view)
+            partner_by_rank(
+                half,
+                other,
+                (&own.bucket.slots, &theirs.bucket.slots),
+                &view,
+            )
         });
         Ok(Some(Pair {
             own,
@@ -67,11 +86,25 @@ impl<M: Memory> Graph<M> {
         }))
     }
 
-    /// Tombstones the live half at `at` in `found`. Cannot fail.
+    /// Tombstones the live half at `at` in `found`. Writes no value. Cannot fail.
     pub(super) fn tombstone(&self, found: Found, at: Position) {
-        let (next, _) = bucket::remove(found.descriptor, at, &self.edges)
+        let (next, _) = bucket::remove(found.bucket.slots, at, &self.edges)
             .unwrap_or_else(|| corrupt("live half not in its bucket"));
-        labels::set(&self.lists, found.entry, &next);
+        self.publish(
+            found.entry,
+            Bucket {
+                slots: next,
+                ..found.bucket
+            },
+        );
+    }
+
+    /// Publishes a bucket's new state: its header if it has values, else its list entry.
+    pub(super) fn publish(&self, entry: EntryAt, bucket: Bucket) {
+        match bucket.values {
+            Some(_) => bucket.write_header(&self.edges),
+            None => labels::set(&self.lists, entry, &bucket.stored()),
+        }
     }
 
     /// The bucket a live half proves exists.
@@ -85,7 +118,10 @@ impl<M: Memory> Graph<M> {
     pub(super) fn find_bucket(&self, v: VertexId, key: BucketKey) -> Result<Option<Found>, Error> {
         let list = self.list(v)?;
         Ok(match labels::lookup(&self.lists.pages(), list, key) {
-            Lookup::Present { entry, descriptor } => Some(Found { entry, descriptor }),
+            Lookup::Present { entry, stored } => Some(Found {
+                entry,
+                bucket: Bucket::resolve(&self.edges.pages(), stored),
+            }),
             Lookup::Absent { .. } => None,
         })
     }
@@ -95,14 +131,14 @@ impl<M: Memory> Graph<M> {
 #[derive(Clone, Copy)]
 pub(super) struct Found {
     pub(super) entry: EntryAt,
-    pub(super) descriptor: Descriptor,
+    pub(super) bucket: Bucket,
 }
 
 /// Both halves of one edge: the given half's bucket, the other half, and its bucket.
-struct Pair {
-    own: Found,
-    other: EdgeRef,
-    theirs: Found,
+pub(super) struct Pair {
+    pub(super) own: Found,
+    pub(super) other: EdgeRef,
+    pub(super) theirs: Found,
 }
 
 /// The position of the one live entry to `owner` in `d`, or `None` when there are none or

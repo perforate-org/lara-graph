@@ -9,9 +9,9 @@ use super::{
     read_entries, search, shift_in, shift_out,
 };
 use crate::corrupt::corrupt;
-use crate::descriptor::Descriptor;
 use crate::memory::{Memory, WriteError};
 use crate::page_store::{ByteClass, Extent, PageId, PageStore, Pages};
+use crate::stored::Stored;
 use crate::txn::SpanTxn;
 use crate::units::ByteOffset;
 use alloc::vec::Vec;
@@ -97,11 +97,7 @@ fn write_top<M: Memory>(store: &PageStore<M>, top: Extent, leaves: &[Leaf]) {
     store.write(top.offset(), &bytes);
 }
 
-fn write_entries<M: Memory>(
-    store: &PageStore<M>,
-    page: PageId,
-    entries: &[(BucketKey, Descriptor)],
-) {
+fn write_entries<M: Memory>(store: &PageStore<M>, page: PageId, entries: &[(BucketKey, Stored)]) {
     let bytes: Vec<u8> = entries
         .iter()
         .flat_map(|(k, d)| encode_entry(*k, d))
@@ -110,7 +106,7 @@ fn write_entries<M: Memory>(
 }
 
 /// The leaf for `entries`, a non-empty sorted run written to `page`.
-fn leaf_of(page: PageId, entries: &[(BucketKey, Descriptor)]) -> Leaf {
+fn leaf_of(page: PageId, entries: &[(BucketKey, Stored)]) -> Leaf {
     let first = entries
         .first()
         .map_or_else(|| corrupt("an empty leaf"), |(k, _)| *k);
@@ -139,10 +135,7 @@ pub(super) fn has_room<M: Memory>(pages: &Pages<'_, M>, top: Extent, adding: usi
     leaves + adding <= TOP_ENTRIES
 }
 
-pub(super) fn entries<M: Memory>(
-    pages: &Pages<'_, M>,
-    top: Extent,
-) -> Vec<(BucketKey, Descriptor)> {
+pub(super) fn entries<M: Memory>(pages: &Pages<'_, M>, top: Extent) -> Vec<(BucketKey, Stored)> {
     read_top(pages, top)
         .into_iter()
         .flat_map(|l| read_entries(pages, l.page.offset(), l.entries()))
@@ -180,7 +173,7 @@ pub(super) fn extents<M: Memory>(pages: &Pages<'_, M>, top: Extent) -> Vec<Exten
 /// A tiered list of two half-full leaves holding `all`, sorted. On error nothing is allocated.
 pub(super) fn from_entries<M: Memory>(
     store: &mut PageStore<M>,
-    all: &[(BucketKey, Descriptor)],
+    all: &[(BucketKey, Stored)],
 ) -> Result<BucketList, WriteError> {
     let mut txn = SpanTxn::begin(store);
     let left_page = txn.allocate(ByteClass::PAGE)?.page();
@@ -203,7 +196,7 @@ pub(super) fn add<M: Memory>(
     top: Extent,
     gap: EntryAt,
     key: BucketKey,
-    d: &Descriptor,
+    d: &Stored,
 ) -> Result<BucketList, WriteError> {
     let mut leaves = read_top(&store.pages(), top);
     let l = usize::from(gap.leaf);

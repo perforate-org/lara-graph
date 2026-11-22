@@ -97,6 +97,31 @@ impl Cursor {
     }
 }
 
+/// Bytes in each value of a label's edges: 1 to 4096.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Width(u16);
+
+impl Width {
+    /// The widest value: one per value page.
+    pub const MAX: u16 = 4096;
+
+    /// A width of `bytes`, if it is 1 to [`Self::MAX`].
+    #[must_use]
+    pub const fn new(bytes: u16) -> Option<Self> {
+        if bytes >= 1 && bytes <= Self::MAX {
+            Some(Self(bytes))
+        } else {
+            None
+        }
+    }
+
+    /// The width in bytes.
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+}
+
 /// Where an insert may put an edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Placement {
@@ -296,6 +321,32 @@ impl Halves {
         match *self {
             Self::Pair { other, .. } | Self::Single(other) => other,
         }
+    }
+}
+
+/// An edge that was removed: its halves, and its value as the canonical half held it (empty for
+/// a label without a width).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RemovedEdge {
+    halves: Halves,
+    value: alloc::vec::Vec<u8>,
+}
+
+impl RemovedEdge {
+    pub(crate) const fn new(halves: Halves, value: alloc::vec::Vec<u8>) -> Self {
+        Self { halves, value }
+    }
+
+    /// The removed halves.
+    #[must_use]
+    pub const fn halves(&self) -> Halves {
+        self.halves
+    }
+
+    /// The value the edge carried.
+    #[must_use]
+    pub fn value(&self) -> &[u8] {
+        &self.value
     }
 }
 

@@ -4,9 +4,10 @@ use super::pair::{Found, opposite, order};
 use super::{Detachment, Error, Graph, Step};
 use crate::bucket;
 use crate::corrupt::corrupt;
-use crate::id::{EdgeRef, Position, Progress, VertexId, VertexState};
+use crate::id::{EdgeRef, Position, Progress, RemovedEdge, VertexId, VertexState};
 use crate::labels::{self, BucketKey};
 use crate::memory::Memory;
+use crate::stored::Bucket;
 use crate::vertex::Record;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -57,13 +58,17 @@ impl<M: Memory> Graph<M> {
         let mut hints = BTreeMap::new();
         for _ in 0..budget.get() {
             let list = self.list(v)?;
-            let Some((entry, key, descriptor)) =
+            let Some((entry, key, stored)) =
                 list.map(|list| labels::first(&self.lists.pages(), list))
             else {
                 break;
             };
+            let found = Found {
+                entry,
+                bucket: Bucket::resolve(&self.edges.pages(), stored),
+            };
             let from = cursors.get(&key).copied().unwrap_or(Position::new(0));
-            let first = bucket::find(&descriptor, &self.edges.pages(), from, |_| true);
+            let first = bucket::find(&found.bucket.slots, &self.edges.pages(), from, |_| true);
             let Some(edge) = first else {
                 // All holes: compaction drops the bucket without moving anything.
                 self.compact(v, key.label, key.side)?;
@@ -74,11 +79,18 @@ impl<M: Memory> Graph<M> {
             cursors.insert(key, edge.position());
             let half = EdgeRef::new(v, key.label, key.side, edge.position());
             let (theirs, other) = self.first_half_to(v, half, edge.target(), &mut hints);
-            self.tombstone(Found { entry, descriptor }, half.position());
+            let halves = order(half, other);
+            let canonical = if halves.canonical() == half {
+                found
+            } else {
+                theirs
+            };
+            let value = self.read_value(&canonical, half.label(), halves.canonical().position());
+            self.tombstone(found, half.position());
             if other != half {
                 self.tombstone(theirs, other.position());
             }
-            removed.push(order(half, other));
+            removed.push(RemovedEdge::new(halves, value));
         }
         let progress = if self.list(v)?.is_none() {
             self.write_record(
@@ -115,7 +127,7 @@ impl<M: Memory> Graph<M> {
             .copied()
             .unwrap_or(Position::new(0));
         let theirs = self.present(other, key);
-        let found = bucket::find(&theirs.descriptor, &self.edges.pages(), from, |e| {
+        let found = bucket::find(&theirs.bucket.slots, &self.edges.pages(), from, |e| {
             e.target() == v
         })
         .unwrap_or_else(|| corrupt("an edge half without its counterpart"));

@@ -31,12 +31,14 @@ mod paged;
 /// The TLSF span allocator: kept for the storage comparisons in `crates/benches`.
 #[cfg(feature = "bench-internals")]
 mod span_alloc;
+mod stored;
 
 #[cfg(feature = "bench-internals")]
 #[doc(hidden)]
 pub mod bench_internals;
 mod txn;
 mod units;
+mod values;
 mod vertex;
 
 pub use graph::{
@@ -44,6 +46,6 @@ pub use graph::{
 };
 pub use id::{
     Cursor, Edge, EdgeRef, Halves, Label, Move, Order, Placement, Position, Progress, Side,
-    VertexId, VertexState,
+    VertexId, VertexState, Width,
 };
 pub use memory::{GrowFailed, Memory, PAGE_SIZE, VecMemory};

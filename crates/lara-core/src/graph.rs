@@ -1,20 +1,24 @@
 //! The graph: labeled buckets of edge halves per vertex and side, over five memories.
 
 use crate::bucket;
-use crate::compact::{self, Outcome};
-use crate::corrupt::corrupt;
+use crate::compact::{self, Inline, Outcome};
+use crate::corrupt::{corrupt, reservation_exceeded};
 use crate::descriptor::Descriptor;
-use crate::id::{Edge, EdgeRef, Halves, Label, Move, Progress, Side, VertexId, VertexState};
-use crate::labels::{self, BucketKey, BucketList, Lookup};
+use crate::id::{
+    Edge, EdgeRef, Label, Move, Progress, RemovedEdge, Side, VertexId, VertexState, Width,
+};
+use crate::labels::{self, BucketKey, BucketList};
 use crate::memory::{GrowFailed, Memory, Region, WriteError};
 use crate::page_store::{self, PageStore};
+use crate::stored::Bucket;
 use crate::units::{ByteOffset, Overflow};
+use crate::values;
 use crate::vertex::{RECORD_BYTES, Record};
 use alloc::vec::Vec;
 use core::fmt;
 
 const MAGIC: [u8; 3] = *b"LGV";
-const VERSION: u8 = 4;
+const VERSION: u8 = 5;
 const AT_COUNT: u64 = 4;
 const RECORDS_START: u64 = 16;
 
@@ -67,6 +71,8 @@ pub struct Graph<M: Memory> {
     lists: PageStore<M>,
     /// Mirrors the vertex count in the header: the graph owns its memories.
     count: u32,
+    /// Mirrors the label width table.
+    widths: Widths,
 }
 
 /// An operation failed; the graph is unchanged.
@@ -86,6 +92,24 @@ pub enum Error {
     NotDetaching(VertexId),
     /// The vertex was deleted ([`Graph::detach`]); ids are never reused.
     Deleted(VertexId),
+    /// The label already has a different width ([`Graph::declare_width`]).
+    WidthConflict {
+        /// The label.
+        label: Label,
+        /// Its width.
+        declared: Width,
+    },
+    /// 1023 labels already have a width.
+    TooManyWidths,
+    /// A value's length is not its label's width (0 for a label without one).
+    WrongValueLength {
+        /// The label.
+        label: Label,
+        /// The label's width in bytes.
+        expected: u16,
+        /// The value's length.
+        actual: usize,
+    },
 }
 
 /// Creating a graph failed.
@@ -135,14 +159,14 @@ impl<T> Step<T> {
 /// position.
 pub type Compaction = Step<Move>;
 
-/// One [`Graph::detach_step`]: the edges removed, both halves of each.
-pub type Detachment = Step<Halves>;
+/// One [`Graph::detach_step`]: the edges removed, both halves of each, with their values.
+pub type Detachment = Step<RemovedEdge>;
 
 /// What [`Graph::remove_edge`] did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Removal {
-    /// The edge with these halves was removed; their positions are now holes.
-    Removed(Halves),
+    /// The edge was removed; its halves' positions are now holes.
+    Removed(RemovedEdge),
     /// No live edge was at that position.
     Absent,
 }
@@ -171,14 +195,7 @@ impl<M: Memory> Graph<M> {
         Region::new(&vertices)
             .write(ByteOffset::new(0), &[m0, m1, m2, VERSION])
             .map_err(|e| create_error(page_store::CreateError::Write(e)))?;
-        let count =
-            u32::from_le_bytes(Region::new(&vertices).read_array(ByteOffset::new(AT_COUNT)));
-        Ok(Self {
-            vertices,
-            edges,
-            lists,
-            count,
-        })
+        Ok(Self::assemble(vertices, edges, lists))
     }
 
     /// Opens a graph written by [`Self::create`]. Reads headers only.
@@ -207,14 +224,21 @@ impl<M: Memory> Graph<M> {
         }
         let edges = PageStore::open(edge_pages, edge_directory).map_err(open_error)?;
         let lists = PageStore::open(list_pages, list_directory).map_err(open_error)?;
+        Ok(Self::assemble(vertices, edges, lists))
+    }
+
+    /// A graph over formatted memories, with its header mirrors loaded.
+    fn assemble(vertices: M, edges: PageStore<M>, lists: PageStore<M>) -> Self {
         let count =
             u32::from_le_bytes(Region::new(&vertices).read_array(ByteOffset::new(AT_COUNT)));
-        Ok(Self {
+        let widths = Widths::load(&vertices, &lists);
+        Self {
             vertices,
             edges,
             lists,
             count,
-        })
+            widths,
+        }
     }
 
     /// Number of vertices; ids are `0..vertex_count`.
@@ -335,18 +359,42 @@ impl<M: Memory> Graph<M> {
     /// [`Error::UnknownVertex`], or [`Error::OutOfMemory`] when a smaller run cannot be
     /// allocated. On error the graph is unchanged.
     pub fn compact(&mut self, v: VertexId, label: Label, side: Side) -> Result<Compaction, Error> {
-        let list = self.list(v)?;
-        let Lookup::Present { entry, descriptor } =
-            labels::lookup(&self.lists.pages(), list, BucketKey { label, side })
-        else {
+        let Some(found) = self.find_bucket(v, BucketKey { label, side })? else {
             return Ok(Step::new(Vec::new(), Progress::Done));
         };
-        let list = list.unwrap_or_else(|| corrupt("present bucket without a list"));
-        let step = compact::step(descriptor, &mut self.edges)?;
+        let inline = match found.bucket.values {
+            Some(values) => {
+                // Moved values may land in value pages not yet allocated: reserve them first.
+                self.edges.reserve(values::pages_per_moves(values.width))?;
+                Inline::Forbidden
+            }
+            None => Inline::Allowed,
+        };
+        let step = compact::step(found.bucket.slots, &mut self.edges, inline)?;
+        let mut values = found.bucket.values;
+        if let Some(moved) = values.as_mut() {
+            // Moves go to lower positions in ascending order, so no source is overwritten first.
+            for m in &step.moves {
+                let pair = (m.from().index(), m.to().index());
+                moved.plane = reserved(values::copy(
+                    &mut self.edges,
+                    moved.plane,
+                    moved.width,
+                    pair,
+                ));
+            }
+        }
         match step.outcome {
-            Outcome::Bucket(next) => labels::set(&self.lists, entry, &next),
+            Outcome::Bucket(slots) => self.publish(found.entry, Bucket { slots, values }),
             Outcome::Empty => {
-                let list = labels::remove(&mut self.lists, list, entry);
+                if let Some(gone) = values {
+                    values::release(&mut self.edges, gone.plane);
+                    self.edges.release(gone.header);
+                }
+                let list = self
+                    .list(v)?
+                    .unwrap_or_else(|| corrupt("present bucket without a list"));
+                let list = labels::remove(&mut self.lists, list, found.entry);
                 self.set_list(v, list);
             }
         }
@@ -390,8 +438,13 @@ impl<M: Memory> Graph<M> {
     }
 
     fn bucket(&self, v: VertexId, key: BucketKey) -> Result<Option<Descriptor>, Error> {
-        Ok(self.find_bucket(v, key)?.map(|found| found.descriptor))
+        Ok(self.find_bucket(v, key)?.map(|found| found.bucket.slots))
     }
+}
+
+/// The result of an update that runs within reserved memory.
+fn reserved<T>(result: Result<T, WriteError>) -> T {
+    result.unwrap_or_else(|_| reservation_exceeded())
 }
 
 fn record_at(v: VertexId) -> ByteOffset {
@@ -434,6 +487,22 @@ impl fmt::Display for Error {
             Self::Detaching(v) => write!(f, "vertex {} is being detached", v.index()),
             Self::NotDetaching(v) => write!(f, "vertex {} is not being detached", v.index()),
             Self::Deleted(v) => write!(f, "vertex {} is deleted", v.index()),
+            Self::WidthConflict { label, declared } => write!(
+                f,
+                "label {} already has width {}",
+                label.get(),
+                declared.get()
+            ),
+            Self::TooManyWidths => f.write_str("too many labels with a width"),
+            Self::WrongValueLength {
+                label,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "label {} takes {expected}-byte values, not {actual}",
+                label.get()
+            ),
         }
     }
 }
@@ -463,7 +532,11 @@ impl core::error::Error for OpenError {}
 mod detach;
 mod insert;
 mod pair;
+mod props;
 mod read;
+mod widths;
+
+use widths::Widths;
 
 use pair::key_of;
 #[cfg(test)]

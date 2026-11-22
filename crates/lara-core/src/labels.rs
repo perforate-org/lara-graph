@@ -10,10 +10,11 @@
 mod tiered;
 
 use crate::corrupt::corrupt;
-use crate::descriptor::{DESCRIPTOR_BYTES, Descriptor};
+use crate::descriptor::DESCRIPTOR_BYTES;
 use crate::id::{Label, Side};
 use crate::memory::{Memory, WriteError};
 use crate::page_store::{ByteClass, EXTENT_BYTES, Extent, PageStore, Pages};
+use crate::stored::Stored;
 use crate::units::ByteOffset;
 use alloc::vec::Vec;
 
@@ -92,10 +93,7 @@ pub(crate) struct EntryAt {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Lookup {
     /// The bucket exists.
-    Present {
-        entry: EntryAt,
-        descriptor: Descriptor,
-    },
+    Present { entry: EntryAt, stored: Stored },
     /// No bucket; a new entry belongs at `gap`.
     Absent { gap: EntryAt },
 }
@@ -170,7 +168,7 @@ fn search<M: Memory>(
     match found {
         Ok(index) => Lookup::Present {
             entry: place(index),
-            descriptor: entries
+            stored: entries
                 .get(index)
                 .map_or_else(|| corrupt("list entry"), |&e| decode_entry(e).1),
         },
@@ -182,7 +180,7 @@ fn search<M: Memory>(
 pub(crate) fn first<M: Memory>(
     pages: &Pages<'_, M>,
     list: BucketList,
-) -> (EntryAt, BucketKey, Descriptor) {
+) -> (EntryAt, BucketKey, Stored) {
     let (leaf_page, leaf) = match list.0 {
         Shape::Flat { extent, .. } => (extent.offset(), 0),
         Shape::Tiered { top } => (tiered::first_leaf(pages, top), 0),
@@ -215,10 +213,7 @@ pub(crate) fn keys<M: Memory>(pages: &Pages<'_, M>, list: Option<BucketList>) ->
 }
 
 /// Every entry of a list, in order.
-fn entries<M: Memory>(
-    pages: &Pages<'_, M>,
-    list: Option<BucketList>,
-) -> Vec<(BucketKey, Descriptor)> {
+fn entries<M: Memory>(pages: &Pages<'_, M>, list: Option<BucketList>) -> Vec<(BucketKey, Stored)> {
     match list.map(|BucketList(shape)| shape) {
         None => Vec::new(),
         Some(Shape::Flat { extent, count }) => {
@@ -232,7 +227,7 @@ fn read_entries<M: Memory>(
     pages: &Pages<'_, M>,
     base: ByteOffset,
     count: usize,
-) -> Vec<(BucketKey, Descriptor)> {
+) -> Vec<(BucketKey, Stored)> {
     let bytes = pages.read(base, count * ENTRY_BYTES);
     bytes
         .as_chunks::<ENTRY_BYTES>()
@@ -247,7 +242,7 @@ fn read_entries<M: Memory>(
 pub(crate) fn buckets<M: Memory>(
     pages: &Pages<'_, M>,
     list: Option<BucketList>,
-) -> Vec<(BucketKey, Descriptor)> {
+) -> Vec<(BucketKey, Stored)> {
     entries(pages, list)
 }
 
@@ -275,17 +270,17 @@ pub(crate) fn extents<M: Memory>(pages: &Pages<'_, M>, list: BucketList) -> Vec<
     }
 }
 
-fn decode_entry(entry: [u8; ENTRY_BYTES]) -> (BucketKey, Descriptor) {
+fn decode_entry(entry: [u8; ENTRY_BYTES]) -> (BucketKey, Stored) {
     let [k0, k1, k2, rest @ ..] = entry;
-    (BucketKey::decode([k0, k1, k2]), Descriptor::decode(rest))
+    (BucketKey::decode([k0, k1, k2]), Stored::decode(rest))
 }
 
-fn encode_entry(key: BucketKey, d: &Descriptor) -> impl Iterator<Item = u8> {
+fn encode_entry(key: BucketKey, d: &Stored) -> impl Iterator<Item = u8> {
     key.encode().into_iter().chain(d.encode())
 }
 
 /// Publishes a bucket's new descriptor in place. Cannot fail.
-pub(crate) fn set<M: Memory>(store: &PageStore<M>, entry: EntryAt, d: &Descriptor) {
+pub(crate) fn set<M: Memory>(store: &PageStore<M>, entry: EntryAt, d: &Stored) {
     store.write(ByteOffset::new(entry.at.get() + 3), &d.encode());
 }
 
@@ -296,7 +291,7 @@ pub(crate) fn add<M: Memory>(
     list: Option<BucketList>,
     gap: EntryAt,
     key: BucketKey,
-    d: &Descriptor,
+    d: &Stored,
 ) -> Result<BucketList, WriteError> {
     match list.map(|BucketList(shape)| shape) {
         None => add_flat(store, None, gap.index, key, d),
@@ -319,7 +314,7 @@ fn add_flat<M: Memory>(
     list: Option<(Extent, u8)>,
     index: usize,
     key: BucketKey,
-    d: &Descriptor,
+    d: &Stored,
 ) -> Result<BucketList, WriteError> {
     let count = list.map_or(0, |(_, c)| usize::from(c));
     let new_count = u8::try_from(count + 1).unwrap_or_else(|_| corrupt("flat list count"));
@@ -382,7 +377,7 @@ fn shift_in<M: Memory>(
     base: ByteOffset,
     count: usize,
     index: usize,
-    (key, d): (BucketKey, &Descriptor),
+    (key, d): (BucketKey, &Stored),
 ) {
     let tail = store
         .pages()

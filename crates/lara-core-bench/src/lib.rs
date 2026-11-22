@@ -12,7 +12,7 @@ use ic_stable_structures::DefaultMemoryImpl;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use lara_core::{
     Cursor, EdgeRef, Graph, GrowFailed, Halves, Label, Memories, Memory, Order, Placement,
-    Position, Progress, Side, VecMemory, VertexId,
+    Position, Progress, Side, VecMemory, VertexId, Width,
 };
 
 const LABEL: Label = Label::new(2);
@@ -72,7 +72,7 @@ fn last(edges: &[Halves]) -> Halves {
 }
 
 fn directed<M: Memory>(g: &mut Graph<M>, from: VertexId, to: VertexId) -> Halves {
-    g.insert_directed(from, LABEL, to, Placement::ReuseHoles)
+    g.insert_directed(from, LABEL, to, Placement::ReuseHoles, &[])
         .unwrap_or_else(|e| panic!("insert: {e}"))
 }
 
@@ -210,6 +210,83 @@ fn hub_targets_at_256_of_65536() -> BenchResult {
             .unwrap_or_else(|e| panic!("targets: {e}"));
         black_box(out.len());
     })
+}
+
+/// A hub whose label carries 8-byte values, each edge given one.
+fn seed_valued_hub(g: &mut Graph<VecMemory>, degree: u32) -> VertexId {
+    g.declare_width(LABEL, Width::new(8).unwrap_or_else(|| panic!("width")))
+        .unwrap_or_else(|e| panic!("width: {e}"));
+    let hub = vertex(g);
+    for leaf in vertices(g, degree) {
+        let value = u64::from(leaf.index()).to_le_bytes();
+        g.insert_directed(hub, LABEL, leaf, Placement::Append, &value)
+            .unwrap_or_else(|e| panic!("insert: {e}"));
+    }
+    hub
+}
+
+/// Growing a hub to 4096 edges with 8-byte values: both halves of each.
+#[bench(raw)]
+fn hub_insert_valued_4096() -> BenchResult {
+    let mut g = heap_graph();
+    g.declare_width(LABEL, Width::new(8).unwrap_or_else(|| panic!("width")))
+        .unwrap_or_else(|e| panic!("width: {e}"));
+    let hub = vertex(&mut g);
+    let leaves = vertices(&mut g, 4096);
+    bench_fn(|| {
+        for &leaf in &leaves {
+            let value = u64::from(leaf.index()).to_le_bytes();
+            black_box(
+                g.insert_directed(hub, LABEL, leaf, Placement::Append, &value)
+                    .unwrap_or_else(|e| panic!("insert: {e}")),
+            );
+        }
+    })
+}
+
+/// 51 values-first scans of a 65536-edge hub (values only).
+#[bench(raw)]
+fn hub_visit_values_65536() -> BenchResult {
+    let mut g = heap_graph();
+    let hub = seed_valued_hub(&mut g, 65536);
+    bench_fn(|| {
+        for _ in 0..51 {
+            let mut sum = 0u64;
+            g.visit_values(hub, (LABEL, Side::Out), Order::Ascending, |_, v| {
+                sum = sum.wrapping_add(u64::from(v.first().copied().unwrap_or(0)));
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap_or_else(|e| panic!("values: {e}"));
+            black_box(sum);
+        }
+    })
+}
+
+/// 51 combined scans (edge and value) of a 1024-edge hub.
+#[bench(raw)]
+fn hub_visit_with_values_1024() -> BenchResult {
+    let mut g = heap_graph();
+    let hub = seed_valued_hub(&mut g, 1024);
+    bench_fn(|| {
+        for _ in 0..51 {
+            let mut count = 0u32;
+            g.visit_neighbors_with_values(hub, (LABEL, Side::Out), Order::Ascending, |_, _| {
+                count += 1;
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap_or_else(|e| panic!("visit: {e}"));
+            black_box(count);
+        }
+    })
+}
+
+/// Overwriting one edge's value in both halves, in a 4096-edge hub.
+#[bench(raw)]
+fn set_value_4096() -> BenchResult {
+    let mut g = heap_graph();
+    let hub = seed_valued_hub(&mut g, 4096);
+    let half = EdgeRef::new(hub, LABEL, Side::Out, Position::new(4000));
+    bench_fn(|| black_box(g.set_value(half, &[7; 8])))
 }
 
 #[bench(raw)]

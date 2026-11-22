@@ -187,6 +187,37 @@ Reading one bucket costs a vertex read, a list read and one data read (index and
 `Graph::visit_neighbors` reads without collecting, at about 30 instructions per edge on the IC.
 `neighbors`, which fills a `Vec`, costs about twice that (`docs/ic-measurements-2026-11-22.md`).
 
+## Edge values
+
+A label may carry a fixed-width value on every edge (`Graph::declare_width`, 1 to 4096 bytes,
+the same on every side). Both halves hold the value. The design and its reasons are in
+`docs/inline-properties-design-2026-11-22.md`.
+
+- **A column beside the slots, addressed by position.**
+  - A bucket's **value plane** (`values`) holds the value of position `p` in cell `p`.
+  - Slot pages and scans of targets are untouched.
+  - A delete writes no value, and a hole refill writes one.
+  - Only compaction moves values, one cell per moved edge.
+- **Values read as zeros until written.** A plane is empty, a run, or a sparse radix table of
+  value pages, where missing pages read as zeros.
+  - Declaring a width costs O(1) and writes nothing.
+  - A bucket gets its plane on its first value write.
+  - Any write allocates at most the path to its page: `PAGES_PER_WRITE`, 9 pages.
+- **Where a plane is found.** A bucket with values keeps a 32-byte header (slot descriptor, plane
+  root, width) and its list entry says `Valued(header)` (`stored`).
+  - Buckets without values are unchanged.
+  - A bucket with values is never tiny.
+- **The width table.** Widths live in a table in the list store, referenced from the vertices
+  header and mirrored in the heap. Only 0 → w is allowed.
+- **Reads.**
+  - `value` reads one edge; `values_at` reads chosen positions.
+  - `visit_values` scans the value plane alone, as the first phase of a values-first traversal.
+    It skips slot pages that are all dead; holes come with stale bytes.
+  - `visit_neighbors_with_values` joins a slot page's live edges with one read of their values.
+- **Writes and reports.**
+  - `set_value` rewrites both halves and returns the old value.
+  - Removal and detach report the canonical half's value (`RemovedEdge`).
+
 ## Reads
 
 Every read walks a range of positions in either `Order`, and reads pages through the index,
@@ -209,8 +240,10 @@ skipping dead pages.
 - Detaching many vertices at once with one pass over each shared hub.
 - Closing the insert gap with ic-stable-lara (~1.25× per half): the insert path still allocates
   several `Vec`s (`docs/ic-stable-lara-adoption-2026-11-22.md`).
-- Inline edge properties stored by position beside the slots
-  (`docs/ic-stable-lara-adoption-2026-11-22.md`).
+- Releasing value pages of positions that compaction left behind (a demoted bucket's value plane
+  keeps its pages until the bucket goes).
+- Recovering the cost values added to plain inserts (~7%) and removals (~14%); see
+  `docs/ic-measurements-2026-11-22.md`.
 - Descending scans of a paged bucket read its whole leaf list; a reverse index walk would read
   only the pages wanted.
 - Settling the constants (descriptor size, inline slots, page threshold) by measuring on the IC

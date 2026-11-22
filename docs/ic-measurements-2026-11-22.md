@@ -177,3 +177,32 @@ As in the second round, the IC instruction counts follow codegen more than logic
 **`targets_at` choice.** It reads a page's wanted range in one read when the positions are dense.
 When there are more than 16 slots per wanted position, it reads each slot instead: 3.09 M fell to
 235 K.
+
+## Fourth round: edge values
+
+| Scenario | Instructions |
+| --- | ---: |
+| Hub insert of 4096 edges with 8-byte values (both halves) | 109.5 M (~26.7 K per edge) |
+| 51 values-first scans of 65536 values (`visit_values`) | 102.5 M (~31 per value) |
+| 51 combined scans of 1024 edges with values | 4.37 M (~84 per edge) |
+| `set_value` in a 4096-edge hub (both halves) | 19.4 K |
+
+**First attempts.** The values-first scan collected each page into a `Vec` and zero-filled every
+chunk (~92 per value). The combined scan read each value on its own (~1040 per edge). Joining a
+slot page's live edges with one read of their values brought them to the figures above.
+
+**Paths without values regressed.**
+
+| Scenario | Regression |
+| --- | ---: |
+| Plain inserts | +7 % |
+| Plain inserts, parallel edges | +10 % |
+| Remove half and compact | +14 % |
+| Detach a hub | +8-10 % |
+
+- Memory calls did not change. The cost is in the bucket resolution and the larger plans the value
+  code adds.
+- Splitting plain and valued insert paths, resolving headers only for valued buckets, and
+  skipping value reads for labels without a width recovered about half of it.
+- Removing the heap allocations from the insert path is the next lever.
+- Scans and lookups did not change.

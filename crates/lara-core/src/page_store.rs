@@ -61,6 +61,8 @@ impl ByteClass {
     /// Chunk classes, i.e. classes below a page.
     const CHUNK_CLASSES: usize = 7;
     pub(crate) const PAGE: Self = Self(Self::PAGE_LOG2);
+    /// The smallest class: 32 bytes.
+    pub(crate) const SMALLEST: Self = Self(5);
 
     /// The smallest class holding `bytes`; `None` past a page.
     pub(crate) fn for_bytes(bytes: u32) -> Option<Self> {

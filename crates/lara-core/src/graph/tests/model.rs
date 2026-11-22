@@ -41,7 +41,17 @@ struct Model {
     detaching: Option<u32>,
     /// Vertices detached for good.
     deleted: Vec<u32>,
+    /// Declared widths.
+    widths: BTreeMap<Label, u16>,
+    /// The value each logical edge was last given; edges without one read as zeros.
+    values: BTreeMap<u64, Vec<u8>>,
 }
+
+/// Label 0 (the hub's) carries 8-byte values from the start, so the value plane grows from a run
+/// into a table; label 2 carries 300 bytes (13 per value page); label 1 gets 3 bytes once 1500
+/// edges exist, so its earlier edges read as zeros.
+const WIDTHS_AT_START: [(u16, u16); 2] = [(0, 8), (2, 300)];
+const LATE_WIDTH: (u16, u16, u64) = (1, 3, 1500);
 
 /// Odd labels append; even ones (the hub's among them) reuse holes.
 fn placement_of(label: Label) -> Placement {
@@ -131,6 +141,23 @@ impl Model {
         self.buckets.get_mut(&key).unwrap()[at] = None;
     }
 
+    /// The value edge `id` of `label` reads as.
+    fn expected(&self, id: u64, label: Label) -> Vec<u8> {
+        let width = usize::from(self.widths.get(&label).copied().unwrap_or(0));
+        self.values
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| vec![0; width])
+    }
+
+    /// A fresh value for `label`, empty without a width.
+    fn fresh_value(&self, label: Label, rng: &mut Rng) -> Vec<u8> {
+        let width = self.widths.get(&label).copied().unwrap_or(0);
+        (0..width)
+            .map(|_| u8::try_from(rng.below(256)).unwrap())
+            .collect()
+    }
+
     /// Why an insert touching `x` fails, if it does.
     fn blocked(&self, x: u32) -> Option<Error> {
         if self.detaching == Some(x) {
@@ -199,6 +226,12 @@ fn random_step<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n:
         model.detaching = Some(x);
         return;
     }
+    let (late, width, after) = LATE_WIDTH;
+    if model.next_id >= after && !model.widths.contains_key(&l(late)) {
+        g.declare_width(l(late), Width::new(width).unwrap())
+            .unwrap();
+        model.widths.insert(l(late), width);
+    }
     let live = model.live_half(rng);
     match live {
         Some(half) if roll < compact_percent => {
@@ -208,6 +241,8 @@ fn random_step<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n:
         Some(half) if roll >= compact_percent + insert_percent => {
             if rng.below(4) == 0 {
                 assert_eq!(g.counterpart(half), Ok(Some(model.counterpart(half))));
+            } else if rng.below(3) == 0 {
+                model_set_value(g, model, half, rng);
             } else {
                 model_remove(g, model, half);
             }
@@ -226,16 +261,26 @@ fn model_insert<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n
     let to = rng.below(3);
     if let Some(error) = [from, to].into_iter().find_map(|x| model.blocked(x)) {
         assert_eq!(
-            g.insert_directed(v(from), label, v(to), placement_of(label)),
+            g.insert_directed(
+                v(from),
+                label,
+                v(to),
+                placement_of(label),
+                &model.fresh_value(label, &mut Rng(1))
+            ),
             Err(error)
         );
         return;
     }
     let id = model.next_id;
     model.next_id += 1;
+    let value = model.fresh_value(label, rng);
+    if !value.is_empty() {
+        model.values.insert(id, value.clone());
+    }
     let halves = if label == HUB.1 || rng.below(4) != 0 {
         let halves = g
-            .insert_directed(v(from), label, v(to), placement_of(label))
+            .insert_directed(v(from), label, v(to), placement_of(label), &value)
             .unwrap();
         assert_eq!(
             halves.canonical(),
@@ -248,7 +293,7 @@ fn model_insert<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n
         halves
     } else {
         let halves = g
-            .insert_undirected(v(from), label, v(to), placement_of(label))
+            .insert_undirected(v(from), label, v(to), placement_of(label), &value)
             .unwrap();
         let (low, high) = (from.min(to), from.max(to));
         assert_eq!(halves.canonical().vertex(), v(high));
@@ -280,13 +325,20 @@ fn model_detach_step<M: Memory>(g: &mut Graph<M>, model: &mut Model, x: u32, rng
     let budget = NonZeroU32::new(1 + rng.below(40)).unwrap();
     let step = g.detach_step(v(x), budget).unwrap();
     assert!(step.changes().len() <= usize::try_from(budget.get()).unwrap());
-    for &halves in step.changes() {
+    for r in step.changes() {
+        let halves = r.halves();
         let source = halves.canonical();
         assert!(
             [source.vertex(), halves.other().vertex()].contains(&v(x)),
             "an edge of the detaching vertex"
         );
         assert_eq!(halves, order(source, model.counterpart(source)));
+        let id = model.slot(source).unwrap().id;
+        assert_eq!(
+            r.value(),
+            model.expected(id, source.label()),
+            "detached value"
+        );
         model.clear(source);
         model.clear(halves.other());
     }
@@ -310,11 +362,27 @@ fn at(half: EdgeRef) -> usize {
 fn model_remove<M: Memory>(g: &mut Graph<M>, model: &mut Model, half: EdgeRef) {
     let other = model.counterpart(half);
     let expected = order(half, other);
-    assert_eq!(g.remove_edge(half), Ok(Removal::Removed(expected)));
+    let id = model.slot(half).unwrap().id;
+    let value = model.expected(id, half.label());
+    assert_eq!(
+        g.remove_edge(half),
+        Ok(Removal::Removed(RemovedEdge::new(expected, value)))
+    );
     model.clear(half);
     model.clear(other);
     assert_eq!(g.edge(half), Ok(None));
     assert_eq!(g.remove_edge(other), Ok(Removal::Absent));
+}
+
+/// Gives the edge `half` belongs to a new value and checks the old one came back.
+fn model_set_value<M: Memory>(g: &mut Graph<M>, model: &mut Model, half: EdgeRef, rng: &mut Rng) {
+    let id = model.slot(half).unwrap().id;
+    let value = model.fresh_value(half.label(), rng);
+    let old = model.expected(id, half.label());
+    assert_eq!(g.set_value(half, &value), Ok(Some(old)));
+    if !value.is_empty() {
+        model.values.insert(id, value);
+    }
 }
 
 /// One compaction step, applied to the model through its reported moves.
@@ -372,6 +440,7 @@ fn assert_matches_model<M: Memory>(g: &Graph<M>, model: &Model, n: u32) {
                     "vertex {x} {label:?} {side:?}"
                 );
                 assert_other_reads(g, (v(x), label, side), &expected);
+                assert_values(g, model, (v(x), label, side));
             }
         }
     }
@@ -423,6 +492,49 @@ fn assert_other_reads<M: Memory>(
     assert_eq!(targets, want, "targets_at");
 }
 
+/// Every live edge reads its model value through the combined scan, positional reads and the
+/// values-first scan.
+fn assert_values<M: Memory>(
+    g: &Graph<M>,
+    model: &Model,
+    (x, label, side): (VertexId, Label, Side),
+) {
+    let Some(slots) = model.buckets.get(&(x.index(), label, side)) else {
+        return;
+    };
+    let live: BTreeMap<u32, Vec<u8>> = (0u32..)
+        .zip(slots)
+        .filter_map(|(at, s)| s.map(|s| (at, model.expected(s.id, label))))
+        .collect();
+    let mut combined = BTreeMap::new();
+    g.visit_neighbors_with_values(x, (label, side), Order::Ascending, |e, value| {
+        combined.insert(e.position().index(), value.to_vec());
+        ControlFlow::<()>::Continue(())
+    })
+    .unwrap();
+    assert_eq!(combined, live, "combined scan of {x:?} {label:?} {side:?}");
+    let positions: Vec<Position> = live.keys().rev().map(|&at| p(at)).collect();
+    let mut bytes = Vec::new();
+    g.values_at(x, (label, side), &positions, &mut bytes)
+        .unwrap();
+    let want: Vec<u8> = live.values().rev().flatten().copied().collect();
+    assert_eq!(bytes, want, "values_at of {x:?} {label:?} {side:?}");
+    let mut first_phase = BTreeMap::new();
+    g.visit_values(x, (label, side), Order::Descending, |at, value| {
+        if live.contains_key(&at.index()) {
+            first_phase.insert(at.index(), value.to_vec());
+        }
+        ControlFlow::<()>::Continue(())
+    })
+    .unwrap();
+    if model.widths.contains_key(&label) {
+        assert_eq!(
+            first_phase, live,
+            "values-first scan of {x:?} {label:?} {side:?}"
+        );
+    }
+}
+
 /// Compacts a bucket until done; a bounded number of steps must get there.
 fn compact_fully<M: Memory>(g: &mut Graph<M>, model: &mut Model, key: Key) {
     let (x, label, side) = key;
@@ -445,6 +557,11 @@ fn random_operations_match_a_model_across_reopens() {
         let backing = Backing::default();
         let mut g = backing.create(N);
         let mut model = Model::default();
+        for (label, width) in WIDTHS_AT_START {
+            g.declare_width(l(label), Width::new(width).unwrap())
+                .unwrap();
+            model.widths.insert(l(label), width);
+        }
         let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
         let mut peak = 0;
         for step in 1..=8_000 {

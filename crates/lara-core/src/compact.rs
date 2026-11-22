@@ -47,20 +47,36 @@ impl Step {
     }
 }
 
+/// Whether a compacted bucket may become tiny. A bucket with values may not: its three inline
+/// slots leave no room for them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Inline {
+    Allowed,
+    Forbidden,
+}
+
 /// One bounded compaction step. On error nothing changed.
-pub(crate) fn step<M: Memory>(d: Descriptor, store: &mut PageStore<M>) -> Result<Step, WriteError> {
+pub(crate) fn step<M: Memory>(
+    d: Descriptor,
+    store: &mut PageStore<M>,
+    inline: Inline,
+) -> Result<Step, WriteError> {
     if d.live() == d.stored() {
         return Ok(Step::unchanged(d));
     }
     match d {
-        Descriptor::Tiny(_) | Descriptor::Run(_) => pack_small(d, store),
-        Descriptor::Paged(paged) if paged.live <= DEMOTE_AT => demote(paged, store),
+        Descriptor::Tiny(_) | Descriptor::Run(_) => pack_small(d, store, inline),
+        Descriptor::Paged(paged) if paged.live <= DEMOTE_AT => demote(paged, store, inline),
         Descriptor::Paged(paged) => Ok(page_step(paged, store)),
     }
 }
 
 /// Packs a tiny or run bucket into the smallest form that holds its live edges.
-fn pack_small<M: Memory>(d: Descriptor, store: &mut PageStore<M>) -> Result<Step, WriteError> {
+fn pack_small<M: Memory>(
+    d: Descriptor,
+    store: &mut PageStore<M>,
+    inline: Inline,
+) -> Result<Step, WriteError> {
     let edges = live_edges(&d, store);
     let old_extent = match d {
         Descriptor::Run(run) => Some(run.extent),
@@ -68,9 +84,9 @@ fn pack_small<M: Memory>(d: Descriptor, store: &mut PageStore<M>) -> Result<Step
     };
     // Reuse the run's extent when the packed edges stay a run of the same class. A tiny or empty
     // result uses no extent, so the old one is released below.
-    let stays_run = edges.len() > TINY_SLOTS;
+    let stays_run = edges.len() > TINY_SLOTS || (inline == Inline::Forbidden && !edges.is_empty());
     let reuse = old_extent.filter(|e| stays_run && e.class() == run_class(stored_u32(edges.len())));
-    let outcome = rebuild(&edges, reuse, store)?;
+    let outcome = rebuild(&edges, reuse, store, inline)?;
     if let Some(old) = old_extent.filter(|old| Some(*old) != reuse) {
         store.release(old);
     }
@@ -82,10 +98,14 @@ fn pack_small<M: Memory>(d: Descriptor, store: &mut PageStore<M>) -> Result<Step
 }
 
 /// Packs a paged bucket with few live edges into a run or tiny bucket, releasing its pages.
-fn demote<M: Memory>(paged: Paged, store: &mut PageStore<M>) -> Result<Step, WriteError> {
+fn demote<M: Memory>(
+    paged: Paged,
+    store: &mut PageStore<M>,
+    inline: Inline,
+) -> Result<Step, WriteError> {
     let edges = live_edges(&Descriptor::Paged(paged), store);
     // Allocate first: if that fails, the paged bucket is untouched.
-    let outcome = rebuild(&edges, None, store)?;
+    let outcome = rebuild(&edges, None, store, inline)?;
     let view = store.pages();
     let data: Vec<PageId> = paged::leaves(&view, &paged)
         .into_iter()
@@ -176,18 +196,19 @@ fn page_edges<M: Memory>(store: &PageStore<M>, number: u32, page: PageId) -> Vec
         .collect()
 }
 
-/// A tiny bucket for up to three edges, a run for more (in `reuse` if given, else a new
-/// extent), or nothing for none.
+/// A tiny bucket for up to three edges where allowed, a run for more (in `reuse` if given, else
+/// a new extent), or nothing for none.
 fn rebuild<M: Memory>(
     edges: &[Edge],
     reuse: Option<Extent>,
     store: &mut PageStore<M>,
+    inline: Inline,
 ) -> Result<Outcome, WriteError> {
     let count = stored_u32(edges.len());
     if edges.is_empty() {
         return Ok(Outcome::Empty);
     }
-    if edges.len() <= TINY_SLOTS {
+    if edges.len() <= TINY_SLOTS && inline == Inline::Allowed {
         let tiny = edges
             .iter()
             .fold(Tiny::EMPTY, |t, e| t.push(Slot::Live(e.target())));

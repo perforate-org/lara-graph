@@ -1,7 +1,7 @@
 //! Random adds and removes on one list against a sorted map, through flat and tiered shapes.
 
 use super::*;
-use crate::descriptor::Tiny;
+use crate::descriptor::{Descriptor, Tiny};
 use crate::memory::VecMemory;
 use alloc::collections::BTreeSet;
 
@@ -18,11 +18,11 @@ fn key(i: u32) -> BucketKey {
 }
 
 /// A descriptor that names its key, so a misplaced one shows.
-fn descriptor(i: u32) -> Descriptor {
+fn descriptor(i: u32) -> Stored {
     let tiny = (0..i % 3).fold(Tiny::EMPTY, |t, _| {
         t.push(crate::descriptor::Slot::Live(crate::id::VertexId::new(i)))
     });
-    Descriptor::Tiny(tiny)
+    Stored::Plain(Descriptor::Tiny(tiny))
 }
 
 fn ext_key(e: Extent) -> (u32, u64, u8) {
@@ -31,7 +31,7 @@ fn ext_key(e: Extent) -> (u32, u64, u8) {
 
 fn assert_matches(store: &PageStore<VecMemory>, list: Option<BucketList>, model: &BTreeSet<u32>) {
     let view = store.pages();
-    let expected: Vec<(BucketKey, Descriptor)> =
+    let expected: Vec<(BucketKey, Stored)> =
         model.iter().map(|&i| (key(i), descriptor(i))).collect();
     assert_eq!(entries(&view, list), expected);
     if let Some(list) = list {
@@ -45,11 +45,7 @@ fn assert_matches(store: &PageStore<VecMemory>, list: Option<BucketList>, model:
     let allocated: BTreeSet<_> = store.allocated().into_iter().map(ext_key).collect();
     assert_eq!(owned, allocated, "extents: none leaked or shared");
     for &i in model {
-        let Lookup::Present {
-            entry,
-            descriptor: d,
-        } = lookup(&view, list, key(i))
-        else {
+        let Lookup::Present { entry, stored: d } = lookup(&view, list, key(i)) else {
             panic!("{i} present")
         };
         assert_eq!(d, descriptor(i));

@@ -135,6 +135,26 @@ pub(crate) fn get<M: Memory>(
     }
 }
 
+/// The same slots, never tiny: a tiny bucket becomes a run of the smallest class (a bucket with
+/// values needs one); a run or paged bucket is unchanged.
+pub(crate) fn without_tiny<M: Memory>(
+    d: Descriptor,
+    store: &mut PageStore<M>,
+) -> Result<Descriptor, WriteError> {
+    let Descriptor::Tiny(tiny) = d else {
+        return Ok(d);
+    };
+    let stored = stored_u32(tiny.slots().len());
+    let extent = store.allocate(run_class(stored.max(1)))?;
+    let bytes: Vec<u8> = tiny.slots().iter().flat_map(|s| s.encode()).collect();
+    store.write(extent.offset(), &bytes);
+    Ok(Descriptor::Run(Run {
+        extent,
+        stored: narrow(stored),
+        live: narrow(d.live()),
+    }))
+}
+
 // --- runs --------------------------------------------------------------------------------------
 
 fn tiny_to_run<M: Memory>(
