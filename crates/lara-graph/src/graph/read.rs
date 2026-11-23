@@ -3,15 +3,283 @@
 use super::{Error, Graph, RecordLines};
 use crate::corrupt::corrupt;
 use crate::descriptor::Descriptor;
-use crate::id::{Cursor, Direction, Edge, Label, NodeId, Order, Position};
+use crate::id::{Cursor, Direction, Edge, Label, NodeId, NodeState, Order, Position};
 use crate::label_bucket::{self, Span, Window};
-use crate::label_bucket_list::{self, LabelBucketKey};
+use crate::label_bucket_list::{self, LabelBucketKey, LabelBucketList};
 use crate::memory::Memory;
+use crate::node::Record;
+use crate::page_store::{Extent, PAGE_BYTES, Pages};
 use crate::stored::Stored;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
+const LIST_PAGE_BYTES: usize = 4096;
+const _: () = assert!(PAGE_BYTES == 4096);
+
+/// A flat label bucket list's current page, kept for one batch. A page is loaded only once a run
+/// of three consecutive lists lands in it, so a shuffled or scattered order never pays a 4 KiB
+/// read for a single 19-byte list.
+struct ListPageCache {
+    page: Option<u32>,
+    bytes: Vec<u8>,
+    last_page: u32,
+    run: u32,
+}
+
+impl ListPageCache {
+    fn new() -> Self {
+        Self {
+            page: None,
+            bytes: Vec::new(),
+            last_page: u32::MAX,
+            run: 0,
+        }
+    }
+
+    #[inline]
+    fn stored<M: Memory>(
+        &mut self,
+        pages: &Pages<'_, M>,
+        list: LabelBucketList,
+        key: LabelBucketKey,
+        extent: Extent,
+        count: usize,
+    ) -> Option<Stored> {
+        let page = extent.page().get();
+        if page == self.last_page {
+            self.run += 1;
+        } else {
+            self.last_page = page;
+            self.run = 1;
+        }
+        if self.run >= 3 {
+            if self.page != Some(page) {
+                self.bytes.resize(LIST_PAGE_BYTES, 0);
+                pages.read_into(extent.page().offset(), &mut self.bytes);
+                self.page = Some(page);
+            }
+            let at = usize::try_from(extent.offset().get() - extent.page().offset().get())
+                .unwrap_or_else(|_| corrupt("list page offset"));
+            return label_bucket_list::lookup_stored_in(&self.bytes, at, count, key);
+        }
+        label_bucket_list::lookup_stored(pages, Some(list), key)
+    }
+}
+
+/// A read-only batch over a list of nodes. The node-record line and flat-list page buffers
+/// live as long as the batch, so several reads in one query share them. Drop it before mutating
+/// the graph.
+pub struct ReadBatch<'g, M: Memory> {
+    graph: &'g Graph<M>,
+    records: RecordLines,
+    list_page: ListPageCache,
+}
+
+impl<'g, M: Memory> ReadBatch<'g, M> {
+    fn new(graph: &'g Graph<M>) -> Self {
+        Self {
+            graph,
+            records: RecordLines::default(),
+            list_page: ListPageCache::new(),
+        }
+    }
+
+    /// Calls `f` with `(node, edge)` for every live edge of each node's `(label, direction)`
+    /// bucket, in `nodes` order and `order` within each bucket, until `f` breaks.
+    ///
+    /// The batch keeps both `Pages` views, an eight-record line of node records and, when a run
+    /// of flat lists shares a 4 KiB page, that page. All nodes are checked before the first
+    /// callback, so an unknown node leaves the callbacks untouched.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`] for any node at or past [`Graph::node_count`].
+    pub fn visit_neighbors_each<B>(
+        &mut self,
+        nodes: &[NodeId],
+        label: Label,
+        direction: Direction,
+        order: Order,
+        f: impl FnMut(NodeId, Edge) -> ControlFlow<B>,
+    ) -> Result<Option<B>, Error> {
+        visit_each(
+            self.graph,
+            nodes,
+            LabelBucketKey { label, direction },
+            order,
+            &mut self.records,
+            &mut self.list_page,
+            f,
+        )
+    }
+
+    /// Replaces `out` with the live-edge counts of each node's `(label, direction)` bucket, one
+    /// entry per input node and 0 when the node has no bucket. Validates all nodes before it
+    /// writes `out`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`] for any node at or past [`Graph::node_count`].
+    pub fn degree_each(
+        &mut self,
+        nodes: &[NodeId],
+        label: Label,
+        direction: Direction,
+        out: &mut Vec<u32>,
+    ) -> Result<(), Error> {
+        let graph = self.graph;
+        for &v in nodes {
+            graph.check(v)?;
+        }
+        out.clear();
+        out.reserve(nodes.len());
+        let mode = mode(nodes);
+        let key = LabelBucketKey { label, direction };
+        let lists = graph.label_bucket_lists.pages();
+        let view = graph.edges.pages();
+        let records = &mut self.records;
+        let list_page = &mut self.list_page;
+        for &v in nodes {
+            let record = record(graph, records, v, mode);
+            let Some(list) = record.list else {
+                out.push(0);
+                continue;
+            };
+            let Some(stored) = stored(&lists, list_page, list, key, mode) else {
+                out.push(0);
+                continue;
+            };
+            out.push(slots(&view, stored).live());
+        }
+        Ok(())
+    }
+
+    /// Replaces `out` with the state of each input node. Validates all nodes before it writes
+    /// `out`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`] for any node at or past [`Graph::node_count`].
+    pub fn node_state_each(
+        &mut self,
+        nodes: &[NodeId],
+        out: &mut Vec<NodeState>,
+    ) -> Result<(), Error> {
+        let graph = self.graph;
+        for &v in nodes {
+            graph.check(v)?;
+        }
+        out.clear();
+        out.reserve(nodes.len());
+        let mode = mode(nodes);
+        let records = &mut self.records;
+        for &v in nodes {
+            out.push(record(graph, records, v, mode).state);
+        }
+        Ok(())
+    }
+}
+
+#[inline]
+fn visit_each<M: Memory, B>(
+    graph: &Graph<M>,
+    nodes: &[NodeId],
+    key: LabelBucketKey,
+    order: Order,
+    records: &mut RecordLines,
+    list_page: &mut ListPageCache,
+    mut f: impl FnMut(NodeId, Edge) -> ControlFlow<B>,
+) -> Result<Option<B>, Error> {
+    for &v in nodes {
+        graph.check(v)?;
+    }
+    let mode = mode(nodes);
+    let lists = graph.label_bucket_lists.pages();
+    let view = graph.edges.pages();
+    for &v in nodes {
+        let record = record(graph, records, v, mode);
+        let Some(list) = record.list else { continue };
+        let Some(stored) = stored(&lists, list_page, list, key, mode) else {
+            continue;
+        };
+        let slots = slots(&view, stored);
+        if let Some(found) =
+            label_bucket::visit(&slots, &view, Span::all(&slots, order), Window::Page, |e| {
+                f(v, e)
+            })
+        {
+            return Ok(Some(found));
+        }
+    }
+    Ok(None)
+}
+
+/// Whether a batch of ids is dense enough for a 64-byte node-record line. A false positive still
+/// reads the right line, only without a gain.
+#[derive(Clone, Copy)]
+enum Mode {
+    Dense,
+    Sparse,
+}
+
+fn dense(nodes: &[NodeId]) -> bool {
+    nodes.len() >= 8
+        && nodes
+            .first()
+            .map(|v| v.index())
+            .zip(nodes.get(7).map(|v| v.index()))
+            .is_some_and(|(first, eighth)| first.checked_add(7) == Some(eighth))
+}
+
+fn mode(nodes: &[NodeId]) -> Mode {
+    if dense(nodes) {
+        Mode::Dense
+    } else {
+        Mode::Sparse
+    }
+}
+
+#[inline]
+fn record<M: Memory>(graph: &Graph<M>, records: &mut RecordLines, v: NodeId, mode: Mode) -> Record {
+    match mode {
+        Mode::Dense => records.record(graph, v),
+        Mode::Sparse => graph.record(v).unwrap_or_else(|_| corrupt("a known node")),
+    }
+}
+
+#[inline]
+fn stored<M: Memory>(
+    lists: &Pages<'_, M>,
+    list_page: &mut ListPageCache,
+    list: LabelBucketList,
+    key: LabelBucketKey,
+    mode: Mode,
+) -> Option<Stored> {
+    match mode {
+        Mode::Dense => match list.flat() {
+            Some((extent, count)) => list_page.stored(lists, list, key, extent, count),
+            None => label_bucket_list::lookup_stored(lists, Some(list), key),
+        },
+        Mode::Sparse => label_bucket_list::lookup_stored(lists, Some(list), key),
+    }
+}
+
+#[inline]
+fn slots<M: Memory>(view: &Pages<'_, M>, stored: Stored) -> Descriptor {
+    match stored {
+        Stored::Plain(slots) => slots,
+        Stored::Extended(header) => Descriptor::decode(view.read_array(header.offset())),
+    }
+}
+
 impl<M: Memory> Graph<M> {
+    /// A read-only batch that keeps its node-record and list-page buffers across calls. Drop it
+    /// before mutating the graph.
+    #[must_use]
+    pub fn read_batch(&self) -> ReadBatch<'_, M> {
+        ReadBatch::new(self)
+    }
+
     /// Calls `f` with each live edge of `v`'s `(label, direction)` bucket in `order`, until it
     /// breaks; returns the break value. Reads like [`Self::neighbors_directed`] without collecting.
     ///
@@ -37,64 +305,6 @@ impl<M: Memory> Graph<M> {
                     f,
                 )
             }))
-    }
-
-    /// Calls `f` with `(node, edge)` for every live edge of each node's `(label, direction)`
-    /// bucket, in `nodes` order and `order` within each bucket, until `f` breaks.
-    ///
-    /// The batch holds both `Pages` views and an eight-record line of node records across the
-    /// nodes, so dense ids read one 64-byte line per eight nodes instead of one record per node. All nodes are checked before the first callback, so an unknown node
-    /// leaves the callbacks untouched.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnknownNode`] for any node at or past [`Graph::node_count`].
-    pub fn visit_neighbors_each<B>(
-        &self,
-        nodes: &[NodeId],
-        label: Label,
-        direction: Direction,
-        order: Order,
-        mut f: impl FnMut(NodeId, Edge) -> ControlFlow<B>,
-    ) -> Result<Option<B>, Error> {
-        for &v in nodes {
-            self.check(v)?;
-        }
-        let view = self.edges.pages();
-        let lists = self.label_bucket_lists.pages();
-        let key = LabelBucketKey { label, direction };
-        // A line only pays off when the ids are dense; a scattered batch would read 64 bytes
-        // for each single record, so it keeps the one-record path. The first and eighth ids are
-        // enough to tell: a false positive still reads the right line, only without a gain.
-        let dense = nodes.len() >= 8
-            && nodes
-                .first()
-                .map(|v| v.index())
-                .zip(nodes.get(7).map(|v| v.index()))
-                .is_some_and(|(first, eighth)| eighth == first + 7);
-        let mut records = dense.then(RecordLines::default);
-        for &v in nodes {
-            let record = records.as_mut().map_or_else(
-                || self.record(v).unwrap_or_else(|_| corrupt("a known node")),
-                |lines| lines.record(self, v),
-            );
-            let Some(list) = record.list else { continue };
-            let Some(stored) = label_bucket_list::lookup_stored(&lists, Some(list), key) else {
-                continue;
-            };
-            let slots = match stored {
-                Stored::Plain(slots) => slots,
-                Stored::Extended(header) => Descriptor::decode(view.read_array(header.offset())),
-            };
-            if let Some(found) =
-                label_bucket::visit(&slots, &view, Span::all(&slots, order), Window::Page, |e| {
-                    f(v, e)
-                })
-            {
-                return Ok(Some(found));
-            }
-        }
-        Ok(None)
     }
 
     /// Calls `f` with each live edge in `cursor`'s window of `v`'s `(label, direction)` bucket, in

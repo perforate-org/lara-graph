@@ -187,6 +187,16 @@ pub(crate) fn lookup<M: Memory>(
     }
 }
 
+impl LabelBucketList {
+    /// A flat list's extent and entry count; a tiered list needs its top and a leaf.
+    pub(crate) fn flat(self) -> Option<(Extent, usize)> {
+        match self.0 {
+            Shape::Flat { extent, count } => Some((extent, usize::from(count))),
+            Shape::Tiered { .. } => None,
+        }
+    }
+}
+
 /// Finds a bucket's stored form, without the entry's position: a read that only scans slots
 /// does not build an [`EntryAt`] it will discard.
 pub(crate) fn lookup_stored<M: Memory>(
@@ -221,6 +231,23 @@ fn search_stored<M: Memory>(
             .ok()
             .and_then(|index| entries.get(index).map(|&entry| decode_entry(entry).1))
     })
+}
+
+/// [`lookup_stored`] over entries already copied into `bytes`, at `offset`.
+pub(crate) fn lookup_stored_in(
+    bytes: &[u8],
+    offset: usize,
+    count: usize,
+    key: LabelBucketKey,
+) -> Option<Stored> {
+    let want = key.rank();
+    let rest = bytes.get(offset..)?;
+    let entries = rest.get(..count * ENTRY_BYTES)?;
+    let (entries, _) = entries.as_chunks::<ENTRY_BYTES>();
+    entries
+        .binary_search_by(|&[k0, k1, k2, ..]| rank_of([k0, k1, k2]).cmp(&want))
+        .ok()
+        .and_then(|index| entries.get(index).map(|&entry| decode_entry(entry).1))
 }
 
 /// Searches the `count` sorted entries at `base`, leaf `leaf` of their list.

@@ -178,10 +178,29 @@ pub fn degree<M: Memory>(g: &Graph<M>, v: NodeId, direction: Direction) -> u32 {
 /// If a node is not in `g`.
 pub fn visit_many<M: Memory>(g: &Graph<M>, nodes: &[NodeId], direction: Direction) -> u64 {
     let mut seen = 0u64;
-    g.visit_neighbors_each(nodes, LABEL, direction, Order::Ascending, |_, _| {
-        seen += 1;
-        ControlFlow::<()>::Continue(())
-    })
-    .unwrap_or_else(|err| panic!("batch: {err}"));
+    let mut batch = g.read_batch();
+    batch
+        .visit_neighbors_each(nodes, LABEL, direction, Order::Ascending, |_, _| {
+            seen += 1;
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap_or_else(|err| panic!("batch: {err}"));
+    seen
+}
+
+/// The same batch through an explicit [`lara_graph::ReadBatch`].
+///
+/// # Panics
+///
+/// If a node is not in `g`.
+pub fn visit_many_batch<M: Memory>(g: &Graph<M>, nodes: &[NodeId], direction: Direction) -> u64 {
+    let mut batch = g.read_batch();
+    let mut seen = 0u64;
+    batch
+        .visit_neighbors_each(nodes, LABEL, direction, Order::Ascending, |_, _| {
+            seen += 1;
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap_or_else(|err| panic!("batch: {err}"));
     seen
 }

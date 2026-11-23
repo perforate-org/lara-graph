@@ -126,9 +126,9 @@ pub fn lara_graph::Graph<M>::try_init(lara_graph::Memories<M>) -> core::result::
 pub fn lara_graph::Graph<M>::try_load(lara_graph::Memories<M>) -> core::result::Result<Self, lara_graph::InitError>
 pub fn lara_graph::Graph<M>::try_new(lara_graph::Memories<M>) -> core::result::Result<Self, lara_graph::InitError>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
+pub fn lara_graph::Graph<M>::read_batch(&self) -> lara_graph::ReadBatch<'_, M>
 pub fn lara_graph::Graph<M>::targets_at(&self, lara_graph::NodeId, lara_graph::Label, lara_graph::Direction, &[lara_graph::Position], &mut alloc::vec::Vec<core::option::Option<lara_graph::NodeId>>) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::Graph<M>::visit_neighbors<B>(&self, lara_graph::NodeId, lara_graph::Label, lara_graph::Direction, lara_graph::Order, impl core::ops::function::FnMut(lara_graph::Edge) -> core::ops::control_flow::ControlFlow<B>) -> core::result::Result<core::option::Option<B>, lara_graph::Error>
-pub fn lara_graph::Graph<M>::visit_neighbors_each<B>(&self, &[lara_graph::NodeId], lara_graph::Label, lara_graph::Direction, lara_graph::Order, impl core::ops::function::FnMut(lara_graph::NodeId, lara_graph::Edge) -> core::ops::control_flow::ControlFlow<B>) -> core::result::Result<core::option::Option<B>, lara_graph::Error>
 pub fn lara_graph::Graph<M>::visit_window(&self, lara_graph::NodeId, lara_graph::Label, lara_graph::Direction, lara_graph::Cursor, impl core::ops::function::FnMut(lara_graph::Edge)) -> core::result::Result<core::option::Option<lara_graph::Cursor>, lara_graph::Error>
 pub struct lara_graph::GrowFailed
 impl lara_graph::GrowFailed
@@ -162,6 +162,11 @@ pub struct lara_graph::Position(_)
 impl lara_graph::Position
 pub const fn lara_graph::Position::index(self) -> u32
 pub const fn lara_graph::Position::new(u32) -> Self
+pub struct lara_graph::ReadBatch<'g, M: lara_graph::Memory>
+impl<'g, M: lara_graph::Memory> lara_graph::ReadBatch<'g, M>
+pub fn lara_graph::ReadBatch<'g, M>::degree_each(&mut self, &[lara_graph::NodeId], lara_graph::Label, lara_graph::Direction, &mut alloc::vec::Vec<u32>) -> core::result::Result<(), lara_graph::Error>
+pub fn lara_graph::ReadBatch<'g, M>::node_state_each(&mut self, &[lara_graph::NodeId], &mut alloc::vec::Vec<lara_graph::NodeState>) -> core::result::Result<(), lara_graph::Error>
+pub fn lara_graph::ReadBatch<'g, M>::visit_neighbors_each<B>(&mut self, &[lara_graph::NodeId], lara_graph::Label, lara_graph::Direction, lara_graph::Order, impl core::ops::function::FnMut(lara_graph::NodeId, lara_graph::Edge) -> core::ops::control_flow::ControlFlow<B>) -> core::result::Result<core::option::Option<B>, lara_graph::Error>
 pub struct lara_graph::RemovedEdge
 impl lara_graph::RemovedEdge
 pub const fn lara_graph::RemovedEdge::halves(&self) -> lara_graph::Halves

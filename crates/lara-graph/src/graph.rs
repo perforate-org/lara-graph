@@ -413,6 +413,7 @@ impl Default for RecordLines {
 
 impl RecordLines {
     /// `v`'s record, reading one 64-byte line per eight dense ids.
+    #[inline]
     pub(super) fn record<M: Memory>(&mut self, graph: &Graph<M>, v: NodeId) -> Record {
         let base = v.index() / RECORDS_PER_LINE * RECORDS_PER_LINE;
         // The last partial line still takes the single-record path: a 64-byte read would run
@@ -498,6 +499,8 @@ mod lifecycle;
 mod pair;
 mod props;
 mod read;
+
+pub use read::ReadBatch;
 mod widths;
 
 use widths::Widths;

@@ -134,6 +134,15 @@ fn visit_inline_1024_batched() -> BenchResult {
     bench_fn(|| black_box(two_hop::visit_many(&g, &satellites, Direction::Incoming)))
 }
 
+/// The out-bucket visits in the shuffled layout, where ids are dense but list pages are not.
+#[bench(raw)]
+fn visit_run_1024_batched_shuffled() -> BenchResult {
+    let mut g = stable_graph();
+    let hub = two_hop::build(&mut g, Layout::Shuffled);
+    let satellites = two_hop::satellites(&g, hub);
+    bench_fn(|| black_box(two_hop::visit_many(&g, &satellites, Direction::Outgoing)))
+}
+
 /// The out-bucket visits in the scattered layout, where consecutive ids do not share a line.
 #[bench(raw)]
 fn visit_run_1024_batched_scattered() -> BenchResult {
@@ -141,4 +150,19 @@ fn visit_run_1024_batched_scattered() -> BenchResult {
     let hub = two_hop::build(&mut g, Layout::Scattered);
     let satellites = two_hop::satellites(&g, hub);
     bench_fn(|| black_box(two_hop::visit_many(&g, &satellites, Direction::Outgoing)))
+}
+
+/// The out-bucket visits through an explicit `ReadBatch` context.
+#[bench(raw)]
+fn visit_run_1024_batch_context() -> BenchResult {
+    let mut g = stable_graph();
+    let hub = two_hop::build(&mut g, Layout::Ordered);
+    let satellites = two_hop::satellites(&g, hub);
+    bench_fn(|| {
+        black_box(two_hop::visit_many_batch(
+            &g,
+            &satellites,
+            Direction::Outgoing,
+        ))
+    })
 }
