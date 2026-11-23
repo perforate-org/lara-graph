@@ -561,6 +561,43 @@ fn batch_edge_targets_match_one_by_one() {
 }
 
 #[test]
+fn batch_counterparts_match_one_by_one() {
+    let backing = Backing::default();
+    let mut g = backing.create(9);
+    for target in 1..=8 {
+        insert(&mut g, v(0), l(0), v(target));
+    }
+    let mut edges = Vec::new();
+    g.neighbors_directed(v(0), l(0), Direction::Outgoing, &mut edges)
+        .unwrap();
+    let halves: Vec<EdgeRef> = edges
+        .iter()
+        .map(|edge| EdgeRef::new(v(0), l(0), Direction::Outgoing, edge.position()))
+        .collect();
+    let expected: Vec<Option<EdgeRef>> = halves
+        .iter()
+        .map(|half| g.counterpart(*half).unwrap())
+        .collect();
+    let mut out = Vec::new();
+    let mut batch = g.read_batch();
+    batch.counterparts_each(&halves, &mut out).unwrap();
+    assert_eq!(out, expected);
+    assert_eq!(
+        batch.counterparts_each(
+            &[EdgeRef::new(
+                v(99),
+                l(0),
+                Direction::Outgoing,
+                Position::new(0)
+            )],
+            &mut out
+        ),
+        Err(Error::UnknownNode(v(99)))
+    );
+    assert_eq!(out, expected);
+}
+
+#[test]
 fn appending_never_fills_a_hole_in_any_bucket_form() {
     let backing = Backing::default();
     let mut g = backing.create(3);

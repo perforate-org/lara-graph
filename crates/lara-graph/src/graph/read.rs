@@ -1,6 +1,6 @@
 //! Reads beyond a whole bucket in position order: either order, windows and chosen positions.
 
-use super::pair::key_of;
+use super::pair::{Found, key_of};
 use super::{Error, Graph, RecordLines};
 use crate::corrupt::corrupt;
 use crate::descriptor::Descriptor;
@@ -75,6 +75,7 @@ pub struct ReadBatch<'g, M: Memory> {
     records: RecordLines,
     list_page: ListPageCache,
     last_bucket: Option<(NodeId, LabelBucketKey, Option<Descriptor>)>,
+    last_found: Option<(NodeId, LabelBucketKey, Option<Found>)>,
 }
 
 impl<'g, M: Memory> ReadBatch<'g, M> {
@@ -84,6 +85,7 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
             records: RecordLines::default(),
             list_page: ListPageCache::new(),
             last_bucket: None,
+            last_found: None,
         }
     }
 
@@ -281,6 +283,43 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         let stored = stored(&lists, &mut self.list_page, list, key, Mode::Sparse)?;
         let view = self.graph.edges.pages();
         Some(slots(&view, stored))
+    }
+
+    /// Replaces `out` with the other half of each edge, or `None` when the half is not live.
+    /// Consecutive halves in the same bucket reuse one bucket lookup.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`] for any node at or past [`Graph::node_count`].
+    pub fn counterparts_each(
+        &mut self,
+        halves: &[EdgeRef],
+        out: &mut Vec<Option<EdgeRef>>,
+    ) -> Result<(), Error> {
+        let graph = self.graph;
+        for half in halves {
+            graph.check(half.node())?;
+        }
+        out.clear();
+        out.reserve(halves.len());
+        for &half in halves {
+            let node = half.node();
+            let key = key_of(half);
+            let own = match self.last_found {
+                Some((last_node, last_key, own)) if last_node == node && last_key == key => own,
+                _ => {
+                    let own = graph.find_label_bucket(node, key)?;
+                    self.last_found = Some((node, key, own));
+                    own
+                }
+            };
+            let Some(own) = own else {
+                out.push(None);
+                continue;
+            };
+            out.push(graph.pair_from(half, own).map(|pair| pair.other));
+        }
+        Ok(())
     }
 
     /// Replaces `out` with the state of each input node. Validates all nodes before it writes

@@ -60,10 +60,13 @@ impl<M: Memory> Graph<M> {
         let Some(own) = self.find_label_bucket(half.node(), key_of(half))? else {
             return Ok(None);
         };
+        Ok(self.pair_from(half, own))
+    }
+
+    /// [`pair`] with `half`'s own bucket already found.
+    pub(super) fn pair_from(&self, half: EdgeRef, own: Found) -> Option<Pair> {
         let view = self.edges.pages();
-        let Some(other) = label_bucket::get(&own.bucket.slots, half.position(), &view) else {
-            return Ok(None);
-        };
+        let other = label_bucket::get(&own.bucket.slots, half.position(), &view)?;
         let key = LabelBucketKey {
             label: half.label(),
             direction: opposite(half.direction()),
@@ -80,11 +83,11 @@ impl<M: Memory> Graph<M> {
             self.select_to(&theirs.bucket, owner, rank)
                 .unwrap_or_else(|| corrupt("an edge half without its counterpart"))
         });
-        Ok(Some(Pair {
+        Some(Pair {
             own,
             other: EdgeRef::new(other, key.label, key.direction, at),
             theirs,
-        }))
+        })
     }
 
     /// Tombstones the live half at `at` in `found` and takes it out of the target index. Writes
