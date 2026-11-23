@@ -38,7 +38,7 @@ Status key:
 | Create and reopen, failing on layout skew | `init_with_config` over 33 virtual memories | `Graph::create` / `Graph::open` over 5 memories; `OpenError::{NotAGraph, UnsupportedVersion}` | Covered. Five new memory ids are needed. |
 | Dense vertex ids, never reused | `push_vertex_row`, `push_vertices`, `vertex_count` (tombstones included) | `add_vertex`, `vertex_count` (deleted vertices included) | Covered. Bulk add is a loop. |
 | Vertex liveness | `vertex_row(v).is_tombstone()` | `vertex_state` → `Live` / `Detaching` / `Deleted` | Covered |
-| Edge-free check before a plain DELETE | `has_incident_edges` | `labels(v, side)` per side, then `degree` per label: a bucket of holes is listed until compacted | Adapter. A `has_edges(v)` would make it one call. |
+| Edge-free check before a plain DELETE | `has_incident_edges` | `has_edges(v)`: any side, past buckets of holes | Covered |
 | Delete an edge-free vertex | `delete_vertex_deferred` | `detach` followed by one `detach_step` | Covered |
 | Labels and directedness | `BucketLabelKey` u16 with a directed bit | `Label(u16)` and `Side::{Out, In, Undirected}` | Adapter: a fixed mapping |
 | Buckets per vertex | 1024 per orientation | tiered lists, ~110 000 | Covered |
@@ -68,8 +68,8 @@ Status key:
 | Remote targets | `VertexRef` remote bit | — | Not needed: Gleaph's remote builders have no callers. |
 | Reverse-mirror repair | `repair_*`, `remove_reverse_edge_*` | — | Not needed: dead in production. One graph cannot diverge. |
 
-**Also missing, but not used by Gleaph:** the lara-core crate does not export `RemovedEdge`. Callers
-can call its `halves()` and `value()`, but cannot name the type. It should be re-exported.
+**Fixed since:** lara-core did not export `RemovedEdge`, so callers could call its `halves()` and
+`value()` but not name the type. It is re-exported now.
 
 ## The gaps
 
@@ -141,7 +141,8 @@ Measured on canbench, on a 65536-edge hub with every other edge removed:
 
 ## Small additions to lara-core
 
-- Re-export `RemovedEdge`.
-- `has_edges(v)`, or have `labels` skip buckets that hold only holes.
-- Optionally, page-level skipping for an OFFSET of live edges, using the per-page live counts.
+- Done (2026-11-23):
+  - `RemovedEdge` is re-exported.
+  - `Graph::has_edges(v)` answers Gleaph's edge-free check in one call.
+- Optional: page-level skipping for an OFFSET of live edges, using the per-page live counts.
   Gleaph's insertion-DESC fast path skips edge by edge today as well.

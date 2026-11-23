@@ -9,6 +9,7 @@ use crate::id::{
 use crate::labels::{self, BucketKey, BucketList};
 use crate::memory::{GrowFailed, Memory, Region, WriteError};
 use crate::page_store::{self, PageStore};
+use crate::stored::Bucket;
 use crate::units::{ByteOffset, Overflow};
 use crate::vertex::{RECORD_BYTES, Record};
 use alloc::vec::Vec;
@@ -288,6 +289,20 @@ impl<M: Memory> Graph<M> {
                 .map(|k| k.label),
         );
         Ok(())
+    }
+
+    /// Whether `v` has a live edge under any label, on any side. A bucket whose edges were all
+    /// removed stays listed by [`Self::labels`] until compaction drops it; this looks past it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownVertex`].
+    pub fn has_edges(&self, v: VertexId) -> Result<bool, Error> {
+        let list = self.list(v)?;
+        let view = self.edges.pages();
+        Ok(labels::entries(&self.lists.pages(), list)
+            .into_iter()
+            .any(|(_, stored)| Bucket::resolve(&view, stored).slots.live() > 0))
     }
 
     /// Number of live edges in `v`'s `(label, side)` bucket.

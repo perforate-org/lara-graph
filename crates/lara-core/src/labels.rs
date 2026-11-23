@@ -214,7 +214,10 @@ pub(crate) fn keys<M: Memory>(pages: &Pages<'_, M>, list: Option<BucketList>) ->
 }
 
 /// Every entry of a list, in order.
-fn entries<M: Memory>(pages: &Pages<'_, M>, list: Option<BucketList>) -> Vec<(BucketKey, Stored)> {
+pub(crate) fn entries<M: Memory>(
+    pages: &Pages<'_, M>,
+    list: Option<BucketList>,
+) -> Vec<(BucketKey, Stored)> {
     match list.map(|BucketList(shape)| shape) {
         None => Vec::new(),
         Some(Shape::Flat { extent, count }) => {

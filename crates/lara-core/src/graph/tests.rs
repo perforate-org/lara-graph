@@ -158,6 +158,39 @@ fn a_directed_edge_is_stored_at_both_ends() {
     check(&g);
 }
 
+/// `has_edges` sees edges at either end, on any side and in buckets with values, and looks past
+/// buckets that hold only holes.
+#[test]
+fn has_edges_sees_every_side_and_looks_past_buckets_of_holes() {
+    let backing = Backing::default();
+    let mut g = backing.create(6);
+    g.declare_width(l(3), Width::new(2).unwrap()).unwrap();
+    assert_eq!(g.has_edges(v(0)), Ok(false));
+    let directed = g
+        .insert_directed(v(0), l(1), v(1), Placement::ReuseHoles, &[])
+        .unwrap();
+    let undirected = g
+        .insert_undirected(v(2), l(2), v(3), Placement::Append, &[])
+        .unwrap();
+    let valued = g
+        .insert_directed(v(4), l(3), v(5), Placement::Append, &[1, 2])
+        .unwrap();
+    for x in 0..6 {
+        assert_eq!(g.has_edges(v(x)), Ok(true), "vertex {x}");
+    }
+    for halves in [directed, undirected, valued] {
+        g.remove_edge(halves.other()).unwrap();
+    }
+    let mut labels = Vec::new();
+    g.labels(v(0), Side::Out, &mut labels).unwrap();
+    assert_eq!(labels, [l(1)], "a bucket of holes stays listed");
+    for x in 0..6 {
+        assert_eq!(g.has_edges(v(x)), Ok(false), "vertex {x}");
+    }
+    assert_eq!(g.has_edges(v(9)), Err(Error::UnknownVertex(v(9))));
+    check(&g);
+}
+
 #[test]
 fn an_undirected_edges_canonical_half_is_at_the_larger_vertex_and_a_self_loop_has_one_half() {
     let backing = Backing::default();

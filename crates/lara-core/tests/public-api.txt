@@ -49,7 +49,7 @@ pub lara_core::Progress::Done
 pub lara_core::Progress::Remaining
 pub enum lara_core::Removal
 pub lara_core::Removal::Absent
-pub lara_core::Removal::Removed(lara_core::id::RemovedEdge)
+pub lara_core::Removal::Removed(lara_core::RemovedEdge)
 pub enum lara_core::Side
 pub lara_core::Side::In
 pub lara_core::Side::Out
@@ -82,6 +82,7 @@ pub fn lara_core::Graph<M>::add_vertex(&mut self) -> core::result::Result<lara_c
 pub fn lara_core::Graph<M>::create(lara_core::Memories<M>) -> core::result::Result<Self, lara_core::CreateError>
 pub fn lara_core::Graph<M>::degree(&self, lara_core::VertexId, lara_core::Label, lara_core::Side) -> core::result::Result<u32, lara_core::Error>
 pub fn lara_core::Graph<M>::edge(&self, lara_core::EdgeRef) -> core::result::Result<core::option::Option<lara_core::VertexId>, lara_core::Error>
+pub fn lara_core::Graph<M>::has_edges(&self, lara_core::VertexId) -> core::result::Result<bool, lara_core::Error>
 pub fn lara_core::Graph<M>::holes(&self, lara_core::VertexId, lara_core::Label, lara_core::Side) -> core::result::Result<u32, lara_core::Error>
 pub fn lara_core::Graph<M>::labels(&self, lara_core::VertexId, lara_core::Side, &mut alloc::vec::Vec<lara_core::Label>) -> core::result::Result<(), lara_core::Error>
 pub fn lara_core::Graph<M>::neighbors(&self, lara_core::VertexId, lara_core::Label, lara_core::Side, &mut alloc::vec::Vec<lara_core::Edge>) -> core::result::Result<(), lara_core::Error>
@@ -136,6 +137,10 @@ pub struct lara_core::Position(_)
 impl lara_core::Position
 pub const fn lara_core::Position::index(self) -> u32
 pub const fn lara_core::Position::new(u32) -> Self
+pub struct lara_core::RemovedEdge
+impl lara_core::RemovedEdge
+pub const fn lara_core::RemovedEdge::halves(&self) -> lara_core::Halves
+pub fn lara_core::RemovedEdge::value(&self) -> &[u8]
 pub struct lara_core::Step<T>
 impl<T> lara_core::Step<T>
 pub fn lara_core::Step<T>::changes(&self) -> &[T]
@@ -174,4 +179,4 @@ pub fn &M::read(&self, u64, &mut [u8])
 pub fn &M::size(&self) -> u64
 pub fn &M::write(&self, u64, &[u8])
 pub type lara_core::Compaction = lara_core::Step<lara_core::Move>
-pub type lara_core::Detachment = lara_core::Step<lara_core::id::RemovedEdge>
+pub type lara_core::Detachment = lara_core::Step<lara_core::RemovedEdge>
