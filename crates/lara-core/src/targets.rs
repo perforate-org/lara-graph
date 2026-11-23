@@ -23,10 +23,10 @@ pub(crate) use tree::{
     merge_step, nth, plan, raise, rank, release,
 };
 #[cfg(test)]
-pub(crate) use tree::{count_before, postings, select, zeros_per_leaf};
+pub(crate) use tree::{count_before, postings, select, zeros_per_segment};
 
 /// Positions per block.
-pub(crate) const BLOCK: u32 = 64;
+pub(crate) const BLOCK: u32 = 128;
 
 /// Pages one edge's change to an index can take: a split per level and a new root, or building
 /// the index of a bucket that just became paged (1025 postings at most). Tests use small leaves

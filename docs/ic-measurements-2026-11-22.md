@@ -272,3 +272,57 @@ Changes:
 - Removing a posting re-codes one gap and moves the bits after it, so it costs more than
   rewriting its count bits. That is the price of the space.
 - Removal and compaction together cost +2.4 %.
+
+## Eighth round (2026-11-23): the constants, and block offsets
+
+All on a 65536-edge hub unless named. Index pages come from
+`cargo run --release --example index_pages -p lara-core-bench`.
+
+**Index block width** (postings per segment 16):
+
+| Block | Insert 65536 | Parallel insert 4096 | Pair through a hub | Remove from the leaf's side | Parallel refill | Pages: distinct / random 1M / 64 in turn |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 32 | 835 M | 49.9 M | 16.2 K | 29.2 K | 1.01 B | 54 / 91 / 65 |
+| 64 | 795 M | 43.0 M | 17.2 K | 29.6 K | 1.05 B | 53 / 89 / 65 |
+| **128** | 780 M | 38.7 M | 19.8 K | 31.0 K | 1.13 B | 50 / 90 / 33 |
+| 256 | 764 M | 36.5 M | 24.1 K | 30.7 K | 1.26 B | 50 / 88 / 17 |
+
+**Postings per segment** (block 128):
+
+| Target | Pair through a hub | Remove from the leaf's side | Refill | Detach a satellite | Pages: distinct / random 1M |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 16 | 19.8 K | 31.0 K | 956 M | 28.3 K | 50 / 90 |
+| **24** | 19.9 K | 33.0 K | 994 M | 28.6 K | 42 / 83 |
+| 32 | 24.0 K | 33.7 K | 1.04 B | 32.2 K | 39 / 75 |
+
+**Block offsets.** Each block is coded as its zigzagged offset from the segment's first block,
+in place of the block itself.
+- Distinct targets in id order: 42 to 24 index pages, 1.50 bytes per edge, 0.38× the slots.
+- Random targets: unchanged.
+- With offsets, 32 postings per segment would take 20 pages instead of 24. It would also make
+  pairing 23 % and detaching a satellite 16 % dearer, so the target stays 24.
+
+**Against the start of this round** (block 64, segments of 16, no offsets):
+
+| Scenario | Change |
+| --- | ---: |
+| Hub inserts, 4096 / 65536 | −2 % / −3 % |
+| Parallel inserts, 4096 | −9 % |
+| Compaction after removing half | −10 % |
+| Pair through a hub | +17 % (17.2 K to 20.1 K) |
+| Remove from the leaf's side | +8 % |
+| Parallel refill | +9 % |
+| Index pages, distinct targets in id order | 53 to 24 |
+
+**Growing a small bucket** (512 vertices, one edge each to a fresh target):
+
+| Edge | Per edge |
+| --- | ---: |
+| 3rd (last inline slot) | ~8.5 K |
+| 4th (moves to a run) | ~12.0 K |
+| 5th | ~8.7 K |
+
+- The move to a run costs ~3.5 K, once per bucket.
+- Five inline slots would take a 24-byte descriptor. At 127 K cycles per GiB-second, 8 more bytes
+  per bucket cost about 30 K cycles a year, so three slots stay.
+

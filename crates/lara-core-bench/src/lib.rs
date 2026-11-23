@@ -390,6 +390,41 @@ fn hub_refill_holes_parallel_65536() -> BenchResult {
     refill_hub(65536, Refill::Parallel)
 }
 
+/// Inserts the `nth` (1-based) out-edge of each of 512 vertices, whose earlier edges are in
+/// place, to a fresh target each: the cost of a small bucket's growth. The third fills a tiny
+/// bucket's last inline slot; the fourth moves it to a run.
+fn grow_small(nth: u32) -> BenchResult {
+    let mut g = heap_graph();
+    let sources = vertices(&mut g, 512);
+    for _ in 1..nth {
+        for &v in &sources {
+            let target = vertex(&mut g);
+            directed(&mut g, v, target);
+        }
+    }
+    let targets = vertices(&mut g, 512);
+    bench_fn(|| {
+        for (&v, &target) in sources.iter().zip(&targets) {
+            black_box(directed(&mut g, v, target));
+        }
+    })
+}
+
+#[bench(raw)]
+fn small_insert_3rd_512() -> BenchResult {
+    grow_small(3)
+}
+
+#[bench(raw)]
+fn small_insert_4th_512() -> BenchResult {
+    grow_small(4)
+}
+
+#[bench(raw)]
+fn small_insert_5th_512() -> BenchResult {
+    grow_small(5)
+}
+
 /// Finds the out half of the hub's last edge from its in half at the leaf: a rank count over
 /// the leaf's bucket and a selection in the hub's.
 #[bench(raw)]

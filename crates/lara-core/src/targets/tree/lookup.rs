@@ -168,8 +168,8 @@ pub(crate) fn release<M: Memory>(store: &mut PageStore<M>, root: Root) {
     store.release(Extent::whole(root.page));
 }
 
-/// Every posting with a count in key order (test checks); postings at zero (a leaf's last, or
-/// left by a batch of decrements) are left out.
+/// Every posting with a count in key order (test checks); postings at zero (a segment's first, a
+/// leaf's last, or left by a batch of decrements) are left out.
 #[cfg(test)]
 pub(crate) fn postings<M: Memory>(view: &Pages<'_, M>, root: Option<Root>) -> Vec<Posting> {
     let Some(root) = root else {
@@ -194,15 +194,15 @@ pub(crate) fn postings<M: Memory>(view: &Pages<'_, M>, root: Option<Root>) -> Ve
         .collect()
 }
 
-/// How many postings of each leaf have a count of zero, leaf by leaf (test checks).
+/// How many postings of each segment have a count of zero, segment by segment (test checks).
 #[cfg(test)]
-pub(crate) fn zeros_per_leaf<M: Memory>(view: &Pages<'_, M>, root: Option<Root>) -> Vec<usize> {
+pub(crate) fn zeros_per_segment<M: Memory>(view: &Pages<'_, M>, root: Option<Root>) -> Vec<usize> {
     let Some(root) = root else {
         return Vec::new();
     };
     if root.depth == 0 {
         let read = |offset, buf: &mut [u8]| read_into(view, root.page, offset, buf);
-        return alloc::vec![leaf::decode(&read).iter().filter(|p| p.count == 0).count()];
+        return leaf::zeros_per_segment(&read);
     }
     children(view, root.page)
         .into_iter()
@@ -211,7 +211,7 @@ pub(crate) fn zeros_per_leaf<M: Memory>(view: &Pages<'_, M>, root: Option<Root>)
                 page: c.page,
                 depth: root.depth - 1,
             };
-            zeros_per_leaf(view, Some(below))
+            zeros_per_segment(view, Some(below))
         })
         .collect()
 }

@@ -27,7 +27,8 @@ fn single_decrements_lower_counts_in_place() {
     }
     check(&store, root, &model);
     assert_eq!(store.allocated(), pages, "no page taken or released");
-    let zeros = zeros_per_leaf(&store.pages(), root);
+    // Only a segment's first posting stays at zero: the others' blocks are coded against it.
+    let zeros = zeros_per_segment(&store.pages(), root);
     assert!(
         zeros.iter().all(|&z| z <= 1),
         "zero counts leave their segments: {zeros:?}"
@@ -79,8 +80,8 @@ fn single_increments_go_in_place_or_through_a_plan() {
     );
 }
 
-/// Lowering every posting to zero one unit at a time leaves each leaf with at most its last
-/// posting, at zero, and the tree reads as empty.
+/// Lowering every posting to zero one unit at a time leaves each segment with its first posting
+/// only, at zero, and the tree reads as empty.
 #[test]
 fn single_decrements_drain_postings_out_of_their_segments() {
     let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
@@ -103,10 +104,10 @@ fn single_decrements_drain_postings_out_of_their_segments() {
         }
     }
     check(&store, Some(root), &model);
-    let zeros = zeros_per_leaf(&store.pages(), Some(root));
+    let zeros = zeros_per_segment(&store.pages(), Some(root));
     assert!(
         zeros.iter().all(|&z| z == 1),
-        "each leaf keeps its last posting: {zeros:?}"
+        "each segment keeps its first posting: {zeros:?}"
     );
 }
 

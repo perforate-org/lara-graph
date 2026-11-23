@@ -171,6 +171,16 @@ pub(super) fn decode(read: Read<'_>) -> Vec<Posting> {
         .collect()
 }
 
+/// How many postings of each segment have a count of zero (test checks).
+#[cfg(test)]
+pub(super) fn zeros_per_segment(read: Read<'_>) -> Vec<usize> {
+    let leaf = Leaf::open(read);
+    (0..leaf.len())
+        .filter_map(|i| leaf.entry(i))
+        .map(|e| e.decode(read).iter().filter(|p| p.count == 0).count())
+        .collect()
+}
+
 /// The leaf's postings with a count, in key order.
 pub(super) fn counted(read: Read<'_>) -> Vec<Posting> {
     let leaf = Leaf::open(read);
@@ -340,9 +350,9 @@ impl Patch {
 }
 
 /// The patch that lowers the count of the posting at `key` by one in place, or `None` when the
-/// leaf lacks it. A posting whose count reaches zero leaves its segment, and a segment it
-/// empties leaves the table; the leaf's last posting stays, at zero, as a leaf is never emptied
-/// in place.
+/// leaf lacks it. A posting whose count reaches zero leaves its segment, unless it is the first
+/// (the others' blocks are coded against it); a segment it empties leaves the table. A leaf's
+/// last posting stays, at zero, as a leaf is never emptied in place.
 pub(super) fn lowered(read: Read<'_>, key: (u32, u32)) -> Option<Patch> {
     let leaf = Leaf::open(read);
     let index = leaf.segment_of(key);

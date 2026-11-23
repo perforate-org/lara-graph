@@ -12,7 +12,7 @@ mod patch;
 pub(super) use patch::{Lowered, Patched};
 
 /// Postings a segment is cut to when it is rebuilt.
-const SEGMENT_TARGET: usize = 16;
+const SEGMENT_TARGET: usize = 24;
 /// Postings a segment may grow to before it is cut.
 const SEGMENT_MAX: usize = 2 * SEGMENT_TARGET;
 const MAX_K: u32 = 24;
@@ -35,15 +35,41 @@ pub(super) struct Coded {
 
 /// Bits a count field takes for counts up to `max`.
 fn count_bits(max: u32) -> u32 {
-    (32 - max.leading_zeros()).max(1)
+    bits_of(max).max(1)
+}
+
+/// Bits that hold `value`: none for zero.
+const fn bits_of(value: u32) -> u32 {
+    32 - value.leading_zeros()
+}
+
+/// A block as a segment codes it: its offset from the segment's first block, zigzagged so that a
+/// small offset either way is a small number. Blocks of targets inserted about together are near
+/// each other, so these take a few bits where the blocks themselves take many.
+fn block_code(block: u32, base: u32) -> u32 {
+    let offset = i64::from(block) - i64::from(base);
+    let zigzag = if offset >= 0 {
+        2 * offset
+    } else {
+        -2 * offset - 1
+    };
+    u32::try_from(zigzag).unwrap_or_else(|_| corrupt("an index block offset"))
+}
+
+/// The block that `code` stands for in a segment whose first block is `base`.
+fn block_of(code: u32, base: u32) -> u32 {
+    let half = i64::from(code >> 1);
+    let offset = if code & 1 == 0 { half } else { -half - 1 };
+    u32::try_from(i64::from(base) + offset).unwrap_or_else(|_| corrupt("an index block"))
 }
 
 impl Coded {
     /// Codes sorted postings (at most [`SEGMENT_MAX`]): each target gap after the first in
-    /// Rice(`k`), each count in `c` bits, each block in `w` bits.
+    /// Rice(`k`), each count in `c` bits, each block's code ([`block_code`]) in `w` bits.
     fn encode(postings: &[Posting]) -> Self {
-        let max_block = postings.iter().map(|p| p.block).max().unwrap_or(0);
-        let w = (32 - max_block.leading_zeros()).max(1);
+        let base = postings.first().map_or(0, |p| p.block);
+        let widest = postings.iter().map(|p| block_code(p.block, base)).max();
+        let w = bits_of(widest.unwrap_or(0));
         let k = best_k(postings);
         let c = count_bits(postings.iter().map(|p| p.count).max().unwrap_or(1));
         Self::code(postings, (k, w, c))
@@ -63,7 +89,7 @@ impl Coded {
             }
             previous = p.target;
             out.fixed(p.count, c);
-            out.fixed(p.block, w);
+            out.fixed(block_code(p.block, first.1), w);
         }
         Self {
             first,
@@ -258,7 +284,7 @@ impl Entry {
             }
             let at = reader.position();
             let count = reader.fixed(self.c);
-            let block = reader.fixed(self.w);
+            let block = block_of(reader.fixed(self.w), self.first.1);
             if f(
                 Posting {
                     target,

@@ -1,7 +1,7 @@
 //! Changing a segment in its own slot: lowering or raising one posting's count, or adding a
 //! posting, without re-coding the rest of the segment.
 
-use super::{Entry, Read, SEGMENT_MAX, count_bits};
+use super::{Entry, Read, SEGMENT_MAX, bits_of, block_code, block_of, count_bits};
 use crate::corrupt::corrupt;
 use crate::targets::bits::{Reader, Writer};
 use crate::targets::tree::Change;
@@ -63,14 +63,15 @@ impl Entry {
         key: (u32, u32),
         (at, previous, next): (usize, u32, Option<(u32, usize)>),
     ) -> Option<Patched> {
-        if self.n >= SEGMENT_MAX || count_bits(key.1) > self.w {
+        let block = block_code(key.1, self.first.1);
+        if self.n >= SEGMENT_MAX || bits_of(block) > self.w {
             return None;
         }
         let rest = next.map_or(self.bits, |(_, gap_end)| gap_end);
         let (code, bits, byte) = self.spliced(code, at, rest, |out| {
             out.rice(key.0 - previous, self.k);
             out.fixed(1, self.c);
-            out.fixed(key.1, self.w);
+            out.fixed(block, self.w);
             if let Some((target, _)) = next {
                 out.rice(target - key.0, self.k);
             }
@@ -121,10 +122,9 @@ impl Entry {
             let gap = (next.target - previous, self.k);
             self.dropped(code, total, (held.start, next.gap_end), Some(gap))?
         } else {
-            // The first posting goes: the next one, without its gap, starts the code.
-            let mut patched = self.dropped(code, total, (0, next.gap_end), None)?;
-            patched.entry.first = (next.target, next.block);
-            patched
+            // The first posting's block is what the others' blocks are coded against: it stays,
+            // at zero, until the segment is next rewritten.
+            self.recounted(code, total, (held.count_at, 0))?
         };
         Some(Lowered::Patched(patched))
     }
@@ -190,7 +190,7 @@ impl Entry {
             }
             let count_at = reader.position();
             let count = reader.fixed(self.c);
-            let block = reader.fixed(self.w);
+            let block = block_of(reader.fixed(self.w), self.first.1);
             match (target, block).cmp(&key) {
                 Ordering::Less => previous = Some(target),
                 Ordering::Greater => return None,
@@ -198,13 +198,7 @@ impl Entry {
                     let next = (i + 1 < self.n).then(|| {
                         let target = target + reader.rice(self.k);
                         let gap_end = reader.position();
-                        reader.fixed(self.c);
-                        let block = reader.fixed(self.w);
-                        Next {
-                            target,
-                            block,
-                            gap_end,
-                        }
+                        Next { target, gap_end }
                     });
                     return Some(Held {
                         start,
@@ -232,7 +226,7 @@ impl Entry {
             }
             let gap_end = reader.position();
             let count = reader.fixed(self.c);
-            let block = reader.fixed(self.w);
+            let block = block_of(reader.fixed(self.w), self.first.1);
             match (target, block).cmp(&key) {
                 Ordering::Less => previous = Some(target),
                 Ordering::Equal => {
@@ -323,7 +317,6 @@ struct Held {
 /// The posting after a held one.
 struct Next {
     target: u32,
-    block: u32,
     /// Where its gap ends: its count starts.
     gap_end: usize,
 }

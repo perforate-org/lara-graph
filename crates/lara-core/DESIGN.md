@@ -263,7 +263,7 @@ skipping dead pages.
 ## Target index
 
 A paged bucket keeps a **counted B+ tree of postings** (`targets`, `graph/index`). A posting
-`(target, block, count)` says that `count` live entries to `target` sit among the 64 positions of
+`(target, block, count)` says that `count` live entries to `target` sit among the 128 positions of
 `block`. Rank and selection of a target's entries are therefore logarithmic, followed by one block
 scan. This matches halves in `counterpart`, removal and detach without scanning a hub. A target's
 postings are usually reached in one descent, by walking the leaf where they start.
@@ -274,9 +274,10 @@ postings are usually reached in one descent, by walking the leaf where they star
     beforehand by a counting pass.
   - A removal lowers its posting's count in place in one descent, and takes no memory. Counts are
     fixed-width per segment. A posting whose count reaches zero leaves its segment: the bits after
-    it move along. A segment it empties leaves the leaf's table, and only a leaf's last posting
-    stays, at zero, since a leaf is never emptied in place. Batches of decrements (compaction's)
-    lower counts in place and leave zeros until the segment is next rewritten.
+    it move along. A segment it empties leaves the leaf's table. Zeros stay only at a segment's
+    first posting (see below) and a leaf's last, since a leaf is never emptied in place. Batches
+    of decrements (compaction's) lower counts in place and leave zeros until the segment is next
+    rewritten.
   - **Sparse leaves merge.** Once a paged bucket's slots need no compaction, each `compact` step
     merges one pair of neighbours, found by going down from the root: leaves whose counts sum to
     512 or less, or nodes whose children fit one node. A root with one child gives way to it.
@@ -284,8 +285,13 @@ postings are usually reached in one descent, by walking the leaf where they star
       13 pages (distinct targets) and from 89 to 11 (random targets among a million vertices).
   - Batches are planned once in memory, reserved exactly and committed. A block's batch is planned
     before the insert that completes the block; compaction plans its moves.
-- **Leaves are slotted pages of coded segments.** Each segment holds 16-32 postings, coded as
-  Rice target gaps, fixed-width counts and fixed-width blocks.
+- **Leaves are slotted pages of coded segments.** Each segment holds 24-48 postings, coded as
+  Rice target gaps, fixed-width counts and fixed-width block offsets.
+  - A block is coded as its offset from the segment's first block, zigzagged so that small
+    offsets either way are small. Targets inserted about together have blocks near each other,
+    so the offsets take a few bits where the blocks took ten or more.
+  - The segment's first posting is what the others' blocks are coded against. When its count
+    reaches zero it stays, at zero, until the segment is next rewritten; the others leave.
   - A change reads and writes only the segments it touches.
   - Internal nodes keep keys, pages and counts in separate arrays, so a lookup reads only what it
     probes.
@@ -296,10 +302,27 @@ postings are usually reached in one descent, by walking the leaf where they star
   - pairing through a hub costs ~17-28K instructions instead of a scan;
   - hub inserts cost about 15-20 % more than before the index;
   - removals from a hub's side cost one in-place index change each, ~6K;
-  - the index takes 0.8-1.4× the slots for hubs of distinct targets.
+  - the index takes 0.38× the slots for a hub of distinct targets added in id order, about 1.0-1.3×
+    for random ones, and 0.52× for parallel edges to 64 targets in turn.
+
+## Constants
+
+Each was chosen by measuring the alternatives with canbench and the space examples; the numbers
+are in `docs/ic-measurements-2026-11-22.md` (eighth round).
+
+| Constant | Value | Why |
+| --- | --- | --- |
+| Descriptor size, inline slots | 16 bytes, 3 slots | A bucket's 4th edge moves it to a run, once, for ~3.5K instructions. Five slots would need 24 bytes per bucket; on the IC, 8 bytes stored cost that much within about six weeks. |
+| Run to paged, paged back to run | above 1024 slots, at 512 live or fewer | A run is at most one page. The gap between the two keeps a bucket near the line from changing form back and forth. |
+| Index block | 128 positions | Against 64: inserts −2 to −10 %, index pages −6 % for distinct targets and −49 % for parallel edges; a pairing through a hub +15 % (~2.6K instructions). 256 made that +40 %. |
+| Postings per segment | 24, at most 48 | Against 16: index pages −16 % (distinct) and −8 % (random); a removal from the leaf's side +7 %. 32 saved 17 % more space but made pairing and detaching a satellite 16-23 % dearer. |
+| Leaf merge | counts summing to 512 or less | Leaves hold 700 to 1200 postings, so merged ones fit one. After merging, every pair of neighbours indexes more than 512 edges. |
+| Search windows | 32 slots, then 128 | Most searches stop within a few slots of where they start. 16 slots first made a block scan take two reads. |
+
+Measured and left out: implicit counts of one (no count bits in a segment whose counts are all one)
+would save about 8 % of a sparse hub's index. In exchange, a segment's first posting could not
+stay at zero, so a removal could need a whole re-coded segment.
 
 ## Not yet
 
 - Detaching many vertices at once with one pass over each shared hub.
-- Settling the constants (descriptor size, inline slots, page threshold) by measuring on the IC
-  with canbench (`crates/lara-core-bench`).
