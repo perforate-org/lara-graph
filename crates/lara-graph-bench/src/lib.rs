@@ -15,6 +15,9 @@ use lara_graph::{
     Placement, Position, Progress, VecMemory, Width,
 };
 
+mod locality;
+pub mod two_hop;
+
 const LABEL: Label = Label::new(2);
 
 /// A graph in five heap memories.
