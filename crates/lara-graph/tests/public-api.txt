@@ -3,6 +3,9 @@ pub enum lara_graph::Direction
 pub lara_graph::Direction::Incoming
 pub lara_graph::Direction::Outgoing
 pub lara_graph::Direction::Undirected
+pub enum lara_graph::EdgeKind
+pub lara_graph::EdgeKind::Directed
+pub lara_graph::EdgeKind::Undirected
 pub enum lara_graph::Error
 pub lara_graph::Error::AddressSpaceExhausted
 pub lara_graph::Error::Deleted(lara_graph::NodeId)
@@ -158,7 +161,8 @@ pub const fn lara_graph::Move::target(&self) -> lara_graph::NodeId
 pub const fn lara_graph::Move::to(&self) -> lara_graph::Position
 pub struct lara_graph::NewEdge<'a>
 impl<'a> lara_graph::NewEdge<'a>
-pub const fn lara_graph::NewEdge<'a>::new(lara_graph::NodeId, lara_graph::Label, lara_graph::NodeId, lara_graph::Placement, &'a [u8]) -> Self
+pub const fn lara_graph::NewEdge<'a>::directed(lara_graph::NodeId, lara_graph::Label, lara_graph::NodeId, lara_graph::Placement, &'a [u8]) -> Self
+pub const fn lara_graph::NewEdge<'a>::undirected(lara_graph::NodeId, lara_graph::Label, lara_graph::NodeId, lara_graph::Placement, &'a [u8]) -> Self
 pub struct lara_graph::NodeId(_)
 impl lara_graph::NodeId
 pub const fn lara_graph::NodeId::index(self) -> u32

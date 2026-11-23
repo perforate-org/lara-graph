@@ -511,9 +511,9 @@ fn add_edges_inserts_each_directed_edge() {
     let backing = Backing::default();
     let mut g = backing.create(5);
     let specs = [
-        NewEdge::new(v(0), l(0), v(1), Placement::ReuseHoles, &[]),
-        NewEdge::new(v(0), l(0), v(2), Placement::ReuseHoles, &[]),
-        NewEdge::new(v(0), l(1), v(3), Placement::ReuseHoles, &[]),
+        NewEdge::directed(v(0), l(0), v(1), Placement::ReuseHoles, &[]),
+        NewEdge::directed(v(0), l(0), v(2), Placement::ReuseHoles, &[]),
+        NewEdge::directed(v(0), l(1), v(3), Placement::ReuseHoles, &[]),
     ];
     let halves = g.add_edges(&specs).unwrap();
     assert_eq!(halves.len(), 3);
@@ -524,12 +524,46 @@ fn add_edges_inserts_each_directed_edge() {
 }
 
 #[test]
+fn add_edges_reuses_a_repeated_target() {
+    let backing = Backing::default();
+    let mut g = backing.create(3);
+    let specs = [
+        NewEdge::directed(v(0), l(0), v(1), Placement::ReuseHoles, &[]),
+        NewEdge::directed(v(0), l(0), v(2), Placement::ReuseHoles, &[]),
+        NewEdge::directed(v(0), l(0), v(1), Placement::ReuseHoles, &[]),
+    ];
+    let halves = g.add_edges(&specs).unwrap();
+    assert_eq!(halves.len(), 3);
+    assert_eq!(g.degree(v(0), l(0), Direction::Outgoing).unwrap(), 3);
+    assert_eq!(g.degree(v(1), l(0), Direction::Incoming).unwrap(), 2);
+    assert_eq!(g.degree(v(2), l(0), Direction::Incoming).unwrap(), 1);
+}
+
+#[test]
+fn add_edges_carries_directed_undirected_and_self_loops() {
+    let backing = Backing::default();
+    let mut g = backing.create(3);
+    let specs = [
+        NewEdge::directed(v(0), l(0), v(1), Placement::ReuseHoles, &[]),
+        NewEdge::undirected(v(0), l(1), v(2), Placement::ReuseHoles, &[]),
+        NewEdge::undirected(v(2), l(2), v(2), Placement::ReuseHoles, &[]),
+    ];
+    let halves = g.add_edges(&specs).unwrap();
+    assert_eq!(halves.len(), 3);
+    assert_eq!(halves[2].canonical(), halves[2].other());
+    assert_eq!(g.degree(v(0), l(0), Direction::Outgoing).unwrap(), 1);
+    assert_eq!(g.degree(v(0), l(1), Direction::Undirected).unwrap(), 1);
+    assert_eq!(g.degree(v(2), l(1), Direction::Undirected).unwrap(), 1);
+    assert_eq!(g.degree(v(2), l(2), Direction::Undirected).unwrap(), 1);
+}
+
+#[test]
 fn add_edges_checks_all_endpoints_before_writing() {
     let backing = Backing::default();
     let mut g = backing.create(2);
     let specs = [
-        NewEdge::new(v(0), l(0), v(1), Placement::ReuseHoles, &[]),
-        NewEdge::new(v(0), l(0), v(9), Placement::ReuseHoles, &[]),
+        NewEdge::directed(v(0), l(0), v(1), Placement::ReuseHoles, &[]),
+        NewEdge::directed(v(0), l(0), v(9), Placement::ReuseHoles, &[]),
     ];
     assert_eq!(g.add_edges(&specs), Err(Error::UnknownNode(v(9))));
     assert_eq!(g.degree(v(0), l(0), Direction::Outgoing).unwrap(), 0);
@@ -542,8 +576,8 @@ fn add_edges_checks_value_lengths_before_writing() {
     let mut g = backing.create(2);
     g.declare_width(l(0), Width::new(2).unwrap()).unwrap();
     let specs = [
-        NewEdge::new(v(0), l(0), v(1), Placement::ReuseHoles, &[1, 2]),
-        NewEdge::new(v(0), l(0), v(1), Placement::ReuseHoles, &[1]),
+        NewEdge::directed(v(0), l(0), v(1), Placement::ReuseHoles, &[1, 2]),
+        NewEdge::directed(v(0), l(0), v(1), Placement::ReuseHoles, &[1]),
     ];
     assert!(matches!(
         g.add_edges(&specs),

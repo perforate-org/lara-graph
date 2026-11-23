@@ -509,7 +509,7 @@ mod detach;
 mod index;
 mod insert;
 
-pub use insert::NewEdge;
+pub use insert::{EdgeKind, NewEdge};
 mod lifecycle;
 mod pair;
 mod props;

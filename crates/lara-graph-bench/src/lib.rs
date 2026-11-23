@@ -101,7 +101,7 @@ fn grow_hub_batched(mut g: Graph<impl Memory>, degree: u32) -> BenchResult {
     let leaves = nodes(&mut g, degree);
     let edges: Vec<NewEdge<'_>> = leaves
         .iter()
-        .map(|&leaf| NewEdge::new(hub, LABEL, leaf, Placement::ReuseHoles, &[]))
+        .map(|&leaf| NewEdge::directed(hub, LABEL, leaf, Placement::ReuseHoles, &[]))
         .collect();
     bench_fn(|| black_box(g.add_edges(&edges).unwrap_or_else(|e| panic!("batch: {e}"))))
 }
@@ -157,6 +157,28 @@ fn hub_insert_parallel_4096() -> BenchResult {
             black_box(directed(&mut g, hub, target));
         }
     })
+}
+
+fn grow_hub_parallel_batched(mut g: Graph<impl Memory>) -> BenchResult {
+    let hub = node(&mut g);
+    let targets = nodes(&mut g, 8);
+    let edges: Vec<NewEdge<'_>> = targets
+        .iter()
+        .cycle()
+        .take(4096)
+        .map(|&target| NewEdge::directed(hub, LABEL, target, Placement::ReuseHoles, &[]))
+        .collect();
+    bench_fn(|| black_box(g.add_edges(&edges).unwrap_or_else(|e| panic!("batch: {e}"))))
+}
+
+#[bench(raw)]
+fn hub_insert_parallel_4096_batched() -> BenchResult {
+    grow_hub_parallel_batched(heap_graph())
+}
+
+#[bench(raw)]
+fn hub_insert_parallel_4096_batched_stable() -> BenchResult {
+    grow_hub_parallel_batched(stable_graph())
 }
 
 /// 51 full scans of a 1024-edge hub bucket (ic-stable-lara `bench_l_s2_h_scn_d_1024`).
