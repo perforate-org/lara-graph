@@ -37,6 +37,29 @@ impl ListPageCache {
         }
     }
 
+    /// The page slice at `extent`, loaded once a run of three lists lands in its page.
+    #[inline]
+    fn page<'a, M: Memory>(&'a mut self, pages: &Pages<'_, M>, extent: Extent) -> Option<&'a [u8]> {
+        let page = extent.page().get();
+        if page == self.last_page {
+            self.run += 1;
+        } else {
+            self.last_page = page;
+            self.run = 1;
+        }
+        if self.run < 3 {
+            return None;
+        }
+        if self.page != Some(page) {
+            self.bytes.resize(LIST_PAGE_BYTES, 0);
+            pages.read_into(extent.page().offset(), &mut self.bytes);
+            self.page = Some(page);
+        }
+        let at = usize::try_from(extent.offset().get() - extent.page().offset().get())
+            .unwrap_or_else(|_| corrupt("list page offset"));
+        self.bytes.get(at..)
+    }
+
     #[inline]
     fn stored<M: Memory>(
         &mut self,
@@ -46,24 +69,25 @@ impl ListPageCache {
         extent: Extent,
         count: usize,
     ) -> Option<Stored> {
-        let page = extent.page().get();
-        if page == self.last_page {
-            self.run += 1;
-        } else {
-            self.last_page = page;
-            self.run = 1;
-        }
-        if self.run >= 3 {
-            if self.page != Some(page) {
-                self.bytes.resize(LIST_PAGE_BYTES, 0);
-                pages.read_into(extent.page().offset(), &mut self.bytes);
-                self.page = Some(page);
-            }
-            let at = usize::try_from(extent.offset().get() - extent.page().offset().get())
-                .unwrap_or_else(|_| corrupt("list page offset"));
-            return label_bucket_list::lookup_stored_in(&self.bytes, at, count, key);
+        if let Some(bytes) = self.page(pages, extent) {
+            return label_bucket_list::lookup_stored_in(bytes, 0, count, key);
         }
         label_bucket_list::lookup_stored(pages, Some(list), key)
+    }
+
+    #[inline]
+    fn for_each<M: Memory, B>(
+        &mut self,
+        pages: &Pages<'_, M>,
+        list: LabelBucketList,
+        f: &mut impl FnMut(LabelBucketKey, Stored) -> ControlFlow<B>,
+    ) -> Option<B> {
+        if let Some((extent, count)) = list.flat()
+            && let Some(bytes) = self.page(pages, extent)
+        {
+            return label_bucket_list::for_each_bytes(bytes, 0, count, f);
+        }
+        label_bucket_list::for_each(pages, Some(list), f)
     }
 }
 
@@ -177,11 +201,12 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         }
         let mode = mode(nodes);
         let records = &mut self.records;
+        let list_page = &mut self.list_page;
+        let lists = graph.label_bucket_lists.pages();
         for &v in nodes {
             let record = record(graph, records, v, mode);
             let Some(list) = record.list else { continue };
-            let pages = graph.label_bucket_lists.pages();
-            if let Some(found) = label_bucket_list::for_each(&pages, Some(list), |key, _| {
+            if let Some(found) = for_each_list(&lists, list_page, list, mode, &mut |key, _| {
                 if key.direction == direction {
                     f(v, key.label)
                 } else {
@@ -211,21 +236,19 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         }
         let mode = mode(nodes);
         let records = &mut self.records;
+        let list_page = &mut self.list_page;
+        let lists = graph.label_bucket_lists.pages();
+        let view = graph.edges.pages();
         for &v in nodes {
             let record = record(graph, records, v, mode);
             let has = if let Some(list) = record.list {
-                let view = graph.edges.pages();
-                label_bucket_list::for_each(
-                    &graph.label_bucket_lists.pages(),
-                    Some(list),
-                    |_, stored| {
-                        if slots(&view, stored).live() > 0 {
-                            ControlFlow::Break(())
-                        } else {
-                            ControlFlow::<()>::Continue(())
-                        }
-                    },
-                )
+                for_each_list(&lists, list_page, list, mode, &mut |_, stored| {
+                    if slots(&view, stored).live() > 0 {
+                        ControlFlow::Break(())
+                    } else {
+                        ControlFlow::<()>::Continue(())
+                    }
+                })
                 .is_some()
             } else {
                 false
@@ -429,6 +452,20 @@ fn stored<M: Memory>(
             None => label_bucket_list::lookup_stored(lists, Some(list), key),
         },
         Mode::Sparse => label_bucket_list::lookup_stored(lists, Some(list), key),
+    }
+}
+
+#[inline]
+fn for_each_list<M: Memory, B>(
+    lists: &Pages<'_, M>,
+    list_page: &mut ListPageCache,
+    list: LabelBucketList,
+    mode: Mode,
+    f: &mut impl FnMut(LabelBucketKey, Stored) -> ControlFlow<B>,
+) -> Option<B> {
+    match mode {
+        Mode::Dense => list_page.for_each(lists, list, f),
+        Mode::Sparse => label_bucket_list::for_each(lists, Some(list), f),
     }
 }
 

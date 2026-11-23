@@ -336,15 +336,26 @@ pub(crate) fn for_each_in<M: Memory, B>(
     f: &mut impl FnMut(LabelBucketKey, Stored) -> ControlFlow<B>,
 ) -> Option<B> {
     pages.with_read(base, count * ENTRY_BYTES, |bytes| {
-        let (entries, _) = bytes.as_chunks::<ENTRY_BYTES>();
-        for &entry in entries {
-            let (key, stored) = decode_entry(entry);
-            if let ControlFlow::Break(value) = f(key, stored) {
-                return Some(value);
-            }
-        }
-        None
+        for_each_bytes(bytes, 0, count, f)
     })
+}
+
+/// [`for_each`] over `count` encoded entries already in `bytes`, starting at `at`.
+pub(crate) fn for_each_bytes<B>(
+    bytes: &[u8],
+    at: usize,
+    count: usize,
+    f: &mut impl FnMut(LabelBucketKey, Stored) -> ControlFlow<B>,
+) -> Option<B> {
+    let entries = bytes.get(at..)?.get(..count * ENTRY_BYTES)?;
+    let (entries, _) = entries.as_chunks::<ENTRY_BYTES>();
+    for &entry in entries {
+        let (key, stored) = decode_entry(entry);
+        if let ControlFlow::Break(value) = f(key, stored) {
+            return Some(value);
+        }
+    }
+    None
 }
 
 /// Every entry of a list, in order (test invariant checks).
