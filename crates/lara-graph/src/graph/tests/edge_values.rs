@@ -253,3 +253,21 @@ fn compaction_releases_the_value_pages_it_empties() {
     assert_eq!(g.edge_value(halves[0]), Ok(Some(val(0, 64))));
     check(&g);
 }
+
+#[test]
+fn batch_edge_values_match_the_single_reads() {
+    let backing = Backing::default();
+    let mut g = backing.create(2);
+    g.declare_width(l(0), w(4)).unwrap();
+    let halves = valued_edges(&mut g, l(0), 6, 4);
+    g.remove_edge(halves[2]).unwrap();
+    let expected: Vec<Option<Vec<u8>>> = halves
+        .iter()
+        .map(|half| g.edge_value(*half).unwrap())
+        .collect();
+    let mut batch = g.read_batch();
+    let mut values = Vec::new();
+    batch.edge_values_each(&halves, &mut values).unwrap();
+    assert_eq!(values, expected);
+    assert!(values[2].is_none());
+}

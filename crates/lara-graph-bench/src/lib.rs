@@ -880,6 +880,46 @@ fn edge_lookup_1024_batched() -> BenchResult {
     })
 }
 
+/// 1024 edge values in one hub bucket, one call each.
+#[bench(raw)]
+fn edge_value_1024_loop() -> BenchResult {
+    let mut g = heap_graph();
+    let hub = seed_valued_hub(&mut g, 65536);
+    let halves: Vec<EdgeRef> = (0..1024)
+        .map(|i| EdgeRef::new(hub, LABEL, Direction::Outgoing, Position::new(i)))
+        .collect();
+    bench_fn(|| {
+        let mut live = 0u64;
+        for &half in &halves {
+            live += u64::from(
+                g.edge_value(half)
+                    .unwrap_or_else(|err| panic!("value: {err}"))
+                    .is_some(),
+            );
+        }
+        black_box(live)
+    })
+}
+
+/// The same 1024 edge values through one `ReadBatch`, reusing the bucket lookup.
+#[bench(raw)]
+fn edge_value_1024_batched() -> BenchResult {
+    let mut g = heap_graph();
+    let hub = seed_valued_hub(&mut g, 65536);
+    let halves: Vec<EdgeRef> = (0..1024)
+        .map(|i| EdgeRef::new(hub, LABEL, Direction::Outgoing, Position::new(i)))
+        .collect();
+    bench_fn(|| {
+        let mut batch = g.read_batch();
+        let mut out = Vec::new();
+        batch
+            .edge_values_each(&halves, &mut out)
+            .unwrap_or_else(|err| panic!("value batch: {err}"));
+        let live: u64 = out.iter().map(|value| u64::from(value.is_some())).sum();
+        black_box(live)
+    })
+}
+
 /// 1024 counterparts in one hub bucket, one call each.
 #[bench(raw)]
 fn counterpart_1024_loop() -> BenchResult {

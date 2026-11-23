@@ -276,6 +276,53 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         Ok(None)
     }
 
+    /// Replaces `out` with the value of each live half's edge, as that half's bucket holds it;
+    /// `None` for a hole, a position past the end or a missing bucket. Consecutive halves in the
+    /// same bucket reuse one lookup.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`] for any node at or past [`Graph::node_count`].
+    pub fn edge_values_each(
+        &mut self,
+        halves: &[EdgeRef],
+        out: &mut Vec<Option<Vec<u8>>>,
+    ) -> Result<(), Error> {
+        let graph = self.graph;
+        for half in halves {
+            graph.check(half.node())?;
+        }
+        out.clear();
+        out.reserve(halves.len());
+        for &half in halves {
+            let node = half.node();
+            let key = key_of(half);
+            let found = match self.last_found {
+                Some((last_node, last_key, found)) if last_node == node && last_key == key => found,
+                _ => {
+                    let found = graph.find_label_bucket(node, key)?;
+                    self.last_found = Some((node, key, found));
+                    found
+                }
+            };
+            let Some(found) = found else {
+                out.push(None);
+                continue;
+            };
+            let view = graph.edges.pages();
+            if label_bucket::get(&found.bucket.slots, half.position(), &view).is_none() {
+                out.push(None);
+                continue;
+            }
+            out.push(Some(graph.read_value(
+                &found,
+                half.label(),
+                half.position(),
+            )));
+        }
+        Ok(())
+    }
+
     /// Replaces `out` with the target at each half's position: `None` for a hole or a position
     /// past the end. Consecutive halves in the same bucket reuse one descriptor.
     ///
