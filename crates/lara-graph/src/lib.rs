@@ -50,7 +50,5 @@ pub use id::{
     Position, Progress, RemovedEdge, Width,
 };
 pub use memories::{Memories, MemoryRole};
-#[cfg(feature = "ic-stable-structures")]
-pub use memory::IcMemory;
 pub use memory::{GrowFailed, Memory, PAGE_SIZE, VecMemory};
 pub use node_set::NodeSet;

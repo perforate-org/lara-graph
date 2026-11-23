@@ -162,6 +162,11 @@ Adopted as proposed, with no data to keep, so with no compatibility or migration
    and `LabelBucketListDirectory`, `Error::TooManyLabelBuckets`, and inside the crate
    `LabelBucket`, `LabelBucketKey`, `LabelBucketList` and the modules `label_bucket` and
    `label_bucket_list`. The leftover `side` names became `direction` (`EdgeRef::direction`).
+6. Later still: `IcMemory` is gone. Every ic-stable-structures memory is a lara-graph memory
+   through a blanket impl, so a canister writes `Graph<VirtualMemory<DefaultMemoryImpl>>` as it
+   writes `StableBTreeMap<K, V, VirtualMemory<DefaultMemoryImpl>>`. The impl for shared
+   references, which blocked it, went; `VecMemory` clones share their bytes instead, as
+   `VectorMemory` does.
 
 **Headers.** ic-stable-structures starts each memory with a 3-byte magic and a version byte (both
 of `Log`'s memories included). lara-core's nodes memory and directories already did; the pages

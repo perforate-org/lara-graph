@@ -1,7 +1,7 @@
 use super::*;
 use crate::descriptor::{PAGE_SLOTS, Paged, Slot, TINY_SLOTS};
 use crate::id::{Cursor, Halves, Order, Placement, Position, Width};
-use crate::memories::{Memories, MemoryRole};
+use crate::memories::Memories;
 use crate::memory::{PAGE_SIZE, VecMemory};
 use crate::node_set::NodeSet;
 use crate::page_store::{ByteClass, Extent, Pages};
@@ -21,11 +21,11 @@ struct Backing {
 }
 
 impl Backing {
-    fn memories(&self) -> Memories<&VecMemory> {
-        Memories::from_fn(|role| &self.memories[usize::from(role.index())])
+    fn memories(&self) -> Memories<VecMemory> {
+        Memories::from_fn(|role| self.memories[usize::from(role.index())].clone())
     }
 
-    fn create(&self, n: u32) -> Graph<&VecMemory> {
+    fn create(&self, n: u32) -> Graph<VecMemory> {
         let mut g = Graph::new(self.memories());
         for _ in 0..n {
             g.add_node().unwrap();
@@ -33,7 +33,7 @@ impl Backing {
         g
     }
 
-    fn open(&self) -> Graph<&VecMemory> {
+    fn open(&self) -> Graph<VecMemory> {
         Graph::load(self.memories())
     }
 }
@@ -386,7 +386,7 @@ fn windows_count_holes_and_hand_back_the_next_cursor() {
         remove(&mut g, v(0), l(0), p(at));
     }
     let span = NonZeroU32::new(4).unwrap();
-    let window = |g: &Graph<&VecMemory>, cursor| {
+    let window = |g: &Graph<VecMemory>, cursor| {
         let mut seen = Vec::new();
         let next = g
             .visit_window(v(0), l(0), Direction::Outgoing, cursor, |e| {
@@ -500,7 +500,7 @@ fn labels_are_separate_sorted_buckets() {
 fn too_many_buckets_is_an_error_and_changes_nothing() {
     let backing = Backing::default();
     let mut g = backing.create(4);
-    let room = |g: &Graph<&VecMemory>, x: u32, adding| {
+    let room = |g: &Graph<VecMemory>, x: u32, adding| {
         label_bucket_list::has_room(
             &g.label_bucket_lists.pages(),
             g.label_bucket_list(v(x)).unwrap(),
@@ -680,7 +680,7 @@ fn the_page_index_deepens_past_one_page_of_entries() {
 }
 
 /// The edges of the first four nodes, under labels 0 to 2, on both sides.
-fn snapshot(g: &Graph<&VecMemory>) -> Vec<Vec<Vec<(u32, u32)>>> {
+fn snapshot(g: &Graph<VecMemory>) -> Vec<Vec<Vec<(u32, u32)>>> {
     (0..4.min(g.node_count()))
         .map(|x| {
             (0..3)
@@ -776,12 +776,11 @@ mod model;
 #[cfg(feature = "ic-stable-structures")]
 #[test]
 fn ic_stable_structures_memories_hold_a_graph() {
-    use crate::memory::IcMemory;
+    use crate::memories::MemoryRole;
+    use ic_stable_structures::DefaultMemoryImpl;
     use ic_stable_structures::memory_manager::{MemoryId, MemoryManager};
-    use ic_stable_structures::{DefaultMemoryImpl, Memory as _};
     let manager = MemoryManager::init(DefaultMemoryImpl::default());
-    let memories =
-        || Memories::from_fn(|role| IcMemory::new(manager.get(MemoryId::new(role.index()))));
+    let memories = || Memories::from_fn(|role| manager.get(MemoryId::new(role.index())));
     let mut g = Graph::init(memories());
     let (a, b) = (g.add_node().unwrap(), g.add_node().unwrap());
     let halves = g.add_edge(a, l(1), b, Placement::Append, &[]).unwrap();
@@ -790,5 +789,5 @@ fn ic_stable_structures_memories_hold_a_graph() {
     assert_eq!(g.node_count(), 2);
     assert_eq!(g.counterpart(halves.canonical()), Ok(Some(halves.other())));
     let nodes = manager.get(MemoryId::new(MemoryRole::Nodes.index()));
-    assert!(nodes.size() > 0);
+    assert!(ic_stable_structures::Memory::size(&nodes) > 0);
 }

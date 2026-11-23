@@ -7,7 +7,7 @@ fn bucket_with_holes(
     backing: &Backing,
     n: u32,
     holes: impl IntoIterator<Item = u32>,
-) -> Graph<&VecMemory> {
+) -> Graph<VecMemory> {
     let mut g = backing.create(2);
     for _ in 0..n {
         insert(&mut g, v(0), l(0), v(1));

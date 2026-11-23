@@ -1,6 +1,7 @@
 //! The memory seam: the one place bytes enter or leave the store.
 
 use crate::units::{ByteOffset, Overflow};
+use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::fmt;
@@ -11,7 +12,8 @@ pub const PAGE_SIZE: u64 = 65_536;
 /// A growable, byte-addressed backend.
 ///
 /// The shape mirrors `ic_stable_structures::Memory` (shared `&self`, interior mutability,
-/// page-granular growth) so a stable-memory adapter is a thin wrapper. All graph state lives
+/// page-granular growth); with the `ic-stable-structures` feature, every memory of that crate is
+/// one. All graph state lives
 /// behind this trait, which is what lets a graph be reopened.
 pub trait Memory {
     /// Current size in pages.
@@ -32,66 +34,27 @@ pub trait Memory {
     fn write(&self, offset: u64, buf: &[u8]);
 }
 
-/// An ic-stable-structures memory as a lara-graph memory: `DefaultMemoryImpl`, a `VirtualMemory`
-/// from a `MemoryManager`, a `RestrictedMemory`. Its `grow` reports failure as −1, which becomes
-/// [`GrowFailed`].
-///
-/// A wrapper rather than an impl for every such memory: that would overlap the impl for shared
-/// references, which another crate could give ic-stable-structures' trait too.
+/// Every ic-stable-structures memory is a lara-graph memory: `DefaultMemoryImpl`, a
+/// `VirtualMemory` from a `MemoryManager`, a `RestrictedMemory`, a `VectorMemory`. Its `grow`
+/// reports failure as −1, which becomes [`GrowFailed`].
 #[cfg(feature = "ic-stable-structures")]
-#[derive(Clone, Debug)]
-pub struct IcMemory<M>(M);
-
-#[cfg(feature = "ic-stable-structures")]
-impl<M: ic_stable_structures::Memory> IcMemory<M> {
-    /// Wraps `memory`.
-    pub const fn new(memory: M) -> Self {
-        Self(memory)
-    }
-
-    /// The memory back.
-    pub fn into_inner(self) -> M {
-        self.0
-    }
-}
-
-#[cfg(feature = "ic-stable-structures")]
-impl<M: ic_stable_structures::Memory> Memory for IcMemory<M> {
+impl<M: ic_stable_structures::Memory> Memory for M {
     fn size(&self) -> u64 {
-        self.0.size()
+        ic_stable_structures::Memory::size(self)
     }
 
     fn grow(&self, pages: u64) -> Result<u64, GrowFailed> {
-        let previous = self.0.grow(pages);
-        u64::try_from(previous).map_err(|_| GrowFailed::new(self.0.size(), pages))
+        let previous = ic_stable_structures::Memory::grow(self, pages);
+        u64::try_from(previous)
+            .map_err(|_| GrowFailed::new(ic_stable_structures::Memory::size(self), pages))
     }
 
     fn read(&self, offset: u64, buf: &mut [u8]) {
-        self.0.read(offset, buf);
+        ic_stable_structures::Memory::read(self, offset, buf);
     }
 
     fn write(&self, offset: u64, buf: &[u8]) {
-        self.0.write(offset, buf);
-    }
-}
-
-/// A shared reference to a memory is a memory: several stores can view one backend, and a
-/// caller can keep ownership while lending it.
-impl<M: Memory + ?Sized> Memory for &M {
-    fn size(&self) -> u64 {
-        (**self).size()
-    }
-
-    fn grow(&self, pages: u64) -> Result<u64, GrowFailed> {
-        (**self).grow(pages)
-    }
-
-    fn read(&self, offset: u64, buf: &mut [u8]) {
-        (**self).read(offset, buf);
-    }
-
-    fn write(&self, offset: u64, buf: &[u8]) {
-        (**self).write(offset, buf);
+        ic_stable_structures::Memory::write(self, offset, buf);
     }
 }
 
@@ -137,9 +100,13 @@ impl fmt::Display for GrowFailed {
 
 impl core::error::Error for GrowFailed {}
 
-/// A heap-backed [`Memory`] for tests, benchmarks and in-process use.
+/// A heap-backed [`Memory`] for tests, benchmarks and in-process use. Clones share the bytes, as
+/// ic-stable-structures' `VectorMemory` does, so a graph can be reopened from a clone.
+#[derive(Clone, Debug, Default)]
+pub struct VecMemory(Rc<Heap>);
+
 #[derive(Debug, Default)]
-pub struct VecMemory {
+struct Heap {
     bytes: RefCell<Vec<u8>>,
     /// Pages past which growth fails (tests of out-of-memory paths).
     #[cfg(test)]
@@ -156,12 +123,12 @@ impl VecMemory {
     /// Makes growth past `pages` fail.
     #[cfg(test)]
     pub(crate) fn cap(&self, pages: u64) {
-        self.cap.set(Some(pages));
+        self.0.cap.set(Some(pages));
     }
 
     #[cfg(test)]
     fn allows(&self, total: u64) -> bool {
-        self.cap.get().is_none_or(|cap| total <= cap)
+        self.0.cap.get().is_none_or(|cap| total <= cap)
     }
 
     #[cfg(not(test))]
@@ -173,7 +140,7 @@ impl VecMemory {
 
 impl Memory for VecMemory {
     fn size(&self) -> u64 {
-        let len = u64::try_from(self.bytes.borrow().len()).unwrap_or(u64::MAX);
+        let len = u64::try_from(self.0.bytes.borrow().len()).unwrap_or(u64::MAX);
         len / PAGE_SIZE
     }
 
@@ -186,12 +153,12 @@ impl Memory for VecMemory {
             .and_then(|total| total.checked_mul(PAGE_SIZE))
             .and_then(|bytes| usize::try_from(bytes).ok())
             .ok_or(failed)?;
-        self.bytes.borrow_mut().resize(new_len, 0);
+        self.0.bytes.borrow_mut().resize(new_len, 0);
         Ok(previous)
     }
 
     fn read(&self, offset: u64, buf: &mut [u8]) {
-        let bytes = self.bytes.borrow();
+        let bytes = self.0.bytes.borrow();
         let source = byte_window(offset, buf.len()).and_then(|range| bytes.get(range));
         // `Memory::read` requires an in-bounds range; violating it is a caller bug.
         let source = source.unwrap_or_else(|| out_of_bounds(offset, buf.len()));
@@ -199,7 +166,7 @@ impl Memory for VecMemory {
     }
 
     fn write(&self, offset: u64, buf: &[u8]) {
-        let mut bytes = self.bytes.borrow_mut();
+        let mut bytes = self.0.bytes.borrow_mut();
         let target = byte_window(offset, buf.len()).and_then(|range| bytes.get_mut(range));
         let target = target.unwrap_or_else(|| out_of_bounds(offset, buf.len()));
         target.copy_from_slice(buf);

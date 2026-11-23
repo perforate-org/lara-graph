@@ -60,8 +60,10 @@ leaves (`targets::tree`, `targets::leaf`), and the width table (`graph::widths`)
 
 Every piece of state lives behind the `Memory` seam. `Memory` mirrors
 `ic_stable_structures::Memory`; it is the one public trait taking raw `u64`. With the
-`ic-stable-structures` feature, `IcMemory` wraps any of that crate's memories (a `VirtualMemory`
-from a `MemoryManager`, say), mapping a failed `grow` (−1) to `GrowFailed`.
+`ic-stable-structures` feature, every memory of that crate is one (a `VirtualMemory` from a
+`MemoryManager`, say), with a failed `grow` (−1) mapped to `GrowFailed`. A shared reference is
+not a memory, as ic-stable-structures could make it one of its own and the two would clash;
+`VecMemory` clones share their bytes instead, as its `VectorMemory` does.
 
 ## The page store
 

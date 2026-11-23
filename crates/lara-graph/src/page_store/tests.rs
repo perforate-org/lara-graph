@@ -9,8 +9,8 @@ struct Backing {
 }
 
 impl Backing {
-    fn create(&self) -> PageStore<&VecMemory> {
-        PageStore::format(&self.pages, &self.directory).unwrap()
+    fn create(&self) -> PageStore<VecMemory> {
+        PageStore::format(self.pages.clone(), self.directory.clone()).unwrap()
     }
 }
 
@@ -142,7 +142,7 @@ fn reopen_reads_the_same_store() {
         check(&store, &live);
         live
     };
-    let mut store = PageStore::open(&backing.pages, &backing.directory).unwrap();
+    let mut store = PageStore::open(backing.pages.clone(), backing.directory.clone()).unwrap();
     check(&store, &live);
     for e in live {
         store.release(e);
@@ -150,7 +150,7 @@ fn reopen_reads_the_same_store() {
     check(&store, &[]);
     let foreign = VecMemory::new();
     assert!(matches!(
-        PageStore::open(&foreign, &foreign),
+        PageStore::open(foreign.clone(), foreign.clone()),
         Err(OpenError::NotAPageStore)
     ));
 }

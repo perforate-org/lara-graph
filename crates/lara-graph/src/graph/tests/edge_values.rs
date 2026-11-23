@@ -13,7 +13,7 @@ fn val(seed: u8, width: usize) -> Vec<u8> {
 }
 
 /// Inserts `0 → 1` edges under `label` with values `val(i)`; returns their canonical halves.
-fn valued_edges(g: &mut Graph<&VecMemory>, label: Label, n: u32, width: usize) -> Vec<EdgeRef> {
+fn valued_edges(g: &mut Graph<VecMemory>, label: Label, n: u32, width: usize) -> Vec<EdgeRef> {
     (0..n)
         .map(|i| {
             let value = val(u8::try_from(i % 251).unwrap(), width);
@@ -182,7 +182,7 @@ fn compaction_releases_the_value_pages_it_empties() {
     g.declare_width(l(0), w(64)).unwrap();
     // 64-byte values: 64 per value page, 16 value pages per slot page.
     let halves = valued_edges(&mut g, l(0), 3 * PAGE_SLOTS, 64);
-    let pages = |g: &Graph<&VecMemory>| g.edges.allocated().len();
+    let pages = |g: &Graph<VecMemory>| g.edges.allocated().len();
     // A dead middle page: compaction hollows it and its 16 value pages go with it.
     for half in
         &halves[usize::try_from(PAGE_SLOTS).unwrap()..usize::try_from(2 * PAGE_SLOTS).unwrap()]

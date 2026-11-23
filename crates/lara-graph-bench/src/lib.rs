@@ -11,8 +11,8 @@ use core::ops::ControlFlow;
 use ic_stable_structures::DefaultMemoryImpl;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use lara_graph::{
-    Cursor, Direction, EdgeRef, Graph, Halves, IcMemory, Label, Memories, Memory, NodeId, NodeSet,
-    Order, Placement, Position, Progress, VecMemory, Width,
+    Cursor, Direction, EdgeRef, Graph, Halves, Label, Memories, Memory, NodeId, NodeSet, Order,
+    Placement, Position, Progress, VecMemory, Width,
 };
 
 const LABEL: Label = Label::new(2);
@@ -24,10 +24,10 @@ pub fn heap_graph() -> Graph<VecMemory> {
 }
 
 /// A graph in five virtual stable memories (ids 0..5), as a canister wires it.
-fn stable_graph() -> Graph<IcMemory<VirtualMemory<DefaultMemoryImpl>>> {
+fn stable_graph() -> Graph<VirtualMemory<DefaultMemoryImpl>> {
     let manager = MemoryManager::init(DefaultMemoryImpl::default());
     Graph::init(Memories::from_fn(|role| {
-        IcMemory::new(manager.get(MemoryId::new(role.index())))
+        manager.get(MemoryId::new(role.index()))
     }))
 }
 

@@ -173,7 +173,7 @@ pub struct lara_graph::Sweep
 impl lara_graph::Sweep
 pub fn lara_graph::Sweep::changes(&self) -> &[lara_graph::RemovedEdge]
 pub const fn lara_graph::Sweep::next(&self) -> core::option::Option<lara_graph::Position>
-pub struct lara_graph::VecMemory
+pub struct lara_graph::VecMemory(_)
 impl lara_graph::VecMemory
 pub fn lara_graph::VecMemory::new() -> Self
 impl lara_graph::Memory for lara_graph::VecMemory
@@ -197,10 +197,5 @@ pub fn lara_graph::VecMemory::grow(&self, u64) -> core::result::Result<u64, lara
 pub fn lara_graph::VecMemory::read(&self, u64, &mut [u8])
 pub fn lara_graph::VecMemory::size(&self) -> u64
 pub fn lara_graph::VecMemory::write(&self, u64, &[u8])
-impl<M: lara_graph::Memory + ?core::marker::Sized> lara_graph::Memory for &M
-pub fn &M::grow(&self, u64) -> core::result::Result<u64, lara_graph::GrowFailed>
-pub fn &M::read(&self, u64, &mut [u8])
-pub fn &M::size(&self) -> u64
-pub fn &M::write(&self, u64, &[u8])
 pub type lara_graph::Compaction = lara_graph::Step<lara_graph::Move>
 pub type lara_graph::Detachment = lara_graph::Step<lara_graph::RemovedEdge>

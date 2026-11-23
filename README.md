@@ -27,9 +27,9 @@ use std::cell::RefCell;
 
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::DefaultMemoryImpl;
-use lara_graph::{Direction, Graph, IcMemory, Label, Memories, Placement};
+use lara_graph::{Direction, Graph, Label, Memories, Placement};
 
-type Memory = IcMemory<VirtualMemory<DefaultMemoryImpl>>;
+type Memory = VirtualMemory<DefaultMemoryImpl>;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -37,7 +37,7 @@ thread_local! {
 
     // Memory ids 0 to 4, one per role.
     static GRAPH: RefCell<Graph<Memory>> = RefCell::new(Graph::init(Memories::from_fn(|role| {
-        IcMemory::new(MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(role.index()))))
+        MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(role.index())))
     })));
 }
 
