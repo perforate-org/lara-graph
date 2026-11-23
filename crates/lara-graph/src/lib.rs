@@ -45,7 +45,9 @@ mod units;
 mod values;
 
 pub use detaching_set::DetachingSet;
-pub use graph::{Compaction, Detachment, Error, Graph, InitError, ReadBatch, Removal, Step, Sweep};
+pub use graph::{
+    Compaction, Detachment, Error, Graph, InitError, NewEdge, ReadBatch, Removal, Step, Sweep,
+};
 pub use id::{
     Cursor, Direction, Edge, EdgeRef, Halves, Label, Move, NodeId, NodeState, Order, Placement,
     Position, Progress, RemovedEdge, Width,

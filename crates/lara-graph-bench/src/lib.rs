@@ -13,8 +13,8 @@ use core::ops::ControlFlow;
 use ic_stable_structures::DefaultMemoryImpl;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use lara_graph::{
-    Cursor, Direction, EdgeRef, Graph, Halves, Label, Memories, Memory, NodeId, Order, Placement,
-    Position, Progress, VecMemory, Width,
+    Cursor, Direction, EdgeRef, Graph, Halves, Label, Memories, Memory, NewEdge, NodeId, Order,
+    Placement, Position, Progress, VecMemory, Width,
 };
 
 mod btree;
@@ -94,6 +94,26 @@ fn hub_insert_65536() -> BenchResult {
 #[bench(raw)]
 fn hub_insert_4096_stable() -> BenchResult {
     grow_hub(stable_graph(), 4096)
+}
+
+fn grow_hub_batched(mut g: Graph<impl Memory>, degree: u32) -> BenchResult {
+    let hub = node(&mut g);
+    let leaves = nodes(&mut g, degree);
+    let edges: Vec<NewEdge<'_>> = leaves
+        .iter()
+        .map(|&leaf| NewEdge::new(hub, LABEL, leaf, Placement::ReuseHoles, &[]))
+        .collect();
+    bench_fn(|| black_box(g.add_edges(&edges).unwrap_or_else(|e| panic!("batch: {e}"))))
+}
+
+#[bench(raw)]
+fn hub_insert_4096_batched() -> BenchResult {
+    grow_hub_batched(heap_graph(), 4096)
+}
+
+#[bench(raw)]
+fn hub_insert_4096_batched_stable() -> BenchResult {
+    grow_hub_batched(stable_graph(), 4096)
 }
 
 /// Parallel edges to a few targets: every insert also lands in a target's growing in bucket.

@@ -13,8 +13,96 @@ use crate::page_store::Pages;
 use crate::stored::{LabelBucket, Stored, Values};
 use crate::targets;
 use crate::values::{self, Plane};
+use alloc::vec::Vec;
+
+/// One directed edge for [`Graph::add_edges`].
+#[derive(Clone, Copy, Debug)]
+pub struct NewEdge<'a> {
+    from: NodeId,
+    label: Label,
+    to: NodeId,
+    placement: Placement,
+    value: &'a [u8],
+}
+
+impl<'a> NewEdge<'a> {
+    /// The edge `from -[label]-> to`, placed by `placement` in both buckets, with `value`.
+    #[must_use]
+    pub const fn new(
+        from: NodeId,
+        label: Label,
+        to: NodeId,
+        placement: Placement,
+        value: &'a [u8],
+    ) -> Self {
+        Self {
+            from,
+            label,
+            to,
+            placement,
+            value,
+        }
+    }
+}
 
 impl<M: Memory> Graph<M> {
+    /// Adds every edge in `edges`, in order. Each edge is all-or-none like [`Self::add_edge`],
+    /// but the batch is not atomic: an error leaves the edges before it inserted.
+    ///
+    /// All endpoints are checked and every value length is validated before the first write.
+    /// Edges with the same `from` and `label` should be adjacent; the batch can then reuse that
+    /// node's bucket state.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::add_edge`], for the edge that fails.
+    pub fn add_edges(&mut self, edges: &[NewEdge<'_>]) -> Result<Vec<Halves>, Error> {
+        for edge in edges {
+            self.check(edge.from)?;
+            self.check(edge.to)?;
+            self.value_width(edge.label, edge.value)?;
+        }
+        let mut out = Vec::with_capacity(edges.len());
+        let mut cache: Option<(LabelBucketKey, Place)> = None;
+        for edge in edges {
+            let key = LabelBucketKey {
+                label: edge.label,
+                direction: Direction::Outgoing,
+            };
+            let cached = if edge.from == edge.to {
+                None
+            } else {
+                cache
+                    .filter(|(last, _)| *last == key)
+                    .map(|(_, place)| (0, place))
+            };
+            let from = Half::new(
+                edge.from,
+                (edge.label, Direction::Outgoing),
+                edge.to,
+                edge.placement,
+            );
+            let to = Half::new(
+                edge.to,
+                (edge.label, Direction::Incoming),
+                edge.from,
+                edge.placement,
+            );
+            let (halves, updated) = self.insert_halves_cached([from, to], edge.value, cached)?;
+            let [canonical, other] = halves;
+            out.push(Halves::new(canonical, other));
+            cache = if edge.from == edge.to {
+                None
+            } else {
+                updated
+                    .first()
+                    .and_then(|place| *place)
+                    .map(|place| (key, place))
+            };
+        }
+        Ok(out)
+    }
+
     /// Adds the edge `from -[label]-> to`, placed by `placement` in both buckets, with `value`
     /// in both halves. Parallel edges keep their relative order either way.
     ///
@@ -78,6 +166,67 @@ impl<M: Memory> Graph<M> {
         let width = self.value_width(label, value)?;
         let places = self.admit(&halves)?;
         let n = u32::try_from(N).map_err(|_| Error::AddressSpaceExhausted)?;
+        let spots: [(Spot, Option<Batch>); N] = core::array::from_fn(|i| {
+            let (Some(half), Some(place)) = (halves.get(i), places.get(i)) else {
+                corrupt("an admitted half");
+            };
+            match place.target {
+                Target::Present(_, stored) => {
+                    let bucket = LabelBucket::resolve(&self.edges.pages(), stored);
+                    let partner = (N == 2)
+                        .then(|| halves.get(1 - i).zip(places.get(1 - i)))
+                        .flatten();
+                    let between = partner.map_or(Between::Unknown, |(h, p)| between(h, p));
+                    let spot = self.spot_for(&bucket, half.target, half.placement, between);
+                    let batch = match spot {
+                        Spot::End => self.batch_for(&bucket, half.target),
+                        Spot::Hole(_) => None,
+                    };
+                    (spot, batch)
+                }
+                Target::Absent(_) => (Spot::End, None),
+            }
+        });
+        let batch_pages: u32 = spots
+            .iter()
+            .filter_map(|(_, b)| b.as_ref())
+            .map(Batch::pages)
+            .sum();
+        self.edges
+            .reserve(pages_per_half(width) * n + batch_pages)?;
+        self.label_bucket_lists
+            .reserve(label_bucket_list::PAGES_PER_ADD * n)?;
+        let mut places = places.into_iter();
+        let mut spots = spots.into_iter();
+        let mut touched: Option<NodeId> = None;
+        Ok(halves.map(|half| {
+            let planned = places.next().unwrap_or_else(|| corrupt("an admitted half"));
+            let place = if touched == Some(half.node) {
+                self.place(half)
+                    .unwrap_or_else(|_| corrupt("an admitted node"))
+            } else {
+                planned
+            };
+            touched = Some(half.node);
+            let (spot, batch) = spots.next().unwrap_or_else(|| corrupt("an admitted half"));
+            self.insert_half(half, place, (spot, batch), width.map(|w| (w, value)))
+        }))
+    }
+
+    /// [`insert_halves`] with an optional already admitted half, and the places each half has
+    /// after the insert. A cached half skips its node and list lookup.
+    fn insert_halves_cached<const N: usize>(
+        &mut self,
+        halves: [Half; N],
+        value: &[u8],
+        cached: Option<(usize, Place)>,
+    ) -> Result<([EdgeRef; N], [Option<Place>; N]), Error> {
+        let label = halves
+            .first()
+            .map_or_else(|| corrupt("an edge without halves"), |h| h.key.label);
+        let width = self.value_width(label, value)?;
+        let places = self.admit_cached(&halves, cached)?;
+        let n = u32::try_from(N).map_err(|_| Error::AddressSpaceExhausted)?;
         // Each half's spot, and the block batch of an append that completes a block of a hub's
         // bucket: planned now, so that its pages are reserved with the rest.
         let spots: [(Spot, Option<Batch>); N] = core::array::from_fn(|i| {
@@ -115,7 +264,12 @@ impl<M: Memory> Graph<M> {
         let mut places = places.into_iter();
         let mut spots = spots.into_iter();
         let mut touched: Option<NodeId> = None;
-        Ok(halves.map(|half| {
+        let mut updated: [Option<Place>; N] = [None; N];
+        let out = core::array::from_fn(|i| {
+            let half = halves
+                .get(i)
+                .copied()
+                .unwrap_or_else(|| corrupt("an admitted half"));
             let planned = places.next().unwrap_or_else(|| corrupt("an admitted half"));
             // An earlier half at the same node may have changed its list: look again.
             let place = if touched == Some(half.node) {
@@ -126,8 +280,14 @@ impl<M: Memory> Graph<M> {
             };
             touched = Some(half.node);
             let (spot, batch) = spots.next().unwrap_or_else(|| corrupt("an admitted half"));
-            self.insert_half(half, place, (spot, batch), width.map(|w| (w, value)))
-        }))
+            let (edge, place) =
+                self.insert_half_place(half, place, (spot, batch), width.map(|w| (w, value)));
+            if let Some(slot) = updated.get_mut(i) {
+                *slot = place;
+            }
+            edge
+        });
+        Ok((out, updated))
     }
 
     /// The label's width, checking that `value` matches it.
@@ -166,6 +326,58 @@ impl<M: Memory> Graph<M> {
         }
         check_room(&self.label_bucket_lists.pages(), &fresh)?;
         Ok(places.map(|p| p.unwrap_or_else(|| corrupt("an admitted half"))))
+    }
+
+    /// [`admit`] with one half's place already known: it skips that half's record and list read.
+    fn admit_cached<const N: usize>(
+        &self,
+        halves: &[Half; N],
+        cached: Option<(usize, Place)>,
+    ) -> Result<[Place; N], Error> {
+        let mut records = Records::default();
+        let mut places: [Option<Place>; N] = [None; N];
+        let mut fresh: [Option<(NodeId, Option<LabelBucketList>)>; N] = [None; N];
+        for i in 0..N {
+            let half = halves
+                .get(i)
+                .copied()
+                .unwrap_or_else(|| corrupt("an admitted half"));
+            let planned = if let Some((at, place)) = cached {
+                if at == i {
+                    match place.record.state {
+                        NodeState::Live => place,
+                        NodeState::Detaching => return Err(Error::Detaching(half.node)),
+                        NodeState::Deleted => return Err(Error::Deleted(half.node)),
+                    }
+                } else {
+                    self.place_checked(&mut records, half)?
+                }
+            } else {
+                self.place_checked(&mut records, half)?
+            };
+            match planned.target {
+                Target::Present(_, stored) if self.stored_positions(stored) == u32::MAX => {
+                    return Err(Error::AddressSpaceExhausted);
+                }
+                Target::Present(..) => {}
+                Target::Absent(_) => {
+                    if let Some(slot) = fresh.get_mut(i) {
+                        *slot = Some((half.node, planned.record.list));
+                    }
+                }
+            }
+            if let Some(slot) = places.get_mut(i) {
+                *slot = Some(planned);
+            }
+        }
+        check_room(&self.label_bucket_lists.pages(), &fresh)?;
+        Ok(places.map(|p| p.unwrap_or_else(|| corrupt("an admitted half"))))
+    }
+
+    fn place_checked(&self, records: &mut Records, half: Half) -> Result<Place, Error> {
+        let own = records.get(self, half.node)?;
+        records.get(self, half.target)?;
+        Ok(self.place_in(own, half))
     }
 
     fn place(&self, half: Half) -> Result<Place, Error> {
@@ -220,16 +432,13 @@ impl<M: Memory> Graph<M> {
             destination,
             &mut self.edges,
         ));
-        // A run that just became paged gets its target index.
         let bucket =
             self.index_inserted(LabelBucket::plain(next), &slots, (half.target, at), batch);
         self.finish(half, place, slot, bucket);
         at
     }
 
-    /// A half into a bucket with a header (values, an index or both), or one that needs one:
-    /// the slot, its value cell, and its index posting. A bucket of a label with values but no
-    /// value plane yet (new, or made before the width was declared) gets one.
+    /// A half into a bucket with a header (values, an index or both), or one that needs one.
     fn insert_extended(
         &mut self,
         half: Half,
@@ -291,6 +500,126 @@ impl<M: Memory> Graph<M> {
                     &bucket.stored(),
                 ));
                 self.set_record_label_bucket_list(half.node, place.record, list);
+            }
+        }
+    }
+
+    /// Applies one admitted half within reserved memory, with its updated place. Cannot fail.
+    fn insert_half_place(
+        &mut self,
+        half: Half,
+        place: Place,
+        spot: (Spot, Option<Batch>),
+        value: Option<(Width, &[u8])>,
+    ) -> (EdgeRef, Option<Place>) {
+        let (at, updated) = match value {
+            None => self.insert_plain_place(half, place, spot),
+            Some(value) => self.insert_extended_place(half, place, spot, Some(value)),
+        };
+        (
+            EdgeRef::new(half.node, half.key.label, half.key.direction, at),
+            updated,
+        )
+    }
+
+    /// A half of a label without values. A plain bucket that stays below a page takes the slot
+    /// alone; anything else goes through [`Self::insert_extended`].
+    fn insert_plain_place(
+        &mut self,
+        half: Half,
+        place: Place,
+        (destination, batch): (Spot, Option<Batch>),
+    ) -> (Position, Option<Place>) {
+        let (slot, slots) = match place.target {
+            Target::Present(entry, Stored::Plain(slots)) => (Ok(entry), slots),
+            Target::Absent(gap) => (Err(gap), Descriptor::EMPTY),
+            Target::Present(_, Stored::Extended(_)) => {
+                return self.insert_extended_place(half, place, (destination, batch), None);
+            }
+        };
+        let (next, at) = reserved(label_bucket::insert(
+            slots,
+            half.target,
+            destination,
+            &mut self.edges,
+        ));
+        // A run that just became paged gets its target index.
+        let bucket =
+            self.index_inserted(LabelBucket::plain(next), &slots, (half.target, at), batch);
+        let updated = self.finish_place(half, place, slot, bucket);
+        (at, updated)
+    }
+
+    /// A half into a bucket with a header (values, an index or both), or one that needs one:
+    /// the slot, its value cell, and its index posting. A bucket of a label with values but no
+    /// value plane yet (new, or made before the width was declared) gets one.
+    fn insert_extended_place(
+        &mut self,
+        half: Half,
+        place: Place,
+        (destination, batch): (Spot, Option<Batch>),
+        value: Option<(Width, &[u8])>,
+    ) -> (Position, Option<Place>) {
+        let (slot, bucket) = match place.target {
+            Target::Present(entry, stored) => {
+                (Ok(entry), LabelBucket::resolve(&self.edges.pages(), stored))
+            }
+            Target::Absent(gap) => (Err(gap), LabelBucket::plain(Descriptor::EMPTY)),
+        };
+        let mut bucket = match value {
+            Some((width, _)) if bucket.values.is_none() => self.with_values(bucket, width),
+            Some(_) | None => bucket,
+        };
+        let (slots, at) = reserved(label_bucket::insert(
+            bucket.slots,
+            half.target,
+            destination,
+            &mut self.edges,
+        ));
+        let was = core::mem::replace(&mut bucket.slots, slots);
+        if let (Some(cells), Some((width, bytes))) = (bucket.values.as_mut(), value) {
+            cells.plane = reserved(values::write(
+                &mut self.edges,
+                cells.plane,
+                width,
+                at.index(),
+                bytes,
+            ));
+        }
+        let bucket = self.index_inserted(bucket, &was, (half.target, at), batch);
+        let updated = self.finish_place(half, place, slot, bucket);
+        (at, updated)
+    }
+
+    /// Publishes a half's bucket: in place when it existed, else as a new list entry.
+    fn finish_place(
+        &mut self,
+        half: Half,
+        place: Place,
+        slot: Result<EntryAt, EntryAt>,
+        bucket: LabelBucket,
+    ) -> Option<Place> {
+        match slot {
+            Ok(entry) => {
+                let stored = bucket.stored();
+                self.publish(entry, bucket);
+                Some(Place {
+                    record: place.record,
+                    target: Target::Present(entry, stored),
+                })
+            }
+            Err(gap) => {
+                let bucket = self.settle(bucket);
+                bucket.write_header(&self.edges);
+                let list = reserved(label_bucket_list::add(
+                    &mut self.label_bucket_lists,
+                    place.record.list,
+                    gap,
+                    half.key,
+                    &bucket.stored(),
+                ));
+                self.set_record_label_bucket_list(half.node, place.record, list);
+                None
             }
         }
     }

@@ -508,6 +508,8 @@ mod compaction;
 mod detach;
 mod index;
 mod insert;
+
+pub use insert::NewEdge;
 mod lifecycle;
 mod pair;
 mod props;
