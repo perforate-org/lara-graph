@@ -126,3 +126,26 @@ fn a_full_top_refuses_more_and_a_one_leaf_list_turns_flat() {
     let model: BTreeSet<u32> = (added - 2..added).collect();
     assert_matches(&store, list, &model);
 }
+
+#[test]
+fn encoded_keys_rank_in_key_order() {
+    let directions = [
+        Direction::Outgoing,
+        Direction::Incoming,
+        Direction::Undirected,
+    ];
+    let keys: Vec<LabelBucketKey> = [0, 1, 255, 256, 0x7FFF, u16::MAX]
+        .into_iter()
+        .flat_map(|l| {
+            directions.map(|direction| LabelBucketKey {
+                label: Label::new(l),
+                direction,
+            })
+        })
+        .collect();
+    for a in &keys {
+        for b in &keys {
+            assert_eq!(a.rank().cmp(&b.rank()), a.cmp(b), "{a:?} against {b:?}");
+        }
+    }
+}

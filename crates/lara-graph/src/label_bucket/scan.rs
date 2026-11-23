@@ -58,12 +58,41 @@ pub(crate) fn visit<M: Memory, B>(
     window: Window,
     mut f: impl FnMut(Edge) -> ControlFlow<B>,
 ) -> Option<B> {
+    // A tiny bucket's slots go to `f` as they are, not through bytes as `scan` gives them: the
+    // round trip cost about a fifth of visiting a one-edge bucket on the IC.
+    if let Descriptor::Tiny(tiny) = d {
+        return visit_tiny(tiny, span, &mut f).break_value();
+    }
     scan(d, view, span, window.slots(), |first, bytes| {
         match span.order {
             Order::Ascending => emit_ascending(first, bytes, &mut f),
             Order::Descending => emit_descending(first, bytes, &mut f),
         }
     })
+}
+
+/// Calls `f` with the live edges of a tiny bucket in `span`, in its order.
+fn visit_tiny<B>(
+    tiny: &Tiny,
+    span: Span,
+    f: &mut impl FnMut(Edge) -> ControlFlow<B>,
+) -> ControlFlow<B> {
+    let slots = tiny.slots();
+    let high = usize::try_from(span.high).map_or(slots.len(), |h| h.min(slots.len()));
+    let low = usize::try_from(span.low).map_or(high, |l| l.min(high));
+    let mut edges = slots
+        .get(low..high)
+        .unwrap_or(&[])
+        .iter()
+        .enumerate()
+        .filter_map(|(i, slot)| match *slot {
+            Slot::Live(target) => Some(Edge::new(Position::new(stored_u32(low + i)), target)),
+            Slot::Tombstone => None,
+        });
+    match span.order {
+        Order::Ascending => edges.try_for_each(f),
+        Order::Descending => edges.rev().try_for_each(f),
+    }
 }
 
 /// Calls `f` with the live edges among `bytes`, slots from position `first` on, lowest first.
@@ -163,8 +192,6 @@ pub(super) fn scan<M: Memory, T>(
     window: (u32, u32),
     mut visit: impl FnMut(u32, &[u8]) -> ControlFlow<T>,
 ) -> Option<T> {
-    // One buffer serves every read: sized by the first, never zeroed again.
-    let mut buf = Vec::new();
     let reads = Reads {
         view,
         span,
@@ -174,13 +201,13 @@ pub(super) fn scan<M: Memory, T>(
     let flow = match d {
         Descriptor::Tiny(tiny) => scan_tiny(tiny, span, &mut visit),
         Descriptor::Run(run) => reads.span(
-            &mut buf,
+            &mut ReadBuf::new(),
             &mut visit,
             run.extent.offset(),
             0,
             u32::from(run.stored),
         ),
-        Descriptor::Paged(paged) => reads.paged(paged, &mut buf, &mut visit),
+        Descriptor::Paged(paged) => reads.paged(paged, &mut ReadBuf::new(), &mut visit),
     };
     match flow {
         ControlFlow::Break(found) => Some(found),
@@ -221,7 +248,7 @@ impl<M: Memory> Reads<'_, '_, M> {
     fn paged<T>(
         &self,
         paged: &Paged,
-        buf: &mut Vec<u8>,
+        buf: &mut ReadBuf,
         visit: &mut impl FnMut(u32, &[u8]) -> ControlFlow<T>,
     ) -> ControlFlow<T> {
         let page = |number: u32, leaf: Leaf| {
@@ -240,7 +267,7 @@ impl<M: Memory> Reads<'_, '_, M> {
     /// `first`), a window at a time in the span's order.
     fn span<T>(
         &self,
-        buf: &mut Vec<u8>,
+        buf: &mut ReadBuf,
         visit: &mut impl FnMut(u32, &[u8]) -> ControlFlow<T>,
         at: ByteOffset,
         first: u32,
@@ -262,25 +289,47 @@ impl<M: Memory> Reads<'_, '_, M> {
             };
             visit(
                 first + start,
-                fill(self.view, buf, slot_offset(at, start), n),
+                buf.fill(self.view, slot_offset(at, start), n),
             )?;
         }
         ControlFlow::Continue(())
     }
 }
 
-/// Reads `count` slots at `at` into `buf`, growing it only when it is too short.
-fn fill<'b, M: Memory>(
-    view: &Pages<'_, M>,
-    buf: &'b mut Vec<u8>,
-    at: ByteOffset,
-    count: u32,
-) -> &'b [u8] {
-    let len = byte_len(count);
-    if buf.len() < len {
-        buf.resize(len, 0);
+/// Bytes of the stack buffer a scan reads into first: a run of up to 32 slots, or the first read
+/// of a short window. A visit of a small bucket then allocates nothing: on the IC a heap buffer
+/// for each visit cost about 250 instructions, a ninth of a node visit (`visit_run_1024`).
+const SMALL_READ: usize = 128;
+const _: () = assert!(SMALL_READ >= 32 * 4);
+
+/// Where a scan's reads land: a small stack buffer, zeroed when first used, else one heap buffer
+/// sized by the first read that needs it and never zeroed again.
+struct ReadBuf {
+    small: Option<[u8; SMALL_READ]>,
+    heap: Vec<u8>,
+}
+
+impl ReadBuf {
+    const fn new() -> Self {
+        Self {
+            small: None,
+            heap: Vec::new(),
+        }
     }
-    let bytes = buf.get_mut(..len).unwrap_or(&mut []);
-    view.read_into(at, bytes);
-    bytes
+
+    /// Reads `count` slots at `at`.
+    fn fill<M: Memory>(&mut self, view: &Pages<'_, M>, at: ByteOffset, count: u32) -> &[u8] {
+        let len = byte_len(count);
+        let bytes = if len <= SMALL_READ {
+            let small = self.small.get_or_insert([0; SMALL_READ]);
+            small.get_mut(..len).unwrap_or(&mut [])
+        } else {
+            if self.heap.len() < len {
+                self.heap.resize(len, 0);
+            }
+            self.heap.get_mut(..len).unwrap_or(&mut [])
+        };
+        view.read_into(at, bytes);
+        bytes
+    }
 }

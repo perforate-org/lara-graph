@@ -84,6 +84,11 @@ const DIRECTION_INCOMING: u8 = 1;
 const DIRECTION_UNDIRECTED: u8 = 2;
 
 impl LabelBucketKey {
+    /// The key's place in key order: the label, then the direction.
+    fn rank(self) -> u32 {
+        rank_of(self.encode())
+    }
+
     fn encode(self) -> [u8; 3] {
         let [l0, l1] = self.label.get().to_le_bytes();
         let direction = match self.direction {
@@ -201,10 +206,12 @@ fn search<M: Memory>(
         index,
         at: entry_offset(base, index),
     };
+    // Entries are compared as encoded, and only the one found is decoded: decoding each key
+    // the search probes cost about a seventh of a node visit on the IC (`degree_1024`).
+    let want = key.rank();
     pages.with_read(base, count * ENTRY_BYTES, |bytes| {
         let (entries, _) = bytes.as_chunks::<ENTRY_BYTES>();
-        let found = entries
-            .binary_search_by(|&[k0, k1, k2, ..]| LabelBucketKey::decode([k0, k1, k2]).cmp(&key));
+        let found = entries.binary_search_by(|&[k0, k1, k2, ..]| rank_of([k0, k1, k2]).cmp(&want));
         match found {
             Ok(index) => Lookup::Present {
                 entry: place(index),
@@ -315,6 +322,12 @@ pub(crate) fn extents<M: Memory>(pages: &Pages<'_, M>, list: LabelBucketList) ->
         Shape::Flat { extent, .. } => alloc::vec![extent],
         Shape::Tiered { top } => tiered::extents(pages, top),
     }
+}
+
+/// An encoded key's place in key order, without decoding it: the label, then the direction
+/// byte, whose values follow [`Direction`]'s order (checked by a test).
+fn rank_of([l0, l1, direction]: [u8; 3]) -> u32 {
+    (u32::from(u16::from_le_bytes([l0, l1])) << 8) | u32::from(direction)
 }
 
 fn decode_entry(entry: [u8; ENTRY_BYTES]) -> (LabelBucketKey, Stored) {
