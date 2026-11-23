@@ -2,14 +2,9 @@
 # cargo directly (`just gate`). The gate fails on any finding, so these thresholds are the rule.
 config_version = "0"
 
-# Only `lara-core` is gated. `lara-graph` and `dgap` are frozen as the oracle and the paper's
-# reference implementation; the rest is paper, experiments and generated output.
+# Only the crates are gated; the rest is paper, experiments and generated output.
 exclude_patterns = [
   "**/target/**",
-  "crates/lara/**",
-  "crates/lara-graph-macros/**",
-  "crates/dgap/**",
-  "crates/benches/**",
   "dgap/**",
   "experiments/**",
   "charged-ieee/**",
@@ -24,7 +19,7 @@ test_patterns = ["crates/*/tests/**"]
 [smells]
 mode = "comment"
 
-# [DRY] Defaults are 64 nodes and mass 15; on `lara-graph` they reported nothing, while these
+# [DRY] Defaults are 64 nodes and mass 15; on the original lara-graph they reported nothing, while these
 # values surfaced six real copies. Token similarity cannot see the same algorithm written over
 # different types; that kind of duplication is prevented by design (one labeled core), not here.
 [smells.duplication]

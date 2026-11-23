@@ -1,0 +1,206 @@
+pub mod lara_graph
+pub enum lara_graph::Direction
+pub lara_graph::Direction::Incoming
+pub lara_graph::Direction::Outgoing
+pub lara_graph::Direction::Undirected
+pub enum lara_graph::Error
+pub lara_graph::Error::AddressSpaceExhausted
+pub lara_graph::Error::Deleted(lara_graph::NodeId)
+pub lara_graph::Error::Detaching(lara_graph::NodeId)
+pub lara_graph::Error::NotDetaching(lara_graph::NodeId)
+pub lara_graph::Error::OutOfMemory(lara_graph::GrowFailed)
+pub lara_graph::Error::TooManyLabelBuckets(lara_graph::NodeId)
+pub lara_graph::Error::TooManyWidths
+pub lara_graph::Error::UnknownNode(lara_graph::NodeId)
+pub lara_graph::Error::WidthConflict
+pub lara_graph::Error::WidthConflict::declared: lara_graph::Width
+pub lara_graph::Error::WidthConflict::label: lara_graph::Label
+pub lara_graph::Error::WrongValueLength
+pub lara_graph::Error::WrongValueLength::actual: usize
+pub lara_graph::Error::WrongValueLength::expected: u16
+pub lara_graph::Error::WrongValueLength::label: lara_graph::Label
+impl core::error::Error for lara_graph::Error
+impl core::fmt::Display for lara_graph::Error
+pub fn lara_graph::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum lara_graph::Halves
+pub lara_graph::Halves::Pair
+pub lara_graph::Halves::Pair::canonical: lara_graph::EdgeRef
+pub lara_graph::Halves::Pair::other: lara_graph::EdgeRef
+pub lara_graph::Halves::Single(lara_graph::EdgeRef)
+impl lara_graph::Halves
+pub const fn lara_graph::Halves::canonical(&self) -> lara_graph::EdgeRef
+pub const fn lara_graph::Halves::other(&self) -> lara_graph::EdgeRef
+pub enum lara_graph::InitError
+pub lara_graph::InitError::NotAGraph
+pub lara_graph::InitError::OutOfMemory(lara_graph::GrowFailed)
+pub lara_graph::InitError::UnsupportedVersion(u8)
+impl core::error::Error for lara_graph::InitError
+impl core::fmt::Display for lara_graph::InitError
+pub fn lara_graph::InitError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum lara_graph::MemoryRole
+pub lara_graph::MemoryRole::EdgeDirectory
+pub lara_graph::MemoryRole::EdgePages
+pub lara_graph::MemoryRole::LabelBucketListDirectory
+pub lara_graph::MemoryRole::LabelBucketListPages
+pub lara_graph::MemoryRole::Nodes
+impl lara_graph::MemoryRole
+pub const lara_graph::MemoryRole::ALL: [Self; 5]
+pub const fn lara_graph::MemoryRole::index(self) -> u8
+pub enum lara_graph::NodeState
+pub lara_graph::NodeState::Deleted
+pub lara_graph::NodeState::Detaching
+pub lara_graph::NodeState::Live
+pub enum lara_graph::Order
+pub lara_graph::Order::Ascending
+pub lara_graph::Order::Descending
+pub enum lara_graph::Placement
+pub lara_graph::Placement::Append
+pub lara_graph::Placement::ReuseHoles
+pub enum lara_graph::Progress
+pub lara_graph::Progress::Done
+pub lara_graph::Progress::Remaining
+pub enum lara_graph::Removal
+pub lara_graph::Removal::Absent
+pub lara_graph::Removal::Removed(lara_graph::RemovedEdge)
+pub struct lara_graph::Cursor
+impl lara_graph::Cursor
+pub const fn lara_graph::Cursor::at(lara_graph::Order, lara_graph::Position, core::num::nonzero::NonZeroU32) -> Self
+pub const fn lara_graph::Cursor::first(lara_graph::Order, core::num::nonzero::NonZeroU32) -> Self
+pub const fn lara_graph::Cursor::from(&self) -> core::option::Option<lara_graph::Position>
+pub const fn lara_graph::Cursor::order(&self) -> lara_graph::Order
+pub const fn lara_graph::Cursor::span(&self) -> core::num::nonzero::NonZeroU32
+pub struct lara_graph::Edge
+impl lara_graph::Edge
+pub const fn lara_graph::Edge::position(&self) -> lara_graph::Position
+pub const fn lara_graph::Edge::target(&self) -> lara_graph::NodeId
+pub struct lara_graph::EdgeRef
+impl lara_graph::EdgeRef
+pub const fn lara_graph::EdgeRef::direction(&self) -> lara_graph::Direction
+pub const fn lara_graph::EdgeRef::label(&self) -> lara_graph::Label
+pub const fn lara_graph::EdgeRef::new(lara_graph::NodeId, lara_graph::Label, lara_graph::Direction, lara_graph::Position) -> Self
+pub const fn lara_graph::EdgeRef::node(&self) -> lara_graph::NodeId
+pub const fn lara_graph::EdgeRef::position(&self) -> lara_graph::Position
+pub struct lara_graph::Graph<M: lara_graph::Memory>
+impl<M: lara_graph::Memory> lara_graph::Graph<M>
+pub fn lara_graph::Graph<M>::add_edge(&mut self, lara_graph::NodeId, lara_graph::Label, lara_graph::NodeId, lara_graph::Placement, &[u8]) -> core::result::Result<lara_graph::Halves, lara_graph::Error>
+pub fn lara_graph::Graph<M>::add_undirected_edge(&mut self, lara_graph::NodeId, lara_graph::Label, lara_graph::NodeId, lara_graph::Placement, &[u8]) -> core::result::Result<lara_graph::Halves, lara_graph::Error>
+impl<M: lara_graph::Memory> lara_graph::Graph<M>
+pub fn lara_graph::Graph<M>::add_node(&mut self) -> core::result::Result<lara_graph::NodeId, lara_graph::Error>
+pub fn lara_graph::Graph<M>::degree(&self, lara_graph::NodeId, lara_graph::Label, lara_graph::Direction) -> core::result::Result<u32, lara_graph::Error>
+pub fn lara_graph::Graph<M>::edge_target(&self, lara_graph::EdgeRef) -> core::result::Result<core::option::Option<lara_graph::NodeId>, lara_graph::Error>
+pub fn lara_graph::Graph<M>::has_edges(&self, lara_graph::NodeId) -> core::result::Result<bool, lara_graph::Error>
+pub fn lara_graph::Graph<M>::holes(&self, lara_graph::NodeId, lara_graph::Label, lara_graph::Direction) -> core::result::Result<u32, lara_graph::Error>
+pub fn lara_graph::Graph<M>::labels(&self, lara_graph::NodeId, lara_graph::Direction, &mut alloc::vec::Vec<lara_graph::Label>) -> core::result::Result<(), lara_graph::Error>
+pub fn lara_graph::Graph<M>::neighbors_directed(&self, lara_graph::NodeId, lara_graph::Label, lara_graph::Direction, &mut alloc::vec::Vec<lara_graph::Edge>) -> core::result::Result<(), lara_graph::Error>
+pub const fn lara_graph::Graph<M>::node_count(&self) -> u32
+pub fn lara_graph::Graph<M>::node_state(&self, lara_graph::NodeId) -> core::result::Result<lara_graph::NodeState, lara_graph::Error>
+impl<M: lara_graph::Memory> lara_graph::Graph<M>
+pub fn lara_graph::Graph<M>::compact(&mut self, lara_graph::NodeId, lara_graph::Label, lara_graph::Direction) -> core::result::Result<lara_graph::Compaction, lara_graph::Error>
+impl<M: lara_graph::Memory> lara_graph::Graph<M>
+pub fn lara_graph::Graph<M>::counterpart(&self, lara_graph::EdgeRef) -> core::result::Result<core::option::Option<lara_graph::EdgeRef>, lara_graph::Error>
+pub fn lara_graph::Graph<M>::remove_edge(&mut self, lara_graph::EdgeRef) -> core::result::Result<lara_graph::Removal, lara_graph::Error>
+impl<M: lara_graph::Memory> lara_graph::Graph<M>
+pub fn lara_graph::Graph<M>::declare_width(&mut self, lara_graph::Label, lara_graph::Width) -> core::result::Result<(), lara_graph::Error>
+pub fn lara_graph::Graph<M>::width(&self, lara_graph::Label) -> core::option::Option<lara_graph::Width>
+impl<M: lara_graph::Memory> lara_graph::Graph<M>
+pub fn lara_graph::Graph<M>::detach(&mut self, lara_graph::NodeId) -> core::result::Result<(), lara_graph::Error>
+pub fn lara_graph::Graph<M>::detach_step(&mut self, lara_graph::NodeId, core::num::nonzero::NonZeroU32) -> core::result::Result<lara_graph::Detachment, lara_graph::Error>
+pub fn lara_graph::Graph<M>::sweep(&mut self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), (lara_graph::Position, core::num::nonzero::NonZeroU32), &lara_graph::NodeSet) -> core::result::Result<lara_graph::Sweep, lara_graph::Error>
+impl<M: lara_graph::Memory> lara_graph::Graph<M>
+pub fn lara_graph::Graph<M>::edge_value(&self, lara_graph::EdgeRef) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, lara_graph::Error>
+pub fn lara_graph::Graph<M>::set_edge_value(&mut self, lara_graph::EdgeRef, &[u8]) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, lara_graph::Error>
+pub fn lara_graph::Graph<M>::values_at(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), &[lara_graph::Position], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), lara_graph::Error>
+pub fn lara_graph::Graph<M>::visit_neighbors_with_values<B>(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), lara_graph::Order, impl core::ops::function::FnMut(lara_graph::Edge, &[u8]) -> core::ops::control_flow::ControlFlow<B>) -> core::result::Result<core::option::Option<B>, lara_graph::Error>
+pub fn lara_graph::Graph<M>::visit_values<B>(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), lara_graph::Order, impl core::ops::function::FnMut(lara_graph::Position, &[u8]) -> core::ops::control_flow::ControlFlow<B>) -> core::result::Result<core::option::Option<B>, lara_graph::Error>
+impl<M: lara_graph::Memory> lara_graph::Graph<M>
+pub fn lara_graph::Graph<M>::init(lara_graph::Memories<M>) -> Self
+pub fn lara_graph::Graph<M>::into_memories(self) -> lara_graph::Memories<M>
+pub fn lara_graph::Graph<M>::load(lara_graph::Memories<M>) -> Self
+pub fn lara_graph::Graph<M>::new(lara_graph::Memories<M>) -> Self
+pub fn lara_graph::Graph<M>::try_init(lara_graph::Memories<M>) -> core::result::Result<Self, lara_graph::InitError>
+pub fn lara_graph::Graph<M>::try_load(lara_graph::Memories<M>) -> core::result::Result<Self, lara_graph::InitError>
+pub fn lara_graph::Graph<M>::try_new(lara_graph::Memories<M>) -> core::result::Result<Self, lara_graph::InitError>
+impl<M: lara_graph::Memory> lara_graph::Graph<M>
+pub fn lara_graph::Graph<M>::targets_at(&self, lara_graph::NodeId, lara_graph::Label, lara_graph::Direction, &[lara_graph::Position], &mut alloc::vec::Vec<core::option::Option<lara_graph::NodeId>>) -> core::result::Result<(), lara_graph::Error>
+pub fn lara_graph::Graph<M>::visit_neighbors<B>(&self, lara_graph::NodeId, lara_graph::Label, lara_graph::Direction, lara_graph::Order, impl core::ops::function::FnMut(lara_graph::Edge) -> core::ops::control_flow::ControlFlow<B>) -> core::result::Result<core::option::Option<B>, lara_graph::Error>
+pub fn lara_graph::Graph<M>::visit_window(&self, lara_graph::NodeId, lara_graph::Label, lara_graph::Direction, lara_graph::Cursor, impl core::ops::function::FnMut(lara_graph::Edge)) -> core::result::Result<core::option::Option<lara_graph::Cursor>, lara_graph::Error>
+pub struct lara_graph::GrowFailed
+impl lara_graph::GrowFailed
+pub const fn lara_graph::GrowFailed::current_pages(&self) -> u64
+pub const fn lara_graph::GrowFailed::new(u64, u64) -> Self
+pub const fn lara_graph::GrowFailed::requested_pages(&self) -> u64
+impl core::error::Error for lara_graph::GrowFailed
+impl core::fmt::Display for lara_graph::GrowFailed
+pub fn lara_graph::GrowFailed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct lara_graph::Label(_)
+impl lara_graph::Label
+pub const fn lara_graph::Label::get(self) -> u16
+pub const fn lara_graph::Label::new(u16) -> Self
+pub struct lara_graph::Memories<M>
+impl<M> lara_graph::Memories<M>
+pub fn lara_graph::Memories<M>::from_fn(impl core::ops::function::FnMut(lara_graph::MemoryRole) -> M) -> Self
+impl<M> core::iter::traits::collect::IntoIterator for lara_graph::Memories<M>
+pub type lara_graph::Memories<M>::IntoIter = core::array::iter::IntoIter<(lara_graph::MemoryRole, M), 5>
+pub type lara_graph::Memories<M>::Item = (lara_graph::MemoryRole, M)
+pub fn lara_graph::Memories<M>::into_iter(self) -> Self::IntoIter
+pub struct lara_graph::Move
+impl lara_graph::Move
+pub const fn lara_graph::Move::from(&self) -> lara_graph::Position
+pub const fn lara_graph::Move::target(&self) -> lara_graph::NodeId
+pub const fn lara_graph::Move::to(&self) -> lara_graph::Position
+pub struct lara_graph::NodeId(_)
+impl lara_graph::NodeId
+pub const fn lara_graph::NodeId::index(self) -> u32
+pub const fn lara_graph::NodeId::new(u32) -> Self
+pub struct lara_graph::NodeSet
+impl lara_graph::NodeSet
+pub fn lara_graph::NodeSet::contains(&self, lara_graph::NodeId) -> bool
+pub fn lara_graph::NodeSet::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = lara_graph::NodeId> + '_
+pub fn lara_graph::NodeSet::new(impl core::iter::traits::collect::IntoIterator<Item = lara_graph::NodeId>) -> Self
+pub struct lara_graph::Position(_)
+impl lara_graph::Position
+pub const fn lara_graph::Position::index(self) -> u32
+pub const fn lara_graph::Position::new(u32) -> Self
+pub struct lara_graph::RemovedEdge
+impl lara_graph::RemovedEdge
+pub const fn lara_graph::RemovedEdge::halves(&self) -> lara_graph::Halves
+pub fn lara_graph::RemovedEdge::value(&self) -> &[u8]
+pub struct lara_graph::Step<T>
+impl<T> lara_graph::Step<T>
+pub fn lara_graph::Step<T>::changes(&self) -> &[T]
+pub const fn lara_graph::Step<T>::progress(&self) -> lara_graph::Progress
+pub struct lara_graph::Sweep
+impl lara_graph::Sweep
+pub fn lara_graph::Sweep::changes(&self) -> &[lara_graph::RemovedEdge]
+pub const fn lara_graph::Sweep::next(&self) -> core::option::Option<lara_graph::Position>
+pub struct lara_graph::VecMemory
+impl lara_graph::VecMemory
+pub fn lara_graph::VecMemory::new() -> Self
+impl lara_graph::Memory for lara_graph::VecMemory
+pub fn lara_graph::VecMemory::grow(&self, u64) -> core::result::Result<u64, lara_graph::GrowFailed>
+pub fn lara_graph::VecMemory::read(&self, u64, &mut [u8])
+pub fn lara_graph::VecMemory::size(&self) -> u64
+pub fn lara_graph::VecMemory::write(&self, u64, &[u8])
+pub struct lara_graph::Width(_)
+impl lara_graph::Width
+pub const lara_graph::Width::MAX: u16
+pub const fn lara_graph::Width::get(self) -> u16
+pub const fn lara_graph::Width::new(u16) -> core::option::Option<Self>
+pub const lara_graph::PAGE_SIZE: u64
+pub trait lara_graph::Memory
+pub fn lara_graph::Memory::grow(&self, u64) -> core::result::Result<u64, lara_graph::GrowFailed>
+pub fn lara_graph::Memory::read(&self, u64, &mut [u8])
+pub fn lara_graph::Memory::size(&self) -> u64
+pub fn lara_graph::Memory::write(&self, u64, &[u8])
+impl lara_graph::Memory for lara_graph::VecMemory
+pub fn lara_graph::VecMemory::grow(&self, u64) -> core::result::Result<u64, lara_graph::GrowFailed>
+pub fn lara_graph::VecMemory::read(&self, u64, &mut [u8])
+pub fn lara_graph::VecMemory::size(&self) -> u64
+pub fn lara_graph::VecMemory::write(&self, u64, &[u8])
+impl<M: lara_graph::Memory + ?core::marker::Sized> lara_graph::Memory for &M
+pub fn &M::grow(&self, u64) -> core::result::Result<u64, lara_graph::GrowFailed>
+pub fn &M::read(&self, u64, &mut [u8])
+pub fn &M::size(&self) -> u64
+pub fn &M::write(&self, u64, &[u8])
+pub type lara_graph::Compaction = lara_graph::Step<lara_graph::Move>
+pub type lara_graph::Detachment = lara_graph::Step<lara_graph::RemovedEdge>

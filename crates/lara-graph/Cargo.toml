@@ -1,0 +1,28 @@
+[package]
+name = "lara-graph"
+version.workspace = true
+edition.workspace = true
+description = "LARA, a labeled multigraph store on paged memory: CSR-speed neighbour scans with bounded update cost."
+repository = "https://github.com/wiyota/lara-graph"
+keywords = ["graph", "csr", "dynamic", "stable-memory", "internet-computer"]
+categories = ["data-structures", "no-std"]
+license = "MIT OR Apache-2.0"
+rust-version = "1.88"
+readme = "../../README.md"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Every ic-stable-structures memory (a `VirtualMemory` from a `MemoryManager`, say) is a
+# lara-graph memory.
+ic-stable-structures = ["dep:ic-stable-structures"]
+
+[dependencies]
+ic-stable-structures = { version = "0.7", optional = true }
+
+[dev-dependencies]
+expect-test = "1.5"
+public-api = "0.52"
+rustdoc-json = "0.9"

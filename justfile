@@ -1,6 +1,6 @@
-# Gates for `lara-core`. The frozen crates (`lara-graph`, `dgap`) are not gated here.
+# Gates for `lara-graph`.
 
-crate := "lara-core"
+crate := "lara-graph"
 
 # Every gate; CI and pre-commit run this.
 gate: fmt clippy test smells

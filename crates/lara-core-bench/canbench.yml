@@ -1,5 +1,0 @@
-# A dedicated target dir keeps the wasm build apart from host builds. simd128 is on, as canisters
-# using lara-core should build with it (the IC runs wasm SIMD): auto-vectorization alone makes
-# most benches 2-7 % cheaper (docs/ic-measurements-2026-11-22.md, eleventh round).
-build_cmd: "sh -c 'RUSTFLAGS=\"-C target-feature=+simd128\" CARGO_TARGET_DIR=../../target/canbench cargo build --release --target wasm32-unknown-unknown -p lara-core-bench'"
-wasm_path: "../../target/canbench/wasm32-unknown-unknown/release/lara_core_bench.wasm"

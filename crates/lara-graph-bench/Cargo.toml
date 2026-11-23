@@ -1,0 +1,19 @@
+[package]
+name = "lara-graph-bench"
+description = "canbench instruction measurements for lara-graph on the Internet Computer."
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+canbench-rs = "0.7"
+candid = "0.10"
+ic-cdk = "0.20"
+ic-stable-structures = "0.7.2"
+lara-graph = { path = "../lara-graph", features = ["ic-stable-structures"] }
+
+[lints]
+workspace = true
