@@ -132,10 +132,10 @@ fn write_entries<M: Memory>(
     page: PageId,
     entries: &[(LabelBucketKey, Stored)],
 ) {
-    let bytes: Vec<u8> = entries
-        .iter()
-        .flat_map(|(k, d)| encode_entry(*k, d))
-        .collect();
+    let mut bytes = Vec::with_capacity(entries.len() * super::ENTRY_BYTES);
+    for (k, d) in entries {
+        bytes.extend_from_slice(&encode_entry(*k, d));
+    }
     store.write(page.offset(), &bytes);
 }
 

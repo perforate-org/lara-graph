@@ -166,8 +166,11 @@ fn image(segments: &[(Coded, bool)]) -> Image {
         table.extend(Entry::placed(&s.0, (low, cap)).to_bytes());
     }
     let head = header(segments.len(), low);
-    for (dst, src) in bytes.iter_mut().zip(head.iter().chain(&table)) {
-        *dst = *src;
+    if let Some(dst) = bytes.get_mut(..head.len()) {
+        dst.copy_from_slice(&head);
+    }
+    if let Some(dst) = bytes.get_mut(head.len()..head.len() + table.len()) {
+        dst.copy_from_slice(&table);
     }
     Image {
         first: segments.first().map_or((0, 0), |s| s.0.first),

@@ -145,20 +145,14 @@ pub(crate) enum Lookup {
 
 /// As the module's Reference diagram shows.
 pub(crate) fn encode_ref(list: Option<LabelBucketList>) -> [u8; LABEL_BUCKET_LIST_REF_BYTES] {
-    let mut out = [0u8; LABEL_BUCKET_LIST_REF_BYTES];
     let encoded = list.map(|LabelBucketList(shape)| match shape {
         Shape::Flat { extent, count } => (extent, count),
         Shape::Tiered { top } => (top, TIERED),
     });
-    if let Some((extent, count)) = encoded {
-        for (dst, src) in out
-            .iter_mut()
-            .zip(extent.encode().into_iter().chain([count]))
-        {
-            *dst = src;
-        }
-    }
-    out
+    encoded.map_or([0; LABEL_BUCKET_LIST_REF_BYTES], |(extent, count)| {
+        let [e0, e1, e2, e3, e4, e5, e6] = extent.encode();
+        [e0, e1, e2, e3, e4, e5, e6, count]
+    })
 }
 
 pub(crate) fn decode_ref(bytes: [u8; LABEL_BUCKET_LIST_REF_BYTES]) -> Option<LabelBucketList> {
@@ -335,8 +329,31 @@ fn decode_entry(entry: [u8; ENTRY_BYTES]) -> (LabelBucketKey, Stored) {
     (LabelBucketKey::decode([k0, k1, k2]), Stored::decode(rest))
 }
 
-fn encode_entry(key: LabelBucketKey, d: &Stored) -> impl Iterator<Item = u8> {
-    key.encode().into_iter().chain(d.encode())
+/// Laid out by hand, as are the other hot encoders: chaining parts as iterators compiles to
+/// slow code on the IC (a 32-byte directory record cost about 1,500 instructions that way).
+fn encode_entry(key: LabelBucketKey, d: &Stored) -> [u8; ENTRY_BYTES] {
+    let [k0, k1, k2] = key.encode();
+    let [
+        s0,
+        s1,
+        s2,
+        s3,
+        s4,
+        s5,
+        s6,
+        s7,
+        s8,
+        s9,
+        s10,
+        s11,
+        s12,
+        s13,
+        s14,
+        s15,
+    ] = d.encode();
+    [
+        k0, k1, k2, s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15,
+    ]
 }
 
 /// Publishes a bucket's new descriptor in place. Cannot fail.
@@ -449,11 +466,7 @@ fn shift_in<M: Memory>(
 
 /// Writes one entry at `at`.
 fn write_entry<M: Memory>(store: &PageStore<M>, at: ByteOffset, key: LabelBucketKey, d: &Stored) {
-    let mut bytes = [0u8; ENTRY_BYTES];
-    for (dst, src) in bytes.iter_mut().zip(encode_entry(key, d)) {
-        *dst = src;
-    }
-    store.write(at, &bytes);
+    store.write(at, &encode_entry(key, d));
 }
 
 const fn flat(extent: Extent, count: u8) -> LabelBucketList {

@@ -49,9 +49,15 @@ impl<M: Memory> Graph<M> {
         let pages = 2 + values::PAGES_PER_WRITE;
         self.edges
             .reserve(pages * u32::try_from(targets.len()).unwrap_or(2))?;
-        for (h, _) in targets {
-            // Look again: the other half's bucket may share a list with the first.
-            let found = self.present(h.node(), key_of(h));
+        let first = half.node();
+        for (i, (h, found)) in targets.into_iter().enumerate() {
+            // The second half is looked up again only on the first's node, the one list the
+            // first write can change; elsewhere the lookup from `pair` still holds.
+            let found = if i > 0 && h.node() == first {
+                self.present(h.node(), key_of(h))
+            } else {
+                found
+            };
             self.write_value(found, (width, h.position()), value);
         }
         Ok(Some(old))

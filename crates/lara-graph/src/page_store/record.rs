@@ -73,17 +73,33 @@ impl PageRecord {
             } => (KIND_CHUNK, class.log2(), used, prev, next, bitmap),
             Self::Whole => (KIND_WHOLE, 0, 0, None, None, 0),
         };
-        let bytes = [kind, class]
-            .into_iter()
-            .chain(used.to_le_bytes())
-            .chain(encode_link(prev))
-            .chain(encode_link(next))
-            .chain(bitmap.to_le_bytes());
-        let mut out = [0u8; 32];
-        for (dst, src) in out.iter_mut().zip(bytes) {
-            *dst = src;
-        }
-        out
+        // Laid out by hand: chaining the parts as iterators cost about 1,500 instructions a record
+        // on the IC, a fifth of an insert into a hub (`hub_insert_1024`).
+        let [u0, u1] = used.to_le_bytes();
+        let [p0, p1, p2, p3] = encode_link(prev);
+        let [n0, n1, n2, n3] = encode_link(next);
+        let [
+            b0,
+            b1,
+            b2,
+            b3,
+            b4,
+            b5,
+            b6,
+            b7,
+            b8,
+            b9,
+            b10,
+            b11,
+            b12,
+            b13,
+            b14,
+            b15,
+        ] = bitmap.to_le_bytes();
+        [
+            kind, class, u0, u1, p0, p1, p2, p3, n0, n1, n2, n3, b0, b1, b2, b3, b4, b5, b6, b7,
+            b8, b9, b10, b11, b12, b13, b14, b15, 0, 0, 0, 0,
+        ]
     }
 
     pub(super) fn decode(bytes: [u8; 32]) -> Self {
