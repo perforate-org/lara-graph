@@ -336,6 +336,10 @@ are in `docs/ic-measurements-2026-11-22.md` (eighth round).
 | Leaf merge | counts summing to 512 or less | Leaves hold 700 to 1200 postings, so merged ones fit one. After merging, every pair of neighbours indexes more than 512 edges. |
 | Search windows | 32 slots, then 128 | Most searches stop within a few slots of where they start. 16 slots first made a block scan take two reads. |
 
+**Build canisters with wasm SIMD** (`-C target-feature=+simd128`; the IC runs it). With no code
+change, auto-vectorization makes most operations 2-7 % cheaper, and the benches are measured that
+way.
+
 Segments whose counts are all one carry no count bits. This saves 7-8 % of a hub's index, and no
 instructions moved by 2 % or more. A flag in the table entry marks the first posting at zero.
 

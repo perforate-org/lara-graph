@@ -126,6 +126,13 @@ Measured on canbench, on a 65536-edge hub with every other edge removed:
 - Other benches moved by +2 to +5 %: the 8-byte page-index entries, and the check for holes on
   every insert.
 
+## Building the canister
+
+Build the Gleaph canister with `-C target-feature=+simd128`, for instance in its
+`.cargo/config.toml` for the `wasm32-unknown-unknown` target. lara-core's benches are measured
+that way: auto-vectorization alone makes most operations 2-7 % cheaper. lara-core cannot set it
+itself, since target features belong to the final build.
+
 ## Widths: answered from Gleaph's design
 
 - **Gleaph fixes a label's width once its edges exist.** ADR 0008, "Risks", says: if a LARA bucket

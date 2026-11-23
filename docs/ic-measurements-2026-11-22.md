@@ -375,3 +375,30 @@ Tried and dropped:
   change.
 
 No `BTreeMap` or `BTreeSet` is left outside tests.
+
+## Eleventh round (2026-11-23): wasm SIMD
+
+The IC runs wasm SIMD (simd128). Building with `-C target-feature=+simd128` and no code change
+lets the compiler vectorize what it can.
+
+| Scenario | Change |
+| --- | ---: |
+| Compaction after removing half, 4096 / 65536 | −6.7 % |
+| Parallel inserts, 4096 | −3.3 % |
+| Hub inserts and a small bucket's growth | −2.2 to −3.1 % |
+| Remove half and compact, 65536 | −2.1 % |
+| Edge lookup, pairing from a hub's tail | −2.0 to −2.2 % |
+
+- Nothing got dearer, and the rest moved by less than 2 %.
+- The canbench build now has simd128 on (`crates/lara-core-bench/canbench.yml`), and the recorded
+  numbers are from that build.
+
+**Explicit SIMD was not tried.**
+- **Little to gain.** Only the plain slot scans would vectorize: matching a target, finding a
+  tombstone. A segment's code reads one posting after another. Those scans are about 15 % of
+  pairing through a hub, and less of a scan, where the call per edge dominates.
+- **No unsafe.** The workspace forbids `unsafe`, so vector loads would go through lanes built one
+  by one.
+- **Two paths.** A wasm path with SIMD and a native one would both be needed, and the native
+  tests would not run the first.
+
