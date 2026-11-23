@@ -4,7 +4,8 @@
 //! Layout: segment count u16 and the low end of the slots u16, then a table entry per segment in
 //! key order ([`ENTRY_BYTES`]: its first posting's target u32 and block u32, the total count of
 //! its postings u32, then packed in eight bytes its slot's offset and capacity, the length of
-//! its code, its Rice parameter `k`, block width `w` and posting count). Slots fill the leaf from
+//! its code in bits, its Rice parameter `k`, block width `w`, count width and posting count).
+//! Slots fill the leaf from
 //! its end down; the space between the table and the lowest slot is free.
 //!
 //! A segment (`segment`) codes a run of sorted postings: each target gap after the first in
@@ -165,6 +166,7 @@ pub(super) fn decode(read: Read<'_>) -> Vec<Posting> {
     let leaf = Leaf::open(read);
     (0..leaf.len())
         .filter_map(|i| leaf.entry(i))
+        .inspect(|e| e.check_length(read))
         .flat_map(|e| e.decode(read))
         .collect()
 }

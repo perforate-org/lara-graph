@@ -49,6 +49,11 @@ impl Writer {
         self.fixed(value, k);
     }
 
+    /// Bits written so far.
+    pub(super) fn bits(&self) -> usize {
+        self.bytes.len() * 8 + usize::try_from(self.used).unwrap_or(0)
+    }
+
     /// The bytes written, the last one padded with zeros.
     pub(super) fn into_bytes(mut self) -> Vec<u8> {
         let tail = usize::try_from(self.used.div_ceil(8)).unwrap_or(0);
@@ -73,6 +78,11 @@ pub(super) struct Reader<'a> {
 impl<'a> Reader<'a> {
     pub(super) const fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, at: 0 }
+    }
+
+    /// A reader starting at bit `at`.
+    pub(super) const fn at(bytes: &'a [u8], at: usize) -> Self {
+        Self { bytes, at }
     }
 
     /// At least 57 bits from the current position.

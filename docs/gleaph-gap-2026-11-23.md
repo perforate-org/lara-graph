@@ -115,13 +115,14 @@ Measured on canbench, on a 65536-edge hub with every other edge removed:
 
 | Refill | Per insert |
 | --- | ---: |
-| Edges to new vertices | ~33K |
-| A second edge to each remaining neighbour | ~38K |
+| Edges to new vertices | ~29K |
+| A second edge to each remaining neighbour | ~34K |
 | Append, for comparison | ~12K |
 
-- About half of a fill's cost is the target index's +1. It is written in place: the segment is
-  coded again with its own parameters in its own slot, and only the changed bytes are written.
-  - Before that, the +1 went through a plan and cost ~25K; refills cost ~40K and ~44K.
+- The target index's +1 is written in place without re-coding the segment: a held posting's
+  count bits, or a new posting's bits with the rest of the code shifted along.
+  - Through a plan, the +1 cost ~25K, and refills ~40K and ~44K. Re-coding the segment in its
+    slot brought them to ~33K and ~38K.
 - Other benches moved by +2 to +5 %: the 8-byte page-index entries, and the check for holes on
   every insert.
 
