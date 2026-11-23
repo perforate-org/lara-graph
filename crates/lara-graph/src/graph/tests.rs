@@ -648,12 +648,13 @@ fn add_edges_carries_directed_undirected_and_self_loops() {
     let specs = [
         NewEdge::directed(v(0), l(0), v(1), Placement::ReuseHoles, &[]),
         NewEdge::undirected(v(0), l(1), v(2), Placement::ReuseHoles, &[]),
+        NewEdge::directed(v(0), l(0), v(1), Placement::ReuseHoles, &[]),
         NewEdge::undirected(v(2), l(2), v(2), Placement::ReuseHoles, &[]),
     ];
     let halves = g.add_edges(&specs).unwrap();
-    assert_eq!(halves.len(), 3);
-    assert_eq!(halves[2].canonical(), halves[2].other());
-    assert_eq!(g.degree(v(0), l(0), Direction::Outgoing).unwrap(), 1);
+    assert_eq!(halves.len(), 4);
+    assert_eq!(halves[3].canonical(), halves[3].other());
+    assert_eq!(g.degree(v(0), l(0), Direction::Outgoing).unwrap(), 2);
     assert_eq!(g.degree(v(0), l(1), Direction::Undirected).unwrap(), 1);
     assert_eq!(g.degree(v(2), l(1), Direction::Undirected).unwrap(), 1);
     assert_eq!(g.degree(v(2), l(2), Direction::Undirected).unwrap(), 1);

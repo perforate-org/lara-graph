@@ -238,6 +238,68 @@ fn hub_insert_parallel_4096_batched_stable() -> BenchResult {
     grow_hub_parallel_batched(stable_graph())
 }
 
+#[derive(Clone, Copy)]
+enum Mixed {
+    Loop,
+    Batch,
+}
+
+fn grow_hub_mixed(mut g: Graph<impl Memory>, degree: u32, mode: Mixed) -> BenchResult {
+    let hub = node(&mut g);
+    let leaves = nodes(&mut g, degree);
+    let kinds: Vec<EdgeKind> = (0..degree)
+        .map(|i| {
+            if i % 2 == 0 {
+                EdgeKind::Directed
+            } else {
+                EdgeKind::Undirected
+            }
+        })
+        .collect();
+    let edges: Vec<NewEdge<'_>> = leaves
+        .iter()
+        .zip(&kinds)
+        .map(|(&leaf, &kind)| match kind {
+            EdgeKind::Directed => NewEdge::directed(hub, LABEL, leaf, Placement::ReuseHoles, &[]),
+            EdgeKind::Undirected => {
+                NewEdge::undirected(hub, LABEL, leaf, Placement::ReuseHoles, &[])
+            }
+        })
+        .collect();
+    bench_fn(|| {
+        if matches!(mode, Mixed::Batch) {
+            black_box(
+                g.add_edges(&edges)
+                    .unwrap_or_else(|e| panic!("batch: {e}"))
+                    .len(),
+            )
+        } else {
+            for (&leaf, &kind) in leaves.iter().zip(&kinds) {
+                black_box(
+                    g.add_edge(kind, hub, LABEL, leaf, Placement::ReuseHoles, &[])
+                        .unwrap_or_else(|e| panic!("insert: {e}")),
+                );
+            }
+            black_box(leaves.len())
+        }
+    })
+}
+
+#[bench(raw)]
+fn hub_insert_mixed_4096() -> BenchResult {
+    grow_hub_mixed(heap_graph(), 4096, Mixed::Loop)
+}
+
+#[bench(raw)]
+fn hub_insert_mixed_4096_batched() -> BenchResult {
+    grow_hub_mixed(heap_graph(), 4096, Mixed::Batch)
+}
+
+#[bench(raw)]
+fn hub_insert_mixed_4096_batched_stable() -> BenchResult {
+    grow_hub_mixed(stable_graph(), 4096, Mixed::Batch)
+}
+
 /// 51 full scans of a 1024-edge hub bucket (ic-stable-lara `bench_l_s2_h_scn_d_1024`).
 fn scan_hub<M: Memory>(mut g: Graph<M>, degree: u32) -> BenchResult {
     let (hub, _) = seed_hub(&mut g, degree);

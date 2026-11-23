@@ -17,6 +17,8 @@ use alloc::vec::Vec;
 
 /// Target places an `add_edges` batch remembers. Eight covers the common fan-in/fan-out set.
 const TARGET_CACHE: usize = 8;
+/// A mixed batch keeps both directions and both undirected ends, so it needs a few more.
+const MIXED_CACHE: usize = 16;
 
 /// Whether a target repeats near the start of the batch. The probe is capped so a long unique
 /// fan-out does not pay for a set it will not use; a repeated run of edges is visible early.
@@ -132,6 +134,9 @@ impl<M: Memory> Graph<M> {
         if edges.iter().all(|edge| edge.kind == EdgeKind::Undirected) {
             return self.add_edges_undirected(edges);
         }
+        if edges.iter().any(|edge| edge.kind == EdgeKind::Undirected) {
+            return self.add_edges_mixed(edges);
+        }
         let mut out = Vec::with_capacity(edges.len());
         let mut cache: Option<(LabelBucketKey, Place)> = None;
         for edge in edges {
@@ -172,6 +177,75 @@ impl<M: Memory> Graph<M> {
 
     /// Undirected batches cache both endpoints by `(node, key)`. A hub is usually the low or
     /// the high end of every edge, so one side stays hot while the other moves.
+    /// A batch with both edge kinds: every half is cached by its endpoint, independent of the
+    /// half's role in a directed or undirected edge.
+    #[inline(never)]
+    fn add_edges_mixed(&mut self, edges: &[NewEdge<'_>]) -> Result<Vec<Halves>, Error> {
+        let mut out = Vec::with_capacity(edges.len());
+        let mut cache: [Option<(NodeId, LabelBucketKey, Place)>; MIXED_CACHE] = [None; MIXED_CACHE];
+        for edge in edges {
+            match edge.kind {
+                EdgeKind::Directed => {
+                    let from = Half::new(
+                        edge.from,
+                        (edge.label, Direction::Outgoing),
+                        edge.to,
+                        edge.placement,
+                    );
+                    let to = Half::new(
+                        edge.to,
+                        (edge.label, Direction::Incoming),
+                        edge.from,
+                        edge.placement,
+                    );
+                    let cached = [
+                        cached_place(&cache, from.node, from.key),
+                        cached_place(&cache, to.node, to.key),
+                    ];
+                    let (halves, updated) =
+                        self.insert_halves_with([from, to], edge.value, &ManyCache(cached))?;
+                    remember_halves(&mut cache, [from, to], updated);
+                    let [canonical, other] = halves;
+                    out.push(Halves::new(canonical, other));
+                }
+                EdgeKind::Undirected => {
+                    let (low, high) = (edge.from.min(edge.to), edge.from.max(edge.to));
+                    let at_high = Half::new(
+                        high,
+                        (edge.label, Direction::Undirected),
+                        low,
+                        edge.placement,
+                    );
+                    if low == high {
+                        let cached = [cached_place(&cache, at_high.node, at_high.key)];
+                        let (halves, updated) =
+                            self.insert_halves_with([at_high], edge.value, &ManyCache(cached))?;
+                        remember_halves(&mut cache, [at_high], updated);
+                        let [half] = halves;
+                        out.push(Halves::new(half, half));
+                        continue;
+                    }
+                    let at_low = Half::new(
+                        low,
+                        (edge.label, Direction::Undirected),
+                        high,
+                        edge.placement,
+                    );
+                    let cached = [
+                        cached_place(&cache, at_high.node, at_high.key),
+                        cached_place(&cache, at_low.node, at_low.key),
+                    ];
+                    let (halves, updated) =
+                        self.insert_halves_with([at_high, at_low], edge.value, &ManyCache(cached))?;
+                    remember_halves(&mut cache, [at_high, at_low], updated);
+                    let [canonical, other] = halves;
+                    out.push(Halves::new(canonical, other));
+                }
+            }
+        }
+        Ok(out)
+    }
+
     fn add_edges_undirected(&mut self, edges: &[NewEdge<'_>]) -> Result<Vec<Halves>, Error> {
         let mut out = Vec::with_capacity(edges.len());
         let mut high_cache: [Option<(NodeId, LabelBucketKey, Place)>; TARGET_CACHE] =
@@ -785,8 +859,8 @@ impl<const N: usize> Cached<N> for ManyCache<N> {
     }
 }
 
-fn cached_place(
-    cache: &[Option<(NodeId, LabelBucketKey, Place)>; TARGET_CACHE],
+fn cached_place<const N: usize>(
+    cache: &[Option<(NodeId, LabelBucketKey, Place)>; N],
     node: NodeId,
     key: LabelBucketKey,
 ) -> Option<Place> {
@@ -797,8 +871,8 @@ fn cached_place(
         .map(|(_, _, place)| *place)
 }
 
-fn cache_place(
-    cache: &mut [Option<(NodeId, LabelBucketKey, Place)>; TARGET_CACHE],
+fn cache_place<const N: usize>(
+    cache: &mut [Option<(NodeId, LabelBucketKey, Place)>; N],
     node: NodeId,
     key: LabelBucketKey,
     place: Option<Place>,
@@ -820,6 +894,32 @@ fn cache_place(
         .find(|entry| entry.as_ref().is_some_and(matches))
     {
         *slot = None;
+    }
+}
+
+/// Remembers each half's new place, and drops every entry for a node whose label bucket list
+/// moved because the half added a new bucket.
+fn remember_halves<const N: usize>(
+    cache: &mut [Option<(NodeId, LabelBucketKey, Place)>; MIXED_CACHE],
+    halves: [Half; N],
+    updated: [Option<Place>; N],
+) {
+    for (half, place) in halves.iter().zip(updated) {
+        if place.is_none() {
+            for entry in cache.iter_mut() {
+                if entry
+                    .as_ref()
+                    .is_some_and(|(node, _, _)| *node == half.node)
+                {
+                    *entry = None;
+                }
+            }
+        }
+    }
+    for (half, place) in halves.iter().zip(updated) {
+        if place.is_some() {
+            cache_place(cache, half.node, half.key, place);
+        }
     }
 }
 
