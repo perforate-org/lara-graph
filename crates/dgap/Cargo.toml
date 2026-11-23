@@ -1,0 +1,13 @@
+[package]
+name = "dgap"
+version.workspace = true
+edition.workspace = true
+description = "Faithful Rust port of DGAP (arXiv:2403.02665) for benchmarking against LARA."
+license = "MIT"
+publish = false
+
+[dependencies]
+
+# Frozen: this crate deliberately does not inherit `[workspace.lints]` (see the workspace Cargo.toml).
+[lints.cargo]
+missing_lints_inheritance = "allow"

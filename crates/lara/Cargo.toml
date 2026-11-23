@@ -1,0 +1,37 @@
+[package]
+name = "lara-graph"
+version.workspace = true
+edition.workspace = true
+description = "Generalized LARA: localized adjacency relocation array — a mutable CSR with free-span reuse, segment span metadata, per-leaf overflow logs, and Tree-CSR mode."
+repository = "https://github.com/wiyota/lara-graph"
+keywords = ["graph", "csr", "dynamic", "pma", "data-structure"]
+categories = ["data-structures"]
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+readme = "README.md"
+
+[features]
+default = ["std", "derive"]
+std = []
+derive = ["dep:lara-graph-macros"]
+mmap = ["std", "dep:memmap2"]
+
+[dependencies]
+lara-graph-macros = { version = "0.1.0", path = "../lara-graph-macros", optional = true }
+memmap2 = { version = "0.9", optional = true }
+
+[[example]]
+name = "custom_backend"
+test = true
+
+[[example]]
+name = "quickstart"
+required-features = ["std"]
+
+[[example]]
+name = "labeled"
+required-features = ["std", "derive"]
+
+# Frozen: this crate deliberately does not inherit `[workspace.lints]` (see the workspace Cargo.toml).
+[lints.cargo]
+missing_lints_inheritance = "allow"

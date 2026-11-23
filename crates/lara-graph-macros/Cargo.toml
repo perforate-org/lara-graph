@@ -1,0 +1,22 @@
+[package]
+name = "lara-graph-macros"
+version.workspace = true
+edition.workspace = true
+description = "Procedural macros for lara-graph (derive Label)."
+repository = "https://github.com/wiyota/lara-graph"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+readme = "README.md"
+categories = ["development-tools::procedural-macro-helpers"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "3", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
+
+# Frozen: this crate deliberately does not inherit `[workspace.lints]` (see the workspace Cargo.toml).
+[lints.cargo]
+missing_lints_inheritance = "allow"
