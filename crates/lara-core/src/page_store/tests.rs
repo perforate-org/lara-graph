@@ -10,7 +10,7 @@ struct Backing {
 
 impl Backing {
     fn create(&self) -> PageStore<&VecMemory> {
-        PageStore::create(&self.pages, &self.directory).unwrap()
+        PageStore::format(&self.pages, &self.directory).unwrap()
     }
 }
 

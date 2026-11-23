@@ -4,17 +4,22 @@
 //! and exists so experiments run the real allocator instead of a copy of it.
 
 use crate::graph::Graph;
-use crate::id::{Label, Side, VertexId};
-use crate::labels::BucketKey;
+use crate::id::{Direction, Label, NodeId};
+use crate::label_bucket_list::LabelBucketKey;
 use crate::memory::{GrowFailed, Memory, VecMemory};
 use crate::span_alloc::{SpanTag, TagAllocator};
 use crate::units::SpanLen;
 use core::cell::Cell;
 
-/// Pages of the target index of `v`'s `(label, side)` bucket: 0 when it has none.
+/// Pages of the target index of `v`'s `(label, direction)` bucket: 0 when it has none.
 #[must_use]
-pub fn index_pages<M: Memory>(g: &Graph<M>, v: VertexId, label: Label, side: Side) -> usize {
-    g.index_pages(v, BucketKey { label, side })
+pub fn index_pages<M: Memory>(
+    g: &Graph<M>,
+    v: NodeId,
+    label: Label,
+    direction: Direction,
+) -> usize {
+    g.index_pages(v, LabelBucketKey { label, direction })
 }
 
 /// The slab span allocator over a heap memory that counts its accesses.

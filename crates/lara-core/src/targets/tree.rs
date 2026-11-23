@@ -1,11 +1,30 @@
 //! The counted B+ tree over postings.
 //!
-//! An internal node is a page: its child count u16 and two spare bytes, then three arrays of
-//! [`FANOUT`] slots each: the children's first keys (target u32, block u32), their pages (u32),
-//! and their total counts (u32). Lookups read the keys they probe and the counts they sum, not
-//! whole nodes; a change that leaves every node on its page writes only the entries it alters.
-//! Leaves are `leaf` pages. A batch of changes is planned in memory first, which tells exactly
-//! how many pages it needs, then committed (`commit`).
+//! An internal node is a page of three arrays of [`FANOUT`] slots each: the children's first keys,
+//! their pages and their total counts. Lookups read the keys they probe and the counts they sum,
+//! not whole nodes; a change that leaves every node on its page writes only the entries it alters.
+//! Leaves are `leaf` pages. A batch of changes is planned in memory first, which tells exactly how
+//! many pages it needs, then committed (`commit`).
+//!
+//! # Internal node page
+//!
+//! Keys, pages and counts are arrays indexed by child.
+//!
+//! ```text
+//! ---------------------------------------- <- Offset 0
+//! Child count                     ↕ 2 bytes
+//! ----------------------------------------
+//! Reserved space                  ↕ 2 bytes
+//! ---------------------------------------- <- Offset 4 (KEYS)
+//! First key of each child         ↕ 255 × 8 bytes (target u32, block u32)
+//! ---------------------------------------- <- Offset 2044 (PAGES)
+//! Page of each child              ↕ 255 × 4 bytes
+//! ---------------------------------------- <- Offset 3064 (COUNTS)
+//! Total count of each child       ↕ 255 × 4 bytes
+//! ---------------------------------------- <- Offset 4084
+//! Reserved space                  ↕ 12 bytes
+//! ----------------------------------------
+//! ```
 
 mod commit;
 mod lookup;
@@ -130,7 +149,7 @@ fn nudge<M: Memory>(
 }
 
 /// What `changes` would do to the tree, read but not written: [`Plan::pages`] tells what to
-/// reserve, and [`commit`] writes it.
+/// reserve, and [`commit`](fn@commit) writes it.
 pub(crate) fn plan<M: Memory>(view: &Pages<'_, M>, root: Option<Root>, changes: &[Change]) -> Plan {
     let changes = combine(changes);
     let depth = root.map_or(0, |r| r.depth);

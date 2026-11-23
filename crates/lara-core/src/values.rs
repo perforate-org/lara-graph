@@ -8,6 +8,49 @@
 //! **table**: a radix tree of node pages (1024 page ids each, `u32::MAX` for none) over value
 //! pages of `4096 / width` cells. Missing nodes and pages read as zeros, so a write anywhere
 //! allocates at most the path to it: [`PAGES_PER_WRITE`] pages.
+//!
+//! # Plane root
+//!
+//! ```text
+//! ---------------------------------------- <- Empty
+//! Kind (0)                        ↕ 1 byte
+//! ----------------------------------------
+//! Reserved space                  ↕ 7 bytes
+//! ---------------------------------------- <- Run: cells 0, 1, … of `width` bytes
+//! Kind (1)                        ↕ 1 byte
+//! ----------------------------------------
+//! Extent                          ↕ 7 bytes
+//! ---------------------------------------- <- Table
+//! Kind (2)                        ↕ 1 byte
+//! ----------------------------------------
+//! Root node page id               ↕ 4 bytes
+//! ----------------------------------------
+//! Depth (levels of nodes)         ↕ 1 byte
+//! ----------------------------------------
+//! Reserved space                  ↕ 2 bytes
+//! ----------------------------------------
+//! ```
+//!
+//! # Table pages
+//!
+//! Value page `i` covers positions from `i × ⌊4096 / width⌋`.
+//!
+//! ```text
+//! ---------------------------------------- <- Node page
+//! Child page id 0                 ↕ 4 bytes
+//! ----------------------------------------
+//! ...
+//! ----------------------------------------
+//! Child page id 1023              ↕ 4 bytes
+//! ---------------------------------------- <- Value page
+//! Cell 0                          ↕ width bytes
+//! ----------------------------------------
+//! ...
+//! ----------------------------------------
+//! Cell ⌊4096 / width⌋ - 1         ↕ width bytes
+//! ----------------------------------------
+//! Unused space
+//! ```
 
 use crate::corrupt::corrupt;
 use crate::id::Width;
@@ -21,7 +64,7 @@ mod table;
 
 use table::{MAX_DEPTH, NODE_ENTRIES, data_page, grow_table, release_node, table_with};
 
-/// Pages one [`write`] can take. The worst case turns a run into a table and writes far away: a
+/// Pages one [`write`](fn@write) can take. The worst case turns a run into a table and writes far away: a
 /// root, value page 0 for the run's cells, three roots as the table deepens to four levels, the
 /// three nodes below them and the value page.
 pub(crate) const PAGES_PER_WRITE: u32 = 9;
@@ -52,7 +95,7 @@ pub(crate) enum Plane {
 }
 
 impl Plane {
-    /// Layout: kind | extent (run) or root page id u32 and depth u8 (table) | padding.
+    /// As the module's Plane root diagram shows.
     pub(crate) fn encode(self) -> [u8; ROOT_BYTES] {
         match self {
             Self::Empty => [KIND_EMPTY, 0, 0, 0, 0, 0, 0, 0],

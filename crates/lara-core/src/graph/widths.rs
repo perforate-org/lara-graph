@@ -1,8 +1,24 @@
 //! The label width table: which labels' edges carry a value, and how wide it is.
 //!
-//! The table is one extent in the list store, `count u16` then `(label u16, width u16)` entries
-//! sorted by label, referenced from bytes 8..16 of the vertices header (a present flag and the
-//! extent). The graph keeps a copy in the heap: it owns its memories.
+//! The table is one extent in the label bucket list store, its entries sorted by label, referenced
+//! from the nodes header (see `graph`). The graph keeps a copy in the heap: it owns its memories.
+//!
+//! # Table
+//!
+//! ```text
+//! ---------------------------------------- <- Extent start
+//! Entry count = E                 ↕ 2 bytes
+//! ----------------------------------------
+//! Entry 0: label                  ↕ 2 bytes
+//! ----------------------------------------
+//! Entry 0: width                  ↕ 2 bytes
+//! ----------------------------------------
+//! ...
+//! ----------------------------------------
+//! Entry E - 1                     ↕ 4 bytes
+//! ----------------------------------------
+//! Unused space
+//! ```
 
 use super::{Error, Graph};
 use crate::corrupt::corrupt;
@@ -12,8 +28,8 @@ use crate::page_store::{ByteClass, EXTENT_BYTES, Extent, PageStore};
 use crate::units::ByteOffset;
 use alloc::vec::Vec;
 
-/// Where the table's reference sits in the vertices header.
-const AT_WIDTHS: u64 = 8;
+/// Where the table's reference sits in the nodes header.
+pub(super) const AT_WIDTHS: u64 = 8;
 const ENTRY_BYTES: usize = 4;
 /// Labels with a width: one page of entries.
 const MAX_WIDTHS: usize = (4096 - 2) / ENTRY_BYTES;
@@ -26,15 +42,15 @@ pub(super) struct Widths {
 }
 
 impl Widths {
-    /// Reads the table referenced from the vertices header.
-    pub(super) fn load<M: Memory>(vertices: &M, lists: &PageStore<M>) -> Self {
+    /// Reads the table referenced from the nodes header.
+    pub(super) fn load<M: Memory>(nodes: &M, label_bucket_lists: &PageStore<M>) -> Self {
         let [present, e @ ..]: [u8; 1 + EXTENT_BYTES] =
-            Region::new(vertices).read_array(ByteOffset::new(AT_WIDTHS));
+            Region::new(nodes).read_array(ByteOffset::new(AT_WIDTHS));
         if present == 0 {
             return Self::default();
         }
         let at = Extent::decode(e);
-        let view = lists.pages();
+        let view = label_bucket_lists.pages();
         let count = usize::from(u16::from_le_bytes(view.read_array(at.offset())));
         let bytes = view.read(ByteOffset::new(at.offset().get() + 2), count * ENTRY_BYTES);
         let sorted = bytes
@@ -90,13 +106,13 @@ impl<M: Memory> Graph<M> {
             .collect();
         let class = ByteClass::for_bytes(u32::try_from(bytes.len()).unwrap_or(u32::MAX))
             .unwrap_or_else(|| corrupt("width table beyond a page"));
-        let at = self.lists.allocate(class)?;
-        self.lists.write(at.offset(), &bytes);
+        let at = self.label_bucket_lists.allocate(class)?;
+        self.label_bucket_lists.write(at.offset(), &bytes);
         let reference: Vec<u8> = [1].into_iter().chain(at.encode()).collect();
         self.region()
             .overwrite(ByteOffset::new(AT_WIDTHS), &reference);
         if let Some(old) = self.widths.at {
-            self.lists.release(old);
+            self.label_bucket_lists.release(old);
         }
         self.widths = Widths {
             sorted,

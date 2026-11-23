@@ -13,11 +13,11 @@ canbench-rs = "0.7"
 candid = "0.10"
 ic-cdk = "0.20"
 ic-stable-structures = "0.7.2"
-lara-core = { path = "../lara-core" }
+lara-core = { path = "../lara-core", features = ["ic-stable-structures"] }
 
 [dev-dependencies]
 # Examples measure internals (the target index's pages).
-lara-core = { path = "../lara-core", features = ["bench-internals"] }
+lara-core = { path = "../lara-core", features = ["bench-internals", "ic-stable-structures"] }
 
 [lints]
 workspace = true

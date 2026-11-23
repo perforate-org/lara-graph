@@ -11,65 +11,32 @@ use core::ops::ControlFlow;
 use ic_stable_structures::DefaultMemoryImpl;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use lara_core::{
-    Cursor, EdgeRef, Graph, GrowFailed, Halves, Label, Memories, Memory, Order, Placement,
-    Position, Progress, Side, VecMemory, VertexId, VertexSet, Width,
+    Cursor, Direction, EdgeRef, Graph, Halves, IcMemory, Label, Memories, Memory, NodeId, NodeSet,
+    Order, Placement, Position, Progress, VecMemory, Width,
 };
 
 const LABEL: Label = Label::new(2);
 
-/// One of the canister's stable memories, as a lara-core [`Memory`].
-struct Stable(VirtualMemory<DefaultMemoryImpl>);
-
-impl Memory for Stable {
-    fn size(&self) -> u64 {
-        ic_stable_structures::Memory::size(&self.0)
-    }
-
-    fn grow(&self, pages: u64) -> Result<u64, GrowFailed> {
-        let previous = ic_stable_structures::Memory::grow(&self.0, pages);
-        u64::try_from(previous).map_err(|_| GrowFailed::new(self.size(), pages))
-    }
-
-    fn read(&self, offset: u64, buf: &mut [u8]) {
-        ic_stable_structures::Memory::read(&self.0, offset, buf);
-    }
-
-    fn write(&self, offset: u64, buf: &[u8]) {
-        ic_stable_structures::Memory::write(&self.0, offset, buf);
-    }
-}
-
 /// A graph in five heap memories.
-///
-/// # Panics
-///
-/// When the graph cannot be created in fresh memories.
 #[must_use]
 pub fn heap_graph() -> Graph<VecMemory> {
-    let memories = Memories::new(
-        VecMemory::new(),
-        VecMemory::new(),
-        VecMemory::new(),
-        VecMemory::new(),
-        VecMemory::new(),
-    );
-    Graph::create(memories).unwrap_or_else(|e| panic!("create: {e}"))
+    Graph::new(Memories::from_fn(|_| VecMemory::new()))
 }
 
-/// A graph in five virtual stable memories (ids 0..5), as Gleaph wires it.
-fn stable_graph() -> Graph<Stable> {
+/// A graph in five virtual stable memories (ids 0..5), as a canister wires it.
+fn stable_graph() -> Graph<IcMemory<VirtualMemory<DefaultMemoryImpl>>> {
     let manager = MemoryManager::init(DefaultMemoryImpl::default());
-    let memory = |id| Stable(manager.get(MemoryId::new(id)));
-    let memories = Memories::new(memory(0), memory(1), memory(2), memory(3), memory(4));
-    Graph::create(memories).unwrap_or_else(|e| panic!("create: {e}"))
+    Graph::init(Memories::from_fn(|role| {
+        IcMemory::new(manager.get(MemoryId::new(role.index())))
+    }))
 }
 
-fn vertex<M: Memory>(g: &mut Graph<M>) -> VertexId {
-    g.add_vertex().unwrap_or_else(|e| panic!("vertex: {e}"))
+fn node<M: Memory>(g: &mut Graph<M>) -> NodeId {
+    g.add_node().unwrap_or_else(|e| panic!("node: {e}"))
 }
 
-fn vertices<M: Memory>(g: &mut Graph<M>, n: u32) -> Vec<VertexId> {
-    (0..n).map(|_| vertex(g)).collect()
+fn nodes<M: Memory>(g: &mut Graph<M>, n: u32) -> Vec<NodeId> {
+    (0..n).map(|_| node(g)).collect()
 }
 
 /// The last edge a seed inserted.
@@ -77,15 +44,15 @@ fn last(edges: &[Halves]) -> Halves {
     edges.last().copied().unwrap_or_else(|| panic!("no edges"))
 }
 
-fn directed<M: Memory>(g: &mut Graph<M>, from: VertexId, to: VertexId) -> Halves {
-    g.insert_directed(from, LABEL, to, Placement::ReuseHoles, &[])
+fn directed<M: Memory>(g: &mut Graph<M>, from: NodeId, to: NodeId) -> Halves {
+    g.add_edge(from, LABEL, to, Placement::ReuseHoles, &[])
         .unwrap_or_else(|e| panic!("insert: {e}"))
 }
 
 /// A hub with an edge to each of `degree` fresh leaves; returns the hub and the edges.
-fn seed_hub<M: Memory>(g: &mut Graph<M>, degree: u32) -> (VertexId, Vec<Halves>) {
-    let hub = vertex(g);
-    let leaves = vertices(g, degree);
+fn seed_hub<M: Memory>(g: &mut Graph<M>, degree: u32) -> (NodeId, Vec<Halves>) {
+    let hub = node(g);
+    let leaves = nodes(g, degree);
     let edges = leaves
         .into_iter()
         .map(|leaf| directed(g, hub, leaf))
@@ -94,8 +61,8 @@ fn seed_hub<M: Memory>(g: &mut Graph<M>, degree: u32) -> (VertexId, Vec<Halves>)
 }
 
 fn grow_hub<M: Memory>(mut g: Graph<M>, degree: u32) -> BenchResult {
-    let hub = vertex(&mut g);
-    let leaves = vertices(&mut g, degree);
+    let hub = node(&mut g);
+    let leaves = nodes(&mut g, degree);
     bench_fn(|| {
         for &leaf in &leaves {
             black_box(directed(&mut g, hub, black_box(leaf)));
@@ -127,8 +94,8 @@ fn hub_insert_4096_stable() -> BenchResult {
 #[bench(raw)]
 fn hub_insert_parallel_4096() -> BenchResult {
     let mut g = heap_graph();
-    let hub = vertex(&mut g);
-    let targets = vertices(&mut g, 8);
+    let hub = node(&mut g);
+    let targets = nodes(&mut g, 8);
     bench_fn(|| {
         for &target in targets.iter().cycle().take(4096) {
             black_box(directed(&mut g, hub, target));
@@ -142,7 +109,7 @@ fn scan_hub<M: Memory>(mut g: Graph<M>, degree: u32) -> BenchResult {
     let mut out = Vec::new();
     bench_fn(|| {
         for _ in 0..51 {
-            g.neighbors(hub, LABEL, Side::Out, &mut out)
+            g.neighbors_directed(hub, LABEL, Direction::Outgoing, &mut out)
                 .unwrap_or_else(|e| panic!("scan: {e}"));
             black_box(out.len());
         }
@@ -159,7 +126,7 @@ fn visit_hub_in<M: Memory>(mut g: Graph<M>, degree: u32, order: Order) -> BenchR
     bench_fn(|| {
         for _ in 0..51 {
             let mut count = 0u32;
-            g.visit_neighbors(hub, LABEL, Side::Out, order, |_| {
+            g.visit_neighbors(hub, LABEL, Direction::Outgoing, order, |_| {
                 count += 1;
                 ControlFlow::<()>::Continue(())
             })
@@ -195,7 +162,7 @@ fn hub_windows_descending_65536() -> BenchResult {
         let mut count = 0u32;
         while let Some(at) = cursor {
             cursor = g
-                .visit_window(hub, LABEL, Side::Out, at, |_| count += 1)
+                .visit_window(hub, LABEL, Direction::Outgoing, at, |_| count += 1)
                 .unwrap_or_else(|e| panic!("window: {e}"));
         }
         black_box(count);
@@ -212,20 +179,20 @@ fn hub_targets_at_256_of_65536() -> BenchResult {
         .collect();
     let mut out = Vec::new();
     bench_fn(|| {
-        g.targets_at(hub, LABEL, Side::Out, &positions, &mut out)
+        g.targets_at(hub, LABEL, Direction::Outgoing, &positions, &mut out)
             .unwrap_or_else(|e| panic!("targets: {e}"));
         black_box(out.len());
     })
 }
 
 /// A hub whose label carries 8-byte values, each edge given one.
-fn seed_valued_hub(g: &mut Graph<VecMemory>, degree: u32) -> VertexId {
+fn seed_valued_hub(g: &mut Graph<VecMemory>, degree: u32) -> NodeId {
     g.declare_width(LABEL, Width::new(8).unwrap_or_else(|| panic!("width")))
         .unwrap_or_else(|e| panic!("width: {e}"));
-    let hub = vertex(g);
-    for leaf in vertices(g, degree) {
+    let hub = node(g);
+    for leaf in nodes(g, degree) {
         let value = u64::from(leaf.index()).to_le_bytes();
-        g.insert_directed(hub, LABEL, leaf, Placement::Append, &value)
+        g.add_edge(hub, LABEL, leaf, Placement::Append, &value)
             .unwrap_or_else(|e| panic!("insert: {e}"));
     }
     hub
@@ -237,13 +204,13 @@ fn hub_insert_valued_4096() -> BenchResult {
     let mut g = heap_graph();
     g.declare_width(LABEL, Width::new(8).unwrap_or_else(|| panic!("width")))
         .unwrap_or_else(|e| panic!("width: {e}"));
-    let hub = vertex(&mut g);
-    let leaves = vertices(&mut g, 4096);
+    let hub = node(&mut g);
+    let leaves = nodes(&mut g, 4096);
     bench_fn(|| {
         for &leaf in &leaves {
             let value = u64::from(leaf.index()).to_le_bytes();
             black_box(
-                g.insert_directed(hub, LABEL, leaf, Placement::Append, &value)
+                g.add_edge(hub, LABEL, leaf, Placement::Append, &value)
                     .unwrap_or_else(|e| panic!("insert: {e}")),
             );
         }
@@ -258,10 +225,15 @@ fn hub_visit_values_65536() -> BenchResult {
     bench_fn(|| {
         for _ in 0..51 {
             let mut sum = 0u64;
-            g.visit_values(hub, (LABEL, Side::Out), Order::Ascending, |_, v| {
-                sum = sum.wrapping_add(u64::from(v.first().copied().unwrap_or(0)));
-                ControlFlow::<()>::Continue(())
-            })
+            g.visit_values(
+                hub,
+                (LABEL, Direction::Outgoing),
+                Order::Ascending,
+                |_, v| {
+                    sum = sum.wrapping_add(u64::from(v.first().copied().unwrap_or(0)));
+                    ControlFlow::<()>::Continue(())
+                },
+            )
             .unwrap_or_else(|e| panic!("values: {e}"));
             black_box(sum);
         }
@@ -276,10 +248,15 @@ fn hub_visit_with_values_1024() -> BenchResult {
     bench_fn(|| {
         for _ in 0..51 {
             let mut count = 0u32;
-            g.visit_neighbors_with_values(hub, (LABEL, Side::Out), Order::Ascending, |_, _| {
-                count += 1;
-                ControlFlow::<()>::Continue(())
-            })
+            g.visit_neighbors_with_values(
+                hub,
+                (LABEL, Direction::Outgoing),
+                Order::Ascending,
+                |_, _| {
+                    count += 1;
+                    ControlFlow::<()>::Continue(())
+                },
+            )
             .unwrap_or_else(|e| panic!("visit: {e}"));
             black_box(count);
         }
@@ -291,8 +268,8 @@ fn hub_visit_with_values_1024() -> BenchResult {
 fn set_value_4096() -> BenchResult {
     let mut g = heap_graph();
     let hub = seed_valued_hub(&mut g, 4096);
-    let half = EdgeRef::new(hub, LABEL, Side::Out, Position::new(4000));
-    bench_fn(|| black_box(g.set_value(half, &[7; 8])))
+    let half = EdgeRef::new(hub, LABEL, Direction::Outgoing, Position::new(4000));
+    bench_fn(|| black_box(g.set_edge_value(half, &[7; 8])))
 }
 
 #[bench(raw)]
@@ -327,7 +304,7 @@ fn remove_half_then_compact(degree: u32) -> BenchResult {
         }
         let _compaction = canbench_rs::bench_scope("compaction");
         while g
-            .compact(hub, LABEL, Side::Out)
+            .compact(hub, LABEL, Direction::Outgoing)
             .unwrap_or_else(|e| panic!("compact: {e}"))
             .progress()
             == Progress::Remaining
@@ -357,13 +334,13 @@ fn refill_hub(degree: u32, to: Refill) -> BenchResult {
                 .unwrap_or_else(|e| panic!("{e}")),
         );
     }
-    let targets: Vec<VertexId> = match to {
-        Refill::Fresh => vertices(&mut g, degree / 2),
+    let targets: Vec<NodeId> = match to {
+        Refill::Fresh => nodes(&mut g, degree / 2),
         Refill::Parallel => edges
             .iter()
             .skip(1)
             .step_by(2)
-            .map(|halves| halves.other().vertex())
+            .map(|halves| halves.other().node())
             .collect(),
     };
     bench_fn(|| {
@@ -390,19 +367,19 @@ fn hub_refill_holes_parallel_65536() -> BenchResult {
     refill_hub(65536, Refill::Parallel)
 }
 
-/// Inserts the `nth` (1-based) out-edge of each of 512 vertices, whose earlier edges are in
+/// Inserts the `nth` (1-based) out-edge of each of 512 nodes, whose earlier edges are in
 /// place, to a fresh target each: the cost of a small bucket's growth. The third fills a tiny
 /// bucket's last inline slot; the fourth moves it to a run.
 fn grow_small(nth: u32) -> BenchResult {
     let mut g = heap_graph();
-    let sources = vertices(&mut g, 512);
+    let sources = nodes(&mut g, 512);
     for _ in 1..nth {
         for &v in &sources {
-            let target = vertex(&mut g);
+            let target = node(&mut g);
             directed(&mut g, v, target);
         }
     }
-    let targets = vertices(&mut g, 512);
+    let targets = nodes(&mut g, 512);
     bench_fn(|| {
         for (&v, &target) in sources.iter().zip(&targets) {
             black_box(directed(&mut g, v, target));
@@ -489,11 +466,11 @@ fn detach_hub_65536() -> BenchResult {
 /// half is found by scanning the hub's in bucket (ic-stable-lara `bench_l_s2_det_sat_<degree>`).
 fn detach_satellite(degree: u32) -> BenchResult {
     let mut g = heap_graph();
-    let hub = vertex(&mut g);
-    for source in vertices(&mut g, degree) {
+    let hub = node(&mut g);
+    for source in nodes(&mut g, degree) {
         directed(&mut g, source, hub);
     }
-    let satellite = vertex(&mut g);
+    let satellite = node(&mut g);
     directed(&mut g, satellite, hub);
     bench_fn(|| {
         g.detach(satellite)
@@ -517,7 +494,7 @@ fn detach_satellite_65536() -> BenchResult {
     detach_satellite(65536)
 }
 
-/// How a bench detaches many vertices.
+/// How a bench detaches many nodes.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Detaching {
     /// Each with its own detach steps.
@@ -529,19 +506,19 @@ enum Detaching {
 /// Detaches `n` of a hub's 65536 in-neighbours, spread evenly.
 fn detach_many(n: u32, how: Detaching) -> BenchResult {
     let mut g = heap_graph();
-    let hub = vertex(&mut g);
-    let sources = vertices(&mut g, 65536);
+    let hub = node(&mut g);
+    let sources = nodes(&mut g, 65536);
     for &s in &sources {
         directed(&mut g, s, hub);
     }
     let step = usize::try_from(65536 / n).unwrap_or(1);
-    let gone: Vec<VertexId> = sources.iter().step_by(step).copied().collect();
+    let gone: Vec<NodeId> = sources.iter().step_by(step).copied().collect();
     bench_fn(|| {
         for &d in &gone {
             g.detach(d).unwrap_or_else(|e| panic!("detach: {e}"));
         }
         if how == Detaching::Swept {
-            sweep_all(&mut g, hub, &VertexSet::new(gone.iter().copied()));
+            sweep_all(&mut g, hub, &NodeSet::new(gone.iter().copied()));
         }
         for &d in &gone {
             detach_rest(&mut g, d);
@@ -550,18 +527,23 @@ fn detach_many(n: u32, how: Detaching) -> BenchResult {
 }
 
 /// Sweeps the hub's in-bucket of edges from `detaching`, to its end.
-fn sweep_all(g: &mut Graph<VecMemory>, hub: VertexId, detaching: &VertexSet) {
+fn sweep_all(g: &mut Graph<VecMemory>, hub: NodeId, detaching: &NodeSet) {
     let mut from = Some(Position::new(0));
     while let Some(at) = from {
         let sweep = g
-            .sweep(hub, (LABEL, Side::In), (at, budget(4096)), detaching)
+            .sweep(
+                hub,
+                (LABEL, Direction::Incoming),
+                (at, budget(4096)),
+                detaching,
+            )
             .unwrap_or_else(|e| panic!("sweep: {e}"));
         from = sweep.next();
     }
 }
 
 /// Detaches `v`'s remaining edges until it is deleted.
-fn detach_rest(g: &mut Graph<VecMemory>, v: VertexId) {
+fn detach_rest(g: &mut Graph<VecMemory>, v: NodeId) {
     while g
         .detach_step(v, budget(u32::MAX))
         .unwrap_or_else(|e| panic!("step: {e}"))
@@ -608,6 +590,6 @@ fn hub_remove_one_65536() -> BenchResult {
 fn edge_lookup_65536() -> BenchResult {
     let mut g = heap_graph();
     let (hub, _) = seed_hub(&mut g, 65536);
-    let half = EdgeRef::new(hub, LABEL, Side::Out, Position::new(40_000));
-    bench_fn(|| black_box(g.edge(half)))
+    let half = EdgeRef::new(hub, LABEL, Direction::Outgoing, Position::new(40_000));
+    bench_fn(|| black_box(g.edge_target(half)))
 }

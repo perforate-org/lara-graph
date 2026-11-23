@@ -17,34 +17,59 @@ evidence is in `docs/` (layout, page source and storage comparisons, the ic-stab
 
 | Rule | Mechanism |
 | --- | --- |
-| Behaviour in types | Newtypes for ids and units (`VertexId`, `Label`, `Position`, `PageId`, `ByteClass`, `ByteOffset`); one enum per exclusive state (`Side`, `Halves`, `Descriptor`, `Slot`, `PageRecord`, `Lookup`, `TopChange`, `TombstoneChange`, `Removal`); no sentinel values in the model — they exist only inside wire codecs. |
+| Behaviour in types | Newtypes for ids and units (`NodeId`, `Label`, `Position`, `PageId`, `ByteClass`, `ByteOffset`); one enum per exclusive state (`Direction`, `Halves`, `Descriptor`, `Slot`, `PageRecord`, `Lookup`, `TopChange`, `TombstoneChange`, `Removal`); no sentinel values in the model — they exist only inside wire codecs. |
 | Scan contract | `bucket::read` and `bucket::get` take a `Pages` view: page data only, no directory. A read *cannot* consult allocation metadata. |
 | Encapsulation | Every module is private; `lib.rs` re-exports the public surface and `tests/public-api.txt` snapshots it. Fields are private. |
 | RAII | `SpanTxn` scopes updates that allocate more than once: extents allocated through it are returned on drop unless committed. |
 | All or nothing | An edge insert checks every half and reserves memory for all of them before writing any (see "Both ends"). |
-| DRY | One page store serves edges and per-vertex label lists; one bucket layer serves every label; one index walk serves reads and checks. |
+| DRY | One page store serves edges and per-node label bucket lists; one label bucket layer serves every label; one index walk serves reads and checks. |
 | Lints | The workspace `Cargo.toml` and `clippy.toml`; the gate is `just gate`. |
 
 ## Memories
 
-A graph uses five memories (Gleaph wires each to a stable-memory id):
+A graph uses five memories, each named by a `MemoryRole` (Gleaph wires each to a stable-memory
+id; `Memories::from_fn` builds the set from a function of the role):
 
 | Memory | Holds |
 | --- | --- |
-| vertices | a header and one 8-byte record per vertex: the extent of its bucket list, its bucket count, and whether it is detaching |
+| nodes | a header and one 8-byte record per node: the extent of its label bucket list, its label bucket count, and whether it is detaching |
 | edge pages / edge directory | the edge page store |
-| list pages / list directory | the bucket-list page store |
+| label bucket list pages / directory | the label bucket list page store, and the width table |
 
-Every piece of state lives behind the `Memory` seam, so a graph reopens by reading three headers.
-`Memory` mirrors `ic_stable_structures::Memory`; it is the one public trait taking raw `u64`.
+**Headers.** As in ic-stable-structures, every memory starts with a 3-byte magic and a version
+byte: `LGN` (nodes), `LPS` (a directory) and `LPD` (a pages memory), all at version 1. A page
+store's headers take 64 bytes, and a pages memory's pages start after its header; the nodes
+memory's header takes 16 (with the node count and the width table's reference).
+
+**Layout diagrams.** As in ic-stable-structures, each wire format is drawn in its module's
+documentation: the nodes memory (`graph`), a node record (`node`), the page store's memories and
+`Extent` (`page_store`) and directory record (`page_store::record`), label bucket lists
+(`label_bucket_list`, `tiered`), descriptors (`descriptor`), extended entries and headers
+(`stored`), value planes (`values`), page index entries (`paged`), the target index's nodes and
+leaves (`targets::tree`, `targets::leaf`), and the width table (`graph::widths`).
+
+**Lifecycle**, following ic-stable-structures:
+- `Graph::new` formats all five memories, overwriting what they held, in constant time: every
+  header field is written, and allocation zeroes what it hands out, so nothing old is read.
+- `Graph::load` reopens, reading the five headers.
+- `Graph::init` loads when the nodes memory holds the graph's magic, and calls `new` otherwise. It
+  is the call for a canister's `thread_local!` statics and serves `#[init]` and `#[post_upgrade]`
+  alike.
+- They panic on a failure; `try_new`, `try_load` and `try_init` return `InitError`
+  (`OutOfMemory`, `NotAGraph`, `UnsupportedVersion`). `into_memories` gives the memories back.
+
+Every piece of state lives behind the `Memory` seam. `Memory` mirrors
+`ic_stable_structures::Memory`; it is the one public trait taking raw `u64`. With the
+`ic-stable-structures` feature, `IcMemory` wraps any of that crate's memories (a `VirtualMemory`
+from a `MemoryManager`, say), mapping a failed `grow` (−1) to `GrowFailed`.
 
 ## The page store
 
-Everything is a 4096-byte page. Pages hold data only, at `page_id × 4096`; a separate directory
-holds one 32-byte record per page (free, chunk, or whole). An allocation is an `Extent` of a
-power-of-two byte class from 32 to 4096. Classes below a page are carved from chunk pages: one
-class per page, a 128-bit slot bitmap, and a per-class list of chunk pages with room. Freed pages
-go to one free list and serve any class or use.
+Everything is a 4096-byte page. Pages hold data only, at `64 + page_id × 4096` (after the header); a
+separate directory holds one 32-byte record per page (free, chunk, or whole). An allocation is an
+`Extent` of a power-of-two byte class from 32 to 4096. Classes below a page are carved from chunk
+pages: one class per page, a 128-bit slot bitmap, and a per-class list of chunk pages with room.
+Freed pages go to one free list and serve any class or use.
 
 Chosen over a TLSF span allocator with boundary tags (32 bytes of metadata per span) because
 per-bucket runs are mostly 8-16 slots: counted with metadata, the page store used less memory
@@ -57,13 +82,14 @@ never fails, which is what lets `SpanTxn` roll back in `Drop`.
 
 ## Buckets
 
-Each `(vertex, label, side)` has a bucket with a 16-byte `Descriptor`:
+Each `(node, label, direction)` has a **label bucket** (a bucket, for short, in the rest of this
+document) with a 16-byte `Descriptor`:
 
 - **Tiny**: up to 3 slots inside the descriptor.
 - **Run**: one extent of up to a page (1024 slots), at its front.
 - **Paged**: more than 1024 slots in data pages, listed by a page index.
 
-A slot is an edge or a tombstone (`u32::MAX`, never a vertex id). **Positions count tombstones**
+A slot is an edge or a tombstone (`u32::MAX`, never a node id). **Positions count tombstones**
 and are stable: removal writes a tombstone in place; a run grows by copying its slots, tombstones
 included; a full one-page run becomes data page 0 without copying. Only compaction renumbers
 positions, and it reports each move.
@@ -93,41 +119,41 @@ never needs compaction, so nothing keyed by position is ever re-keyed.
   - A segment that cannot take it (a count or block past its width, a full segment or slot, a new
     first key) goes through a plan instead.
 
-The descriptor size is set by memory: on sparse graphs per-vertex descriptors dominate, and 16
+The descriptor size is set by memory: on sparse graphs per-node descriptors dominate, and 16
 bytes with 3 inline slots used 8-17% less memory than 24 bytes with 5
 (`docs/storage-compare-2026-11-22.md`).
 
 ## Both ends
 
 Every edge is stored at both ends, as two **halves** in one graph: `u → v` is an entry to `v` in
-`u`'s `Out` bucket and an entry to `u` in `v`'s `In` bucket; `u — v` is an entry in each end's
-`Undirected` bucket, and an undirected self-loop is one entry. One graph (not a forward and a
-reverse graph) keeps one set of memories and one bucket list per vertex, and lets an insert check
-both halves before writing either.
+`u`'s `Outgoing` bucket and an entry to `u` in `v`'s `Incoming` bucket; `u — v` is an entry in each
+end's `Undirected` bucket, and an undirected self-loop is one entry. One graph (not a forward and a
+reverse graph) keeps one set of memories and one label bucket list per node, and lets an insert
+check both halves before writing either.
 
-**Halves pair by rank.** The k-th live entry to `v` in `u`'s out bucket is the same edge as the
-k-th live entry to `u` in `v`'s in bucket (Gleaph ADR 0048). Inserts place an entry after every
-live entry to the same vertex, removal takes both halves, and compaction keeps order, so the
-ranks stay aligned without links between halves. `Graph::counterpart` first looks at the smaller of the two
-buckets. If that bucket holds exactly one live entry back to the half's vertex, that entry is the
+**Halves pair by rank.** The k-th live entry to `v` in `u`'s out bucket is the same edge as the k-th
+live entry to `u` in `v`'s in bucket (Gleaph ADR 0048). Inserts place an entry after every live
+entry to the same node, removal takes both halves, and compaction keeps order, so the ranks stay
+aligned without links between halves. `Graph::counterpart` first looks at the smaller of the two
+buckets. If that bucket holds exactly one live entry back to the half's node, that entry is the
 other half. Otherwise it counts in one bucket and selects in the other, and each scan stops at the
 edge it needs. Removing a hub's edge to a leaf therefore never scans the hub.
 
 **The canonical half** is where a caller keys what belongs to the edge (properties, index
-postings): the out half of a directed edge, and the half at the **larger** vertex id of an
+postings): the out half of a directed edge, and the half at the **larger** node id of an
 undirected one. Ids grow in creation order, and hubs tend to be old. So the canonical halves of a
 hub's undirected edges sit in its newer neighbours' small buckets: the keyed data spreads out,
 and compacting a hub moves few canonical halves. `Halves` lists the canonical half first.
 
-**Inserts are all or nothing.** First every check (vertices, bucket count, position overflow),
+**Inserts are all or nothing.** First every check (nodes, bucket count, position overflow),
 then the page stores grow far enough that the inserts cannot fail: an edge-bucket insert takes at
-most `PAGES_PER_INSERT` (4) pages, a bucket-list change three. Then both halves are written.
+most `PAGES_PER_INSERT` (4) pages, a label bucket list change three. Then both halves are written.
 Removal and the reads never allocate.
 
-## Detaching a vertex
+## Detaching a node
 
-A vertex is `Live`, `Detaching` or `Deleted` (`Graph::vertex_state`; two spare bits of its record).
-Ids are never reused. `Graph::detach(v)` marks the vertex `Detaching` in constant time; from then
+A node is `Live`, `Detaching` or `Deleted` (`Graph::node_state`; two spare bits of its record).
+Ids are never reused. `Graph::detach(v)` marks the node `Detaching` in constant time; from then
 on inserts touching it fail with `Error::Detaching`. `Graph::detach_step(v, budget)` removes up to
 `budget` of its edges and reports each one's `Halves`. For each edge:
 
@@ -139,28 +165,28 @@ on inserts touching it fail with `Error::Detaching`. `Graph::detach_step(v, budg
 3. Tombstone both halves. A bucket of v left with only holes is compacted away.
 
 When v has no buckets left, it is `Deleted` for good: inserts touching it fail with
-`Error::Deleted`. The vertex's own buckets are the cursor: nothing
+`Error::Deleted`. The node's own buckets are the cursor: nothing
 else is persisted, so compaction or reopening between steps cannot invalidate a step. Every edge
 is whole or gone at each step boundary, so reads need no filter for half-removed edges.
 
-**Many vertices at once.** `Graph::sweep(v, (label, side), (from, budget), &detaching)` removes
-the edges of one shared bucket (a hub's, say) whose other ends are in a `VertexSet` of detaching
-vertices.
+**Many nodes at once.** `Graph::sweep(v, (label, direction), (from, budget), &detaching)` removes
+the edges of one shared bucket (a hub's, say) whose other ends are in a `NodeSet` of detaching
+nodes.
 - It reads the positions `from..from + budget` in one pass, then removes what it found, both
-  halves of each. The other half is the first live entry to `v` in the detaching vertex's bucket.
-- It returns the edges and where to go on. The detaching vertices' own `detach_step`s then find
+  halves of each. The other half is the first live entry to `v` in the detaching node's bucket.
+- It returns the edges and where to go on. The detaching nodes' own `detach_step`s then find
   those edges gone.
-- `VertexSet` is built once: a bit per id when the ids are close together, else a sorted list.
-- Against `detach_step` one vertex at a time, which pairs each edge through the hub's target
+- `NodeSet` is built once: a bit per id when the ids are close together, else a sorted list.
+- Against `detach_step` one node at a time, which pairs each edge through the hub's target
   index, detaching 1024 / 4096 / 16384 of a 65536-edge hub's neighbours costs 11 / 23 / 23 % less.
-  The rest is fixed per edge: the hub's index change and each vertex's list going away.
+  The rest is fixed per edge: the hub's index change and each node's label bucket list going away.
 
 Compared with ic-stable-lara's `DeleteVertexV1`:
 - there is no unbounded first step and no O(degree) start;
 - the partner is matched by rank, not by "first entry to v";
 - there is no separate pending-purge set.
 
-The survey is in `docs/vertex-detach-2026-11-22.md`.
+The survey is in `docs/node-detach-2026-11-22.md`.
 
 The remaining cost is the neighbour scan: detaching a leaf of a hub scans the hub's bucket up to
 the leaf's entry.
@@ -181,10 +207,10 @@ ic-stable-lara's Tree-CSR). Three levels cover every position a `u32` can name.
 
 ## Compaction
 
-`Graph::compact(v, label, side)` reclaims one bucket's holes in one bounded step and returns every edge
-that moved (old position, new position, target) and whether more remains. It is explicit so the
-caller decides when to pay for moves: Gleaph re-keys sidecar properties and index postings for
-each one. `Graph::holes` tells the caller how much there is to reclaim.
+`Graph::compact(v, label, direction)` reclaims one bucket's holes in one bounded step and returns
+every edge that moved (old position, new position, target) and whether more remains. It is explicit
+so the caller decides when to pay for moves: Gleaph re-keys sidecar properties and index postings
+for each one. `Graph::holes` tells the caller how much there is to reclaim.
 
 Every step packs live edges toward the front, so their relative order holds: insertion order and
 the rank pairing of parallel edges survive without coordinating forward and reverse buckets.
@@ -202,26 +228,27 @@ A step is planned, then applied (`compact::plan`, `compact::apply`). The plan re
 once and lists the moves. The target index's changes are planned from those moves, with their
 pages reserved, before anything is written.
 
-## Bucket lists
+## Label bucket lists
 
-A vertex's buckets are listed in the list page store: 19-byte entries (label, side and
-descriptor) sorted by `(label, side)`.
+A node's label buckets are listed in its **label bucket list**, in the label bucket list page
+store: 19-byte entries (label, direction and descriptor) sorted by `(label, direction)`.
 
-- **Flat**, up to 215 entries (one page). A lookup reads the vertex record and the list once each
+- **Flat**, up to 215 entries (one page). A lookup reads the node record and the list once each
   and searches in memory. Adding a bucket shifts entries or moves the list to the next class.
 - **Tiered**, past that. A top extent lists leaf pages, each with its first key and entry count
   (8 bytes per leaf), and each leaf holds up to a page of entries.
   - A lookup reads the top and one leaf.
   - A full leaf splits into two half-full pages.
   - An emptied leaf is released, and a list down to one leaf turns flat again.
-  - Every change copies at most one page. The top holds 511 leaves: at least ~55 000 buckets
-    when every leaf is half full, and up to ~110 000. Lists are independent per vertex, unlike ic-stable-lara, which packs 16 vertices' lists
-together and rewrites all of them when one outgrows its slack.
+  - Every change copies at most one page. The top holds 511 leaves: at least ~55 000 buckets when
+    every leaf is half full, and up to ~110 000. Lists are independent per node, unlike
+    ic-stable-lara, which packs 16 nodes' lists together and rewrites all of them when one outgrows
+    its slack.
 
-Reading one bucket costs a vertex read, a list read and one data read (index and page reads past
-1024 edges).
-`Graph::visit_neighbors` reads without collecting, at about 30 instructions per edge on the IC.
-`neighbors`, which fills a `Vec`, costs about twice that (`docs/ic-measurements-2026-11-22.md`).
+Reading one bucket costs a node read, a label bucket list read and one data read (index and page
+reads past 1024 edges). `Graph::visit_neighbors` reads without collecting, at about 30 instructions
+per edge on the IC. `neighbors_directed`, which fills a `Vec`, costs about twice that
+(`docs/ic-measurements-2026-11-22.md`).
 
 ## Edge values
 
@@ -242,12 +269,12 @@ the same on every side). Both halves hold the value. The design and its reasons 
   - A bucket gets its plane on its first value write.
   - Any write allocates at most the path to its page: `PAGES_PER_WRITE`, 9 pages.
 - **Where a plane is found.** A bucket with values or a target index keeps a 32-byte header (slot
-  descriptor, plane root, width, index root) and its list entry says `Extended(header)`
+  descriptor, plane root, width, index root) and its label bucket list entry says `Extended(header)`
   (`stored`).
   - Buckets with neither are unchanged.
   - A bucket with values is never tiny.
-- **The width table.** Widths live in a table in the list store, referenced from the vertices
-  header and mirrored in the heap. Only 0 → w is allowed.
+- **The width table.** Widths live in a table in the label bucket list store, referenced from the
+  nodes header and mirrored in the heap. Only 0 → w is allowed.
 - **Reads.**
   - `value` reads one edge; `values_at` reads chosen positions.
   - `visit_values` scans the value plane alone, as the first phase of a values-first traversal.
@@ -294,7 +321,7 @@ postings are usually reached in one descent, by walking the leaf where they star
     merges one pair of neighbours, found by going down from the root: leaves whose counts sum to
     512 or less, or nodes whose children fit one node. A root with one child gives way to it.
     - Keeping one edge in sixteen of a 65536-edge hub, then compacting, brings its index from 53 to
-      13 pages (distinct targets) and from 89 to 11 (random targets among a million vertices).
+      13 pages (distinct targets) and from 89 to 11 (random targets among a million nodes).
   - Batches are planned once in memory, reserved exactly and committed. A block's batch is planned
     before the insert that completes the block; compaction plans its moves.
 - **Leaves are slotted pages of coded segments.** Each segment holds 24-48 postings, coded as
@@ -312,7 +339,7 @@ postings are usually reached in one descent, by walking the leaf where they star
   - A change reads and writes only the segments it touches.
   - Internal nodes keep keys, pages and counts in separate arrays, so a lookup reads only what it
     probes.
-- **A detaching vertex drops its buckets' indexes**, since all their edges are going. Lookups into
+- **A detaching node drops its buckets' indexes**, since all their edges are going. Lookups into
   such a bucket scan it.
 - **Costs.** Measurements and the space it takes are in
   `docs/target-index-design-2026-11-22.md`:

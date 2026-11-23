@@ -1,6 +1,6 @@
-//! The target index of a paged bucket: where the live entries to each vertex are.
+//! The target index of a paged bucket: where the live entries to each node are.
 //!
-//! Positions follow insertion order, so finding a bucket's entries to a given vertex would mean
+//! Positions follow insertion order, so finding a bucket's entries to a given node would mean
 //! scanning it. A paged bucket (a hub's) keeps a **counted B+ tree of postings** beside its slots:
 //! a posting `(target, block, count)` says that `count` live entries to `target` sit among the
 //! [`BLOCK`] positions of `block`. It points at blocks, not positions, so a lookup ends with one

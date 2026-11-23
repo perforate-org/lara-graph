@@ -1,4 +1,4 @@
-//! Bucket operations: insert, remove and read one bucket's edges by position.
+//! Label bucket operations: insert, remove and read one label bucket's edges by position.
 //!
 //! Every operation takes a descriptor and returns the next one; the caller publishes it.
 //!
@@ -14,7 +14,7 @@ use crate::corrupt::corrupt;
 use crate::descriptor::{
     Descriptor, PAGE_SLOTS, Paged, Run, SLOT_BYTES, Slot, TINY_SLOTS, TOMBSTONE, Tiny,
 };
-use crate::id::{Position, VertexId};
+use crate::id::{NodeId, Position};
 use crate::memory::{Memory, WriteError};
 use crate::page_store::{ByteClass, PageId, PageStore, Pages};
 use crate::paged::{self, Leaf};
@@ -46,7 +46,7 @@ pub(crate) enum Spot {
 /// position. Filling a hole never fails: it writes in place.
 pub(crate) fn insert<M: Memory>(
     d: Descriptor,
-    target: VertexId,
+    target: NodeId,
     spot: Spot,
     store: &mut PageStore<M>,
 ) -> Result<(Descriptor, Position), WriteError> {
@@ -73,7 +73,7 @@ pub(crate) fn insert<M: Memory>(
 /// with a hole, by the page index's counts.
 pub(crate) fn hole<M: Memory>(
     d: &Descriptor,
-    target: VertexId,
+    target: NodeId,
     view: &Pages<'_, M>,
     last_paged: impl FnOnce() -> Option<Position>,
 ) -> Option<Position> {
@@ -186,7 +186,7 @@ pub(crate) fn remove<M: Memory>(
     d: Descriptor,
     at: Position,
     store: &PageStore<M>,
-) -> Option<(Descriptor, VertexId)> {
+) -> Option<(Descriptor, NodeId)> {
     if at.index() >= d.stored() {
         return None;
     }
@@ -233,11 +233,7 @@ pub(crate) fn remove<M: Memory>(
 }
 
 /// The live edge at `at`, if any. Reads the descriptor and page data only.
-pub(crate) fn get<M: Memory>(
-    d: &Descriptor,
-    at: Position,
-    view: &Pages<'_, M>,
-) -> Option<VertexId> {
+pub(crate) fn get<M: Memory>(d: &Descriptor, at: Position, view: &Pages<'_, M>) -> Option<NodeId> {
     if at.index() >= d.stored() {
         return None;
     }
@@ -304,7 +300,7 @@ fn tiny_to_run<M: Memory>(
 
 fn run_append<M: Memory>(
     run: Run,
-    target: VertexId,
+    target: NodeId,
     store: &mut PageStore<M>,
 ) -> Result<(Descriptor, Position), WriteError> {
     let edge = Slot::Live(target);
@@ -354,7 +350,7 @@ fn run_append<M: Memory>(
 
 fn paged_append<M: Memory>(
     paged: Paged,
-    target: VertexId,
+    target: NodeId,
     store: &mut PageStore<M>,
 ) -> Result<(Descriptor, Position), WriteError> {
     let edge = Slot::Live(target);
@@ -400,7 +396,7 @@ fn paged_append<M: Memory>(
 
 /// The first hole after the last live edge to `target`: filling it keeps equal-target edges in
 /// insertion order. `None` when there is no such hole.
-fn reusable_hole(slots: &[Slot], target: VertexId) -> Option<usize> {
+fn reusable_hole(slots: &[Slot], target: NodeId) -> Option<usize> {
     let mut hole = None;
     for (i, slot) in slots.iter().enumerate().rev() {
         match slot {
@@ -469,13 +465,11 @@ mod tests {
     /// Short windows read a span in either order, across pages and with holes.
     #[test]
     fn short_windows_read_spans_both_ways() {
-        let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+        let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
         let mut d = Descriptor::EMPTY;
         let total = PAGE_SLOTS + 300;
         for i in 0..total {
-            d = insert(d, VertexId::new(i), Spot::End, &mut store)
-                .unwrap()
-                .0;
+            d = insert(d, NodeId::new(i), Spot::End, &mut store).unwrap().0;
         }
         for at in (0..total).step_by(7) {
             d = remove(d, Position::new(at), &store).unwrap().0;
@@ -507,14 +501,12 @@ mod tests {
     /// two levels deep, and the index's hole counts follow every fill and removal.
     #[test]
     fn holes_are_found_through_a_deep_page_index() {
-        let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+        let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
         let mut d = Descriptor::EMPTY;
         let page_count = paged::FANOUT + 3;
         let total = page_count * PAGE_SLOTS - 5;
         for i in 0..total {
-            d = insert(d, VertexId::new(i), Spot::End, &mut store)
-                .unwrap()
-                .0;
+            d = insert(d, NodeId::new(i), Spot::End, &mut store).unwrap().0;
             // A hole made before the index deepens is counted in the new top.
             if i == 2 * PAGE_SLOTS {
                 d = remove(d, Position::new(3), &store).unwrap().0;
@@ -544,7 +536,7 @@ mod tests {
         };
         check(&d, &store);
         let view = store.pages();
-        let new = VertexId::new(u32::MAX - 1);
+        let new = NodeId::new(u32::MAX - 1);
         // No edge to the target: the first hole. After its last edge: the first hole after it.
         assert_eq!(hole(&d, new, &view, || None), Some(Position::new(holes[0])));
         let after = |at: u32| move || Some(Position::new(at));
@@ -573,19 +565,17 @@ mod tests {
     /// `find` and `visit` start at `from` in every bucket form, including past a page boundary.
     #[test]
     fn searches_start_at_their_position() {
-        let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+        let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
         for total in [3, 10, PAGE_SLOTS * 2 + 7] {
             let mut d = Descriptor::EMPTY;
             for _ in 0..total {
-                d = insert(d, VertexId::new(1), Spot::End, &mut store)
-                    .unwrap()
-                    .0;
+                d = insert(d, NodeId::new(1), Spot::End, &mut store).unwrap().0;
             }
             let view = store.pages();
             for from in [0, 1, total / 2, PAGE_SLOTS + 1, total - 1, total] {
                 let found = find(&d, &view, Position::new(from), |_| true);
                 let expected =
-                    (from < total).then(|| Edge::new(Position::new(from), VertexId::new(1)));
+                    (from < total).then(|| Edge::new(Position::new(from), NodeId::new(1)));
                 assert_eq!(found, expected, "{total} edges, from {from}");
             }
         }

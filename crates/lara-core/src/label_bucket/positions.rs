@@ -3,7 +3,7 @@
 use super::scan::{Span, scan};
 use super::stored_u32;
 use crate::descriptor::{Descriptor, PAGE_SLOTS, Slot};
-use crate::id::{Order, Position, VertexId};
+use crate::id::{NodeId, Order, Position};
 use crate::memory::Memory;
 use crate::page_store::Pages;
 use core::ops::ControlFlow;
@@ -15,7 +15,7 @@ pub(crate) fn read_positions<M: Memory>(
     d: &Descriptor,
     view: &Pages<'_, M>,
     positions: &[Position],
-    mut f: impl FnMut(Position, Option<VertexId>),
+    mut f: impl FnMut(Position, Option<NodeId>),
 ) {
     let mut rest = positions;
     while let Some(&head) = rest.first() {
@@ -40,7 +40,7 @@ fn read_group<M: Memory>(
     d: &Descriptor,
     view: &Pages<'_, M>,
     group: &[Position],
-    f: &mut impl FnMut(Position, Option<VertexId>),
+    f: &mut impl FnMut(Position, Option<NodeId>),
 ) {
     let low = group.first().map_or(0, |p| p.index());
     let high = group.last().map_or(low, |p| p.index() + 1).min(d.stored());
@@ -58,11 +58,11 @@ fn read_range<M: Memory>(
     d: &Descriptor,
     view: &Pages<'_, M>,
     (group, span): (&[Position], Span),
-    f: &mut impl FnMut(Position, Option<VertexId>),
+    f: &mut impl FnMut(Position, Option<NodeId>),
 ) {
     let mut wanted = group.iter().copied().peekable();
     // Reports every wanted position up to `at`: the slot's target at `at`, `None` before it.
-    let mut reach = |at: Position, target: Option<VertexId>| {
+    let mut reach = |at: Position, target: Option<NodeId>| {
         while let Some(p) = wanted.next_if(|p| *p <= at) {
             f(p, if p == at { target } else { None });
         }

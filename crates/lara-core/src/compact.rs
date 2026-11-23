@@ -12,9 +12,9 @@
 //!   fit in one page. No position after them moves. The last page is left to inserts, which
 //!   reuse its holes.
 
-use crate::bucket::{self, byte_len, narrow, run_class, stored_u32};
 use crate::descriptor::{Descriptor, PAGE_SLOTS, Paged, Run, Slot, TINY_SLOTS, Tiny};
 use crate::id::{Edge, Move, Position, Progress};
+use crate::label_bucket::{self, byte_len, narrow, run_class, stored_u32};
 use crate::memory::{Memory, WriteError};
 use crate::page_store::{Extent, PageId, PageStore};
 use crate::paged::{self, Leaf};
@@ -26,7 +26,7 @@ pub(crate) const DEMOTE_AT: u32 = PAGE_SLOTS / 2;
 /// What a step leaves.
 pub(crate) enum Outcome {
     /// The bucket's next descriptor (possibly unchanged).
-    Bucket(Descriptor),
+    LabelBucket(Descriptor),
     /// The bucket has no positions left; its label entry goes.
     Empty,
 }
@@ -42,7 +42,7 @@ pub(crate) struct Step {
 impl Step {
     fn unchanged(d: Descriptor) -> Self {
         Self {
-            outcome: Outcome::Bucket(d),
+            outcome: Outcome::LabelBucket(d),
             moves: Vec::new(),
             progress: Progress::Done,
             hollowed: None,
@@ -143,7 +143,7 @@ pub(crate) fn apply<M: Memory>(
         }
         Action::Page(paged, action, edges) => match page_step(paged, action, &edges, store) {
             Some(hollowed) => (
-                Outcome::Bucket(Descriptor::Paged(paged)),
+                Outcome::LabelBucket(Descriptor::Paged(paged)),
                 Progress::Remaining,
                 Some(hollowed),
             ),
@@ -316,7 +316,7 @@ fn rebuild<M: Memory>(
         let tiny = edges
             .iter()
             .fold(Tiny::EMPTY, |t, e| t.push(Slot::Live(e.target())));
-        return Ok(Outcome::Bucket(Descriptor::Tiny(tiny)));
+        return Ok(Outcome::LabelBucket(Descriptor::Tiny(tiny)));
     }
     let extent = match reuse {
         Some(extent) => extent,
@@ -328,7 +328,7 @@ fn rebuild<M: Memory>(
         .collect();
     store.write(extent.offset(), &bytes);
     let packed = narrow(count);
-    Ok(Outcome::Bucket(Descriptor::Run(Run {
+    Ok(Outcome::LabelBucket(Descriptor::Run(Run {
         extent,
         stored: packed,
         live: packed,
@@ -337,7 +337,7 @@ fn rebuild<M: Memory>(
 
 fn live_edges<M: Memory>(d: &Descriptor, store: &PageStore<M>) -> Vec<Edge> {
     let mut edges = Vec::new();
-    bucket::read(d, &store.pages(), &mut edges);
+    label_bucket::read(d, &store.pages(), &mut edges);
     edges
 }
 

@@ -3,9 +3,43 @@
 //!
 //! Positions count tombstones: a bucket's `stored` positions are `0..stored`, `live` of them hold
 //! an edge. The three modes are exclusive, so they are one enum.
+//!
+//! # Layouts
+//!
+//! Each is 16 bytes. A slot is a node id, `u32::MAX` for a tombstone.
+//!
+//! ```text
+//! ---------------------------------------- <- Tiny
+//! Kind (1)                        ↕ 1 byte
+//! ----------------------------------------
+//! Slots in use                    ↕ 1 byte
+//! ----------------------------------------
+//! Reserved space                  ↕ 2 bytes
+//! ----------------------------------------
+//! Slot 0, 1, 2                    ↕ 3 × 4 bytes
+//! ---------------------------------------- <- Run: slots at the front of one extent
+//! Kind (2)                        ↕ 1 byte
+//! ----------------------------------------
+//! Stored positions                ↕ 2 bytes
+//! ----------------------------------------
+//! Live positions                  ↕ 2 bytes
+//! ----------------------------------------
+//! Extent                          ↕ 7 bytes
+//! ----------------------------------------
+//! Reserved space                  ↕ 4 bytes
+//! ---------------------------------------- <- Paged: 1024 slots per data page
+//! Kind (3)                        ↕ 1 byte
+//! ----------------------------------------
+//! Stored positions                ↕ 4 bytes
+//! ----------------------------------------
+//! Live positions                  ↕ 4 bytes
+//! ----------------------------------------
+//! Page index top extent           ↕ 7 bytes
+//! ----------------------------------------
+//! ```
 
 use crate::corrupt::corrupt;
-use crate::id::VertexId;
+use crate::id::NodeId;
 use crate::page_store::{EXTENT_BYTES, Extent};
 
 /// Bytes per descriptor.
@@ -20,11 +54,11 @@ pub(crate) const SLOT_BYTES: u32 = 4;
 /// A stored slot: an edge, or the tombstone of a removed one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Slot {
-    Live(VertexId),
+    Live(NodeId),
     Tombstone,
 }
 
-/// The reserved slot value of a tombstone; never a vertex id.
+/// The reserved slot value of a tombstone; never a node id.
 pub(crate) const TOMBSTONE: u32 = u32::MAX;
 
 impl Slot {
@@ -38,7 +72,7 @@ impl Slot {
     pub(crate) fn decode(bytes: [u8; 4]) -> Self {
         match u32::from_le_bytes(bytes) {
             TOMBSTONE => Self::Tombstone,
-            raw => Self::Live(VertexId::new(raw)),
+            raw => Self::Live(NodeId::new(raw)),
         }
     }
 
@@ -157,10 +191,7 @@ impl Descriptor {
         }
     }
 
-    // Layouts:
-    //   Tiny:  kind | len u8 | 2 reserved | 3 x slot u32
-    //   Run:   kind | stored u16 | live u16 | extent (7) | 4 reserved
-    //   Paged: kind | stored u32 | live u32 | index extent (7)
+    /// As the module's layout diagrams show.
     pub(crate) fn encode(&self) -> [u8; DESCRIPTOR_BYTES] {
         match self {
             Self::Tiny(tiny) => {
@@ -245,7 +276,7 @@ mod tests {
     fn descriptors_round_trip() {
         let extent = Extent::new(PageId::new(9), 3, ByteClass::for_bytes(64).unwrap());
         let tiny = Tiny::EMPTY
-            .push(Slot::Live(VertexId::new(7)))
+            .push(Slot::Live(NodeId::new(7)))
             .push(Slot::Tombstone);
         for d in [
             Descriptor::EMPTY,

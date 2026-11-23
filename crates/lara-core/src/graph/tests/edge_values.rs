@@ -17,7 +17,7 @@ fn valued_edges(g: &mut Graph<&VecMemory>, label: Label, n: u32, width: usize) -
     (0..n)
         .map(|i| {
             let value = val(u8::try_from(i % 251).unwrap(), width);
-            g.insert_directed(v(0), label, v(1), Placement::Append, &value)
+            g.add_edge(v(0), label, v(1), Placement::Append, &value)
                 .unwrap()
                 .canonical()
         })
@@ -38,13 +38,23 @@ fn compaction_moves_values_with_their_edges() {
                 g.remove_edge(*half).unwrap();
             }
         }
-        while g.compact(v(0), l(0), Side::Out).unwrap().progress() == Progress::Remaining {}
-        g.compact(v(1), l(0), Side::In).unwrap();
+        while g
+            .compact(v(0), l(0), Direction::Outgoing)
+            .unwrap()
+            .progress()
+            == Progress::Remaining
+        {}
+        g.compact(v(1), l(0), Direction::Incoming).unwrap();
         let mut seen = Vec::new();
-        g.visit_neighbors_with_values(v(0), (l(0), Side::Out), Order::Ascending, |_, value| {
-            seen.push(value.to_vec());
-            ControlFlow::<()>::Continue(())
-        })
+        g.visit_neighbors_with_values(
+            v(0),
+            (l(0), Direction::Outgoing),
+            Order::Ascending,
+            |_, value| {
+                seen.push(value.to_vec());
+                ControlFlow::<()>::Continue(())
+            },
+        )
         .unwrap();
         let want: Vec<Vec<u8>> = (0..n)
             .filter(|i| i % 5 == 0)
@@ -74,15 +84,20 @@ fn a_values_first_scan_skips_dead_pages_but_reads_past_them() {
     }
     let mut seen = 0u32;
     let mut last = None;
-    g.visit_values(v(0), (l(0), Side::Out), Order::Ascending, |at, _| {
-        assert!(
-            !(PAGE_SLOTS..2 * PAGE_SLOTS).contains(&at.index()),
-            "dead page read"
-        );
-        seen += 1;
-        last = Some(at);
-        ControlFlow::<()>::Continue(())
-    })
+    g.visit_values(
+        v(0),
+        (l(0), Direction::Outgoing),
+        Order::Ascending,
+        |at, _| {
+            assert!(
+                !(PAGE_SLOTS..2 * PAGE_SLOTS).contains(&at.index()),
+                "dead page read"
+            );
+            seen += 1;
+            last = Some(at);
+            ControlFlow::<()>::Continue(())
+        },
+    )
     .unwrap();
     assert_eq!((seen, last), (2 * PAGE_SLOTS, Some(p(3 * PAGE_SLOTS - 1))));
 }
@@ -92,10 +107,10 @@ fn values_have_the_labels_width_and_edges_before_it_read_as_zeros() {
     let backing = Backing::default();
     let mut g = backing.create(2);
     let early = g
-        .insert_directed(v(0), l(0), v(1), Placement::ReuseHoles, &[])
+        .add_edge(v(0), l(0), v(1), Placement::ReuseHoles, &[])
         .unwrap();
     assert_eq!(
-        g.insert_directed(v(0), l(0), v(1), Placement::ReuseHoles, &[1]),
+        g.add_edge(v(0), l(0), v(1), Placement::ReuseHoles, &[1]),
         Err(Error::WrongValueLength {
             label: l(0),
             expected: 0,
@@ -103,9 +118,9 @@ fn values_have_the_labels_width_and_edges_before_it_read_as_zeros() {
         })
     );
     g.declare_width(l(0), w(2)).unwrap();
-    assert_eq!(g.value(early.other()), Ok(Some(vec![0, 0])));
+    assert_eq!(g.edge_value(early.other()), Ok(Some(vec![0, 0])));
     assert_eq!(
-        g.insert_directed(v(0), l(0), v(1), Placement::ReuseHoles, &[]),
+        g.add_edge(v(0), l(0), v(1), Placement::ReuseHoles, &[]),
         Err(Error::WrongValueLength {
             label: l(0),
             expected: 2,
@@ -114,18 +129,18 @@ fn values_have_the_labels_width_and_edges_before_it_read_as_zeros() {
     );
     // The early edge's tiny buckets get value planes when it is first given a value.
     assert_eq!(
-        g.set_value(early.canonical(), &[7, 8]),
+        g.set_edge_value(early.canonical(), &[7, 8]),
         Ok(Some(vec![0, 0]))
     );
-    assert_eq!(g.value(early.other()), Ok(Some(vec![7, 8])));
+    assert_eq!(g.edge_value(early.other()), Ok(Some(vec![7, 8])));
     let late = g
-        .insert_directed(v(0), l(0), v(1), Placement::ReuseHoles, &[9, 9])
+        .add_edge(v(0), l(0), v(1), Placement::ReuseHoles, &[9, 9])
         .unwrap();
     assert_eq!(
         g.remove_edge(late.other()),
         Ok(Removal::Removed(RemovedEdge::new(late, vec![9, 9])))
     );
-    assert_eq!(g.value(late.canonical()), Ok(None));
+    assert_eq!(g.edge_value(late.canonical()), Ok(None));
     check(&g);
     check(&backing.open());
 }
@@ -138,7 +153,7 @@ fn an_insert_with_a_value_that_runs_out_of_memory_changes_nothing() {
     valued_edges(&mut g, l(0), 3, 4096);
     let before = (
         edges(&g, v(0), l(0)),
-        g.value(EdgeRef::new(v(0), l(0), Side::Out, p(2))),
+        g.edge_value(EdgeRef::new(v(0), l(0), Direction::Outgoing, p(2))),
     );
     let memory = &backing.memories[1];
     memory.cap(memory.size());
@@ -147,11 +162,11 @@ fn an_insert_with_a_value_that_runs_out_of_memory_changes_nothing() {
     while capacity - g.edges.minted() > 3 {
         held.push(g.edges.allocate(ByteClass::PAGE).unwrap());
     }
-    let error = g.insert_directed(v(0), l(0), v(1), Placement::Append, &val(1, 4096));
+    let error = g.add_edge(v(0), l(0), v(1), Placement::Append, &val(1, 4096));
     assert!(matches!(error, Err(Error::OutOfMemory(_))), "{error:?}");
     let after = (
         edges(&g, v(0), l(0)),
-        g.value(EdgeRef::new(v(0), l(0), Side::Out, p(2))),
+        g.edge_value(EdgeRef::new(v(0), l(0), Direction::Outgoing, p(2))),
     );
     assert_eq!(after, before);
     for extent in held {
@@ -175,7 +190,7 @@ fn compaction_releases_the_value_pages_it_empties() {
         g.remove_edge(*half).unwrap();
     }
     let before = pages(&g);
-    g.compact(v(0), l(0), Side::Out).unwrap();
+    g.compact(v(0), l(0), Direction::Outgoing).unwrap();
     assert!(
         before - pages(&g) >= 17,
         "slot page and value pages released"
@@ -186,8 +201,13 @@ fn compaction_releases_the_value_pages_it_empties() {
         g.remove_edge(*half).unwrap();
     }
     let before = pages(&g);
-    while g.compact(v(0), l(0), Side::Out).unwrap().progress() == Progress::Remaining {}
+    while g
+        .compact(v(0), l(0), Direction::Outgoing)
+        .unwrap()
+        .progress()
+        == Progress::Remaining
+    {}
     assert!(before - pages(&g) >= 30, "{before} → {}", pages(&g));
-    assert_eq!(g.value(halves[0]), Ok(Some(val(0, 64))));
+    assert_eq!(g.edge_value(halves[0]), Ok(Some(val(0, 64))));
     check(&g);
 }

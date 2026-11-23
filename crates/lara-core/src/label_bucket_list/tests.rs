@@ -5,22 +5,22 @@ use crate::descriptor::{Descriptor, Tiny};
 use crate::memory::VecMemory;
 use alloc::collections::BTreeSet;
 
-fn key(i: u32) -> BucketKey {
-    let side = match i % 3 {
-        0 => Side::Out,
-        1 => Side::In,
-        _ => Side::Undirected,
+fn key(i: u32) -> LabelBucketKey {
+    let direction = match i % 3 {
+        0 => Direction::Outgoing,
+        1 => Direction::Incoming,
+        _ => Direction::Undirected,
     };
-    BucketKey {
+    LabelBucketKey {
         label: Label::new(u16::try_from(i / 3).unwrap()),
-        side,
+        direction,
     }
 }
 
 /// A descriptor that names its key, so a misplaced one shows.
 fn descriptor(i: u32) -> Stored {
     let tiny = (0..i % 3).fold(Tiny::EMPTY, |t, _| {
-        t.push(crate::descriptor::Slot::Live(crate::id::VertexId::new(i)))
+        t.push(crate::descriptor::Slot::Live(crate::id::NodeId::new(i)))
     });
     Stored::Plain(Descriptor::Tiny(tiny))
 }
@@ -29,9 +29,13 @@ fn ext_key(e: Extent) -> (u32, u64, u8) {
     (e.page().get(), e.offset().get(), e.class().log2())
 }
 
-fn assert_matches(store: &PageStore<VecMemory>, list: Option<BucketList>, model: &BTreeSet<u32>) {
+fn assert_matches(
+    store: &PageStore<VecMemory>,
+    list: Option<LabelBucketList>,
+    model: &BTreeSet<u32>,
+) {
     let view = store.pages();
-    let expected: Vec<(BucketKey, Stored)> =
+    let expected: Vec<(LabelBucketKey, Stored)> =
         model.iter().map(|&i| (key(i), descriptor(i))).collect();
     assert_eq!(entries(&view, list), expected);
     if let Some(list) = list {
@@ -58,7 +62,7 @@ fn assert_matches(store: &PageStore<VecMemory>, list: Option<BucketList>, model:
 
 #[test]
 fn random_adds_and_removes_match_a_sorted_map_through_both_shapes() {
-    let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+    let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
     let mut list = None;
     let mut model = BTreeSet::new();
     let mut state = 0x9E37_79B9_7F4A_7C15u64;
@@ -87,7 +91,7 @@ fn random_adds_and_removes_match_a_sorted_map_through_both_shapes() {
             }
             Lookup::Absent { .. } => {}
         }
-        tiered_seen |= matches!(list, Some(BucketList(Shape::Tiered { .. })));
+        tiered_seen |= matches!(list, Some(LabelBucketList(Shape::Tiered { .. })));
         assert_matches(&store, list, &model);
         assert_eq!(decode_ref(encode_ref(list)), list);
     }
@@ -96,7 +100,7 @@ fn random_adds_and_removes_match_a_sorted_map_through_both_shapes() {
 
 #[test]
 fn a_full_top_refuses_more_and_a_one_leaf_list_turns_flat() {
-    let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+    let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
     let mut list = None;
     let mut added = 0u32;
     // Ascending keys always land in the last leaf, which splits in half when full.
@@ -118,7 +122,7 @@ fn a_full_top_refuses_more_and_a_one_leaf_list_turns_flat() {
         };
         list = remove(&mut store, list.unwrap(), entry);
     }
-    assert!(matches!(list, Some(BucketList(Shape::Flat { .. }))));
+    assert!(matches!(list, Some(LabelBucketList(Shape::Flat { .. }))));
     let model: BTreeSet<u32> = (added - 2..added).collect();
     assert_matches(&store, list, &model);
 }

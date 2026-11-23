@@ -1,24 +1,24 @@
 //! Public identifiers.
 
-/// A vertex. Vertices are dense: a graph with `n` vertices has ids `0..n`.
+/// A node. Nodes are dense: a graph with `n` nodes has ids `0..n`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct VertexId(u32);
+pub struct NodeId(u32);
 
-impl VertexId {
-    /// The vertex with dense index `index`.
+impl NodeId {
+    /// The node with dense index `index`.
     #[must_use]
     pub const fn new(index: u32) -> Self {
         Self(index)
     }
 
-    /// The dense index of this vertex.
+    /// The dense index of this node.
     #[must_use]
     pub const fn index(self) -> u32 {
         self.0
     }
 }
 
-/// An edge label. Each `(vertex, label)` pair has its own bucket of edges; labels order
+/// An edge label. Each `(node, label)` pair has its own bucket of edges; labels order
 /// buckets by their raw value (callers may pack flags such as directedness into it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Label(u16);
@@ -128,15 +128,15 @@ pub enum Placement {
     /// Always after every stored position, so position order is insertion order (Gleaph's
     /// `Insertion` order). Holes stay until compaction, which keeps the order.
     Append,
-    /// Into the first hole after the last live edge to the same vertex, anywhere in the bucket,
+    /// Into the first hole after the last live edge to the same node, anywhere in the bucket,
     /// else after every stored position. Fills holes without compaction, so positions stay
     /// stable; they do not follow insertion order (Gleaph's `Unordered`).
     ReuseHoles,
 }
 
-/// Where a vertex is in its life. Vertex ids are never reused.
+/// Where a node is in its life. Node ids are never reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum VertexState {
+pub enum NodeState {
     /// Takes and holds edges.
     Live,
     /// Being deleted: its edges are removed step by step and it takes no new ones.
@@ -145,18 +145,18 @@ pub enum VertexState {
     Deleted,
 }
 
-/// Which of a vertex's adjacencies a bucket holds.
+/// Which of a node's adjacencies a bucket holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Side {
-    /// Directed edges leaving the vertex.
-    Out,
-    /// Directed edges entering the vertex.
-    In,
-    /// Undirected edges at the vertex.
+pub enum Direction {
+    /// Directed edges leaving the node.
+    Outgoing,
+    /// Directed edges entering the node.
+    Incoming,
+    /// Undirected edges at the node.
     Undirected,
 }
 
-/// A position in one `(vertex, label)` bucket. Positions count removed edges, so an edge keeps
+/// A position in one `(node, label)` bucket. Positions count removed edges, so an edge keeps
 /// its position until the bucket is compacted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Position(u32);
@@ -179,11 +179,11 @@ impl Position {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Edge {
     position: Position,
-    target: VertexId,
+    target: NodeId,
 }
 
 impl Edge {
-    pub(crate) const fn new(position: Position, target: VertexId) -> Self {
+    pub(crate) const fn new(position: Position, target: NodeId) -> Self {
         Self { position, target }
     }
 
@@ -193,9 +193,9 @@ impl Edge {
         self.position
     }
 
-    /// The vertex the edge points to.
+    /// The node the edge points to.
     #[must_use]
-    pub const fn target(&self) -> VertexId {
+    pub const fn target(&self) -> NodeId {
         self.target
     }
 }
@@ -205,11 +205,11 @@ impl Edge {
 pub struct Move {
     from: Position,
     to: Position,
-    target: VertexId,
+    target: NodeId,
 }
 
 impl Move {
-    pub(crate) const fn new(from: Position, to: Position, target: VertexId) -> Self {
+    pub(crate) const fn new(from: Position, to: Position, target: NodeId) -> Self {
         Self { from, to, target }
     }
 
@@ -225,40 +225,40 @@ impl Move {
         self.to
     }
 
-    /// The vertex the edge points to.
+    /// The node the edge points to.
     #[must_use]
-    pub const fn target(&self) -> VertexId {
+    pub const fn target(&self) -> NodeId {
         self.target
     }
 }
 
-/// One half of an edge: its entry in one bucket. A directed edge `u → v` has an [`Side::Out`]
-/// half at `u` and an [`Side::In`] half at `v`; an undirected edge `u — v` has a
-/// [`Side::Undirected`] half at each end, and a single one when `u = v`.
+/// One half of an edge: its entry in one bucket. A directed edge `u → v` has an
+/// [`Direction::Outgoing`] half at `u` and an [`Direction::Incoming`] half at `v`; an undirected
+/// edge `u — v` has a [`Direction::Undirected`] half at each end, and a single one when `u = v`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EdgeRef {
-    vertex: VertexId,
+    node: NodeId,
     label: Label,
-    side: Side,
+    direction: Direction,
     position: Position,
 }
 
 impl EdgeRef {
-    /// The entry at `position` in `vertex`'s `(label, side)` bucket.
+    /// The entry at `position` in `node`'s `(label, direction)` bucket.
     #[must_use]
-    pub const fn new(vertex: VertexId, label: Label, side: Side, position: Position) -> Self {
+    pub const fn new(node: NodeId, label: Label, direction: Direction, position: Position) -> Self {
         Self {
-            vertex,
+            node,
             label,
-            side,
+            direction,
             position,
         }
     }
 
-    /// The vertex whose bucket holds this half.
+    /// The node whose bucket holds this half.
     #[must_use]
-    pub const fn vertex(&self) -> VertexId {
-        self.vertex
+    pub const fn node(&self) -> NodeId {
+        self.node
     }
 
     /// The edge's label.
@@ -267,10 +267,10 @@ impl EdgeRef {
         self.label
     }
 
-    /// Which bucket of the vertex.
+    /// Which bucket of the node.
     #[must_use]
-    pub const fn side(&self) -> Side {
-        self.side
+    pub const fn direction(&self) -> Direction {
+        self.direction
     }
 
     /// The position in that bucket.
@@ -282,16 +282,16 @@ impl EdgeRef {
 
 /// The halves of one edge, the canonical one first: where a caller keys what belongs to the
 /// edge (properties, index postings). For a directed edge it is the out half; for an undirected
-/// edge, the half at the larger vertex id. Ids grow in creation order and hubs tend to be old, so
+/// edge, the half at the larger node id. Ids grow in creation order and hubs tend to be old, so
 /// this puts a hub's undirected edges' canonical halves in its newer neighbours' small buckets:
 /// the keyed data spreads out, and compacting a hub moves few canonical halves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Halves {
     /// An edge stored at both ends.
     Pair {
-        /// The out half, or the undirected half at the larger vertex.
+        /// The out half, or the undirected half at the larger node.
         canonical: EdgeRef,
-        /// The in half, or the undirected half at the smaller vertex.
+        /// The in half, or the undirected half at the smaller node.
         other: EdgeRef,
     },
     /// An undirected self-loop: its one entry is both halves.
@@ -307,7 +307,7 @@ impl Halves {
         }
     }
 
-    /// The canonical half: the out half, or the undirected half at the larger vertex.
+    /// The canonical half: the out half, or the undirected half at the larger node.
     #[must_use]
     pub const fn canonical(&self) -> EdgeRef {
         match *self {

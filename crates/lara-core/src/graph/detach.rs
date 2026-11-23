@@ -1,18 +1,18 @@
-//! Detaching a vertex: removing its edges a bounded step at a time.
+//! Detaching a node: removing its edges a bounded step at a time.
 
 use super::index::indexed;
 use super::pair::{Found, opposite, order};
 use super::{Detachment, Error, Graph, Step, Sweep};
-use crate::bucket::{self, Span, Window};
 use crate::corrupt::corrupt;
 use crate::id::{
-    EdgeRef, Label, Order, Position, Progress, RemovedEdge, Side, VertexId, VertexState,
+    Direction, EdgeRef, Label, NodeId, NodeState, Order, Position, Progress, RemovedEdge,
 };
-use crate::labels::{self, BucketKey};
+use crate::label_bucket::{self, Span, Window};
+use crate::label_bucket_list::{self, LabelBucketKey};
 use crate::memory::Memory;
-use crate::stored::{Bucket, Index};
-use crate::vertex::Record;
-use crate::vertex_set::VertexSet;
+use crate::node::Record;
+use crate::node_set::NodeSet;
+use crate::stored::{Index, LabelBucket};
 use alloc::vec::Vec;
 use core::num::NonZeroU32;
 use core::ops::ControlFlow;
@@ -24,25 +24,25 @@ impl<M: Memory> Graph<M> {
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`], or [`Error::Deleted`] if it is already deleted.
-    pub fn detach(&mut self, v: VertexId) -> Result<(), Error> {
+    /// [`Error::UnknownNode`], or [`Error::Deleted`] if it is already deleted.
+    pub fn detach(&mut self, v: NodeId) -> Result<(), Error> {
         let record = self.record(v)?;
-        if record.state == VertexState::Deleted {
+        if record.state == NodeState::Deleted {
             return Err(Error::Deleted(v));
         }
         self.write_record(
             v,
             Record {
-                state: VertexState::Detaching,
+                state: NodeState::Detaching,
                 ..record
             },
         );
         Ok(())
     }
 
-    /// Removes up to `budget` of a detaching vertex's edges, both halves of each, and reports
+    /// Removes up to `budget` of a detaching node's edges, both halves of each, and reports
     /// them. Between steps the graph is whole: every edge is either present at both ends or gone.
-    /// When `v` has no edges left it is [`VertexState::Deleted`] and the step is
+    /// When `v` has no edges left it is [`NodeState::Deleted`] and the step is
     /// [`Progress::Done`].
     ///
     /// Each edge costs a read of `v`'s next live entry and a scan of the neighbour's bucket up to
@@ -50,40 +50,41 @@ impl<M: Memory> Graph<M> {
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`], or [`Error::NotDetaching`] unless [`Self::detach`] was called.
-    pub fn detach_step(&mut self, v: VertexId, budget: NonZeroU32) -> Result<Detachment, Error> {
-        if self.record(v)?.state != VertexState::Detaching {
+    /// [`Error::UnknownNode`], or [`Error::NotDetaching`] unless [`Self::detach`] was called.
+    pub fn detach_step(&mut self, v: NodeId, budget: NonZeroU32) -> Result<Detachment, Error> {
+        if self.record(v)?.state != NodeState::Detaching {
             return Err(Error::NotDetaching(v));
         }
         let mut removed = Vec::new();
         // In `v`'s bucket being drained (always its first, until it goes): positions before
         // hold no live entry.
-        let mut cursor: Option<(BucketKey, Position)> = None;
+        let mut cursor: Option<(LabelBucketKey, Position)> = None;
         // In the neighbour bucket of the last edge: positions before hold no live entry to `v`.
         // Parallel edges to one neighbour follow each other there; any other bucket is scanned
         // from its start, or reached through its target index.
-        let mut hint: Option<((VertexId, BucketKey), Position)> = None;
+        let mut hint: Option<((NodeId, LabelBucketKey), Position)> = None;
         for _ in 0..budget.get() {
-            let list = self.list(v)?;
+            let list = self.label_bucket_list(v)?;
             let Some((entry, key, stored)) =
-                list.map(|list| labels::first(&self.lists.pages(), list))
+                list.map(|list| label_bucket_list::first(&self.label_bucket_lists.pages(), list))
             else {
                 break;
             };
             let found = self.draining(Found {
                 entry,
-                bucket: Bucket::resolve(&self.edges.pages(), stored),
+                bucket: LabelBucket::resolve(&self.edges.pages(), stored),
             });
             let from = start_in(cursor, &key);
-            let first = bucket::find(&found.bucket.slots, &self.edges.pages(), from, |_| true);
+            let first =
+                label_bucket::find(&found.bucket.slots, &self.edges.pages(), from, |_| true);
             let Some(edge) = first else {
                 // All holes: compaction drops the bucket without moving anything.
-                self.compact(v, key.label, key.side)?;
+                self.compact(v, key.label, key.direction)?;
                 (cursor, hint) = (None, None);
                 continue;
             };
             cursor = Some((key, edge.position()));
-            let half = EdgeRef::new(v, key.label, key.side, edge.position());
+            let half = EdgeRef::new(v, key.label, key.direction, edge.position());
             let theirs_key = (edge.target(), opposite_key(half));
             let from = start_in(hint, &theirs_key);
             let (theirs, other) = self.first_half_from(v, half, (edge.target(), from));
@@ -91,12 +92,12 @@ impl<M: Memory> Graph<M> {
             hint = Some((theirs_key, other.position()));
             removed.push(self.take_pair((found, half), (theirs, other)));
         }
-        let progress = if self.list(v)?.is_none() {
+        let progress = if self.label_bucket_list(v)?.is_none() {
             self.write_record(
                 v,
                 Record {
                     list: None,
-                    state: VertexState::Deleted,
+                    state: NodeState::Deleted,
                 },
             );
             Progress::Done
@@ -106,10 +107,10 @@ impl<M: Memory> Graph<M> {
         Ok(Step::new(removed, progress))
     }
 
-    /// Removes the edges of `v`'s `(label, side)` bucket whose other ends are in `detaching`,
+    /// Removes the edges of `v`'s `(label, direction)` bucket whose other ends are in `detaching`,
     /// both halves of each, looking at up to `budget` positions from `from`. One pass over a
-    /// bucket that many detaching vertices share (a hub's, say) removes their edges to it for less
-    /// than [`Self::detach_step`] does one vertex at a time, which pairs each edge through the
+    /// bucket that many detaching nodes share (a hub's, say) removes their edges to it for less
+    /// than [`Self::detach_step`] does one node at a time, which pairs each edge through the
     /// shared bucket's target index. Their own buckets are left with holes, which their
     /// [`Self::detach_step`]s then pass over.
     ///
@@ -118,22 +119,22 @@ impl<M: Memory> Graph<M> {
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`], or [`Error::NotDetaching`] for a vertex in `detaching` that is
+    /// [`Error::UnknownNode`], or [`Error::NotDetaching`] for a node in `detaching` that is
     /// live; then nothing changed. A deleted one is fine: it has no edges left.
     pub fn sweep(
         &mut self,
-        v: VertexId,
-        (label, side): (Label, Side),
+        v: NodeId,
+        (label, direction): (Label, Direction),
         (from, budget): (Position, NonZeroU32),
-        detaching: &VertexSet,
+        detaching: &NodeSet,
     ) -> Result<Sweep, Error> {
         for d in detaching.iter() {
-            if self.record(d)?.state == VertexState::Live {
+            if self.record(d)?.state == NodeState::Live {
                 return Err(Error::NotDetaching(d));
             }
         }
-        let key = BucketKey { label, side };
-        let Some(found) = self.find_bucket(v, key)? else {
+        let key = LabelBucketKey { label, direction };
+        let Some(found) = self.find_label_bucket(v, key)? else {
             return Ok(Sweep::new(Vec::new(), None));
         };
         let stored = found.bucket.slots.stored();
@@ -141,7 +142,7 @@ impl<M: Memory> Graph<M> {
         // One pass finds the edges; positions stay put as they go, so they are removed after.
         let mut doomed = Vec::new();
         let span = Span::new(from.index(), high, Order::Ascending);
-        bucket::visit(
+        label_bucket::visit(
             &found.bucket.slots,
             &self.edges.pages(),
             span,
@@ -156,7 +157,7 @@ impl<M: Memory> Graph<M> {
         let mut removed = Vec::with_capacity(doomed.len());
         for edge in doomed {
             let found = self.present(v, key);
-            let half = EdgeRef::new(v, label, side, edge.position());
+            let half = EdgeRef::new(v, label, direction, edge.position());
             let (theirs, other) = self.first_half_from(v, half, (edge.target(), Position::new(0)));
             removed.push(self.take_pair((found, half), (theirs, other)));
         }
@@ -185,7 +186,7 @@ impl<M: Memory> Graph<M> {
         RemovedEdge::new(halves, value)
     }
 
-    /// A detaching vertex's bucket without its target index: all its edges are going, so
+    /// A detaching node's bucket without its target index: all its edges are going, so
     /// keeping the index in step would only cost. Lookups into it scan instead. Within reserved
     /// memory (releasing allocates nothing).
     fn draining(&mut self, found: Found) -> Found {
@@ -203,9 +204,9 @@ impl<M: Memory> Graph<M> {
     /// `from`: positions before it hold no live entry to `v`.
     fn first_half_from(
         &self,
-        v: VertexId,
+        v: NodeId,
         half: EdgeRef,
-        (other, from): (VertexId, Position),
+        (other, from): (NodeId, Position),
     ) -> (Found, EdgeRef) {
         let key = opposite_key(half);
         let theirs = self.present(other, key);
@@ -213,21 +214,21 @@ impl<M: Memory> Graph<M> {
         let at = if indexed(&theirs.bucket).is_some() {
             self.select_to(&theirs.bucket, v, 0)
         } else {
-            bucket::find(&theirs.bucket.slots, &self.edges.pages(), from, |e| {
+            label_bucket::find(&theirs.bucket.slots, &self.edges.pages(), from, |e| {
                 e.target() == v
             })
             .map(|e| e.position())
         }
         .unwrap_or_else(|| corrupt("an edge half without its counterpart"));
-        (theirs, EdgeRef::new(other, key.label, key.side, at))
+        (theirs, EdgeRef::new(other, key.label, key.direction, at))
     }
 }
 
 /// The key of the bucket that holds the other half of `half`.
-const fn opposite_key(half: EdgeRef) -> BucketKey {
-    BucketKey {
+const fn opposite_key(half: EdgeRef) -> LabelBucketKey {
+    LabelBucketKey {
         label: half.label(),
-        side: opposite(half.side()),
+        direction: opposite(half.direction()),
     }
 }
 

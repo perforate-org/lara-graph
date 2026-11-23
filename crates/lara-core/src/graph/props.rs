@@ -2,10 +2,10 @@
 
 use super::pair::{Found, key_of};
 use super::{Error, Graph, reserved};
-use crate::bucket::{self, Span, Window, stored_u32};
 use crate::descriptor::{Descriptor, PAGE_SLOTS};
-use crate::id::{Edge, EdgeRef, Label, Order, Position, Side, VertexId, Width};
-use crate::labels::BucketKey;
+use crate::id::{Direction, Edge, EdgeRef, Label, NodeId, Order, Position, Width};
+use crate::label_bucket::{self, Span, Window, stored_u32};
+use crate::label_bucket_list::LabelBucketKey;
 use crate::memory::Memory;
 use crate::page_store::Pages;
 use crate::paged;
@@ -21,9 +21,13 @@ impl<M: Memory> Graph<M> {
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`], [`Error::WrongValueLength`], [`Error::OutOfMemory`]. On error
+    /// [`Error::UnknownNode`], [`Error::WrongValueLength`], [`Error::OutOfMemory`]. On error
     /// nothing changes.
-    pub fn set_value(&mut self, half: EdgeRef, value: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+    pub fn set_edge_value(
+        &mut self,
+        half: EdgeRef,
+        value: &[u8],
+    ) -> Result<Option<Vec<u8>>, Error> {
         let width = self.value_width(half.label(), value)?;
         let Some(pair) = self.pair(half)? else {
             return Ok(None);
@@ -47,7 +51,7 @@ impl<M: Memory> Graph<M> {
             .reserve(pages * u32::try_from(targets.len()).unwrap_or(2))?;
         for (h, _) in targets {
             // Look again: the other half's bucket may share a list with the first.
-            let found = self.present(h.vertex(), key_of(h));
+            let found = self.present(h.node(), key_of(h));
             self.write_value(found, (width, h.position()), value);
         }
         Ok(Some(old))
@@ -96,32 +100,34 @@ impl<M: Memory> Graph<M> {
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`].
-    pub fn value(&self, half: EdgeRef) -> Result<Option<Vec<u8>>, Error> {
-        let Some(found) = self.find_bucket(half.vertex(), key_of(half))? else {
+    /// [`Error::UnknownNode`].
+    pub fn edge_value(&self, half: EdgeRef) -> Result<Option<Vec<u8>>, Error> {
+        let Some(found) = self.find_label_bucket(half.node(), key_of(half))? else {
             return Ok(None);
         };
         let view = self.edges.pages();
-        Ok(bucket::get(&found.bucket.slots, half.position(), &view)
-            .map(|_| self.read_value(&found, half.label(), half.position())))
+        Ok(
+            label_bucket::get(&found.bucket.slots, half.position(), &view)
+                .map(|_| self.read_value(&found, half.label(), half.position())),
+        )
     }
 
-    /// Appends the values at `positions` of `v`'s `(label, side)` bucket to `out`, one width
+    /// Appends the values at `positions` of `v`'s `(label, direction)` bucket to `out`, one width
     /// each, in the order given: zeros for a hole, a position past the end or no write yet.
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`].
+    /// [`Error::UnknownNode`].
     pub fn values_at(
         &self,
-        v: VertexId,
-        (label, side): (Label, Side),
+        v: NodeId,
+        (label, direction): (Label, Direction),
         positions: &[Position],
         out: &mut Vec<u8>,
     ) -> Result<(), Error> {
         out.clear();
         let width = self.widths.get(label).map_or(0, |w| usize::from(w.get()));
-        let found = self.find_bucket(v, BucketKey { label, side })?;
+        let found = self.find_label_bucket(v, LabelBucketKey { label, direction })?;
         for &p in positions {
             match &found {
                 Some(found) => out.extend(self.read_value(found, label, p)),
@@ -131,22 +137,22 @@ impl<M: Memory> Graph<M> {
         Ok(())
     }
 
-    /// Calls `f` with the value of every position of `v`'s `(label, side)` bucket in `order`,
+    /// Calls `f` with the value of every position of `v`'s `(label, direction)` bucket in `order`,
     /// until it breaks: the first phase of a values-first traversal. Reads the value plane only,
     /// skipping pages the slot index marks all dead; other removed positions come with their last
     /// value, so the second phase ([`Self::targets_at`]) drops them.
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`].
+    /// [`Error::UnknownNode`].
     pub fn visit_values<B>(
         &self,
-        v: VertexId,
-        (label, side): (Label, Side),
+        v: NodeId,
+        (label, direction): (Label, Direction),
         order: Order,
         mut f: impl FnMut(Position, &[u8]) -> ControlFlow<B>,
     ) -> Result<Option<B>, Error> {
-        let Some(found) = self.find_bucket(v, BucketKey { label, side })? else {
+        let Some(found) = self.find_label_bucket(v, LabelBucketKey { label, direction })? else {
             return Ok(None);
         };
         let Some(width) = self.widths.get(label) else {
@@ -187,20 +193,20 @@ impl<M: Memory> Graph<M> {
         Ok(None)
     }
 
-    /// Calls `f` with each live edge of `v`'s `(label, side)` bucket and its value, in `order`,
-    /// until it breaks.
+    /// Calls `f` with each live edge of `v`'s `(label, direction)` bucket and its value, in
+    /// `order`, until it breaks.
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`].
+    /// [`Error::UnknownNode`].
     pub fn visit_neighbors_with_values<B>(
         &self,
-        v: VertexId,
-        (label, side): (Label, Side),
+        v: NodeId,
+        (label, direction): (Label, Direction),
         order: Order,
         mut f: impl FnMut(Edge, &[u8]) -> ControlFlow<B>,
     ) -> Result<Option<B>, Error> {
-        let Some(found) = self.find_bucket(v, BucketKey { label, side })? else {
+        let Some(found) = self.find_label_bucket(v, LabelBucketKey { label, direction })? else {
             return Ok(None);
         };
         let view = self.edges.pages();
@@ -253,7 +259,7 @@ impl<M: Memory> Join<'_, '_, M> {
     ) -> ControlFlow<B> {
         self.edges.clear();
         let span = Span::new(low, high, order);
-        bucket::visit(self.slots, self.view, span, Window::Page, |e| {
+        label_bucket::visit(self.slots, self.view, span, Window::Page, |e| {
             self.edges.push(e);
             ControlFlow::<()>::Continue(())
         });

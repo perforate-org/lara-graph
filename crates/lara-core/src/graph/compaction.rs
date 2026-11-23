@@ -5,27 +5,32 @@ use super::{Compaction, Error, Graph, Step, reserved};
 use crate::compact::{self, Inline, Outcome};
 use crate::corrupt::corrupt;
 use crate::descriptor::{Descriptor, PAGE_SLOTS};
-use crate::id::{Label, Progress, Side, VertexId};
-use crate::labels::{self, BucketKey};
+use crate::id::{Direction, Label, NodeId, Progress};
+use crate::label_bucket_list::{self, LabelBucketKey};
 use crate::memory::Memory;
-use crate::stored::{Bucket, Index, Values};
+use crate::stored::{Index, LabelBucket, Values};
 use crate::targets::{self, Change, Merged, Plan};
 use crate::values;
 use alloc::vec::Vec;
 
 impl<M: Memory> Graph<M> {
-    /// Reclaims removed edges' positions in `v`'s `(label, side)` bucket, one bounded step at a
-    /// time: at most one page of edges moves. Live edges keep their relative order, so the
-    /// halves stay paired; each one that moves is reported. Once the slots need nothing, a paged
-    /// bucket's target index merges sparse leaves, a pair per step, moving no edge. Call again
-    /// while [`Compaction::progress`] is [`Progress::Remaining`].
+    /// Reclaims removed edges' positions in `v`'s `(label, direction)` bucket, one bounded step at
+    /// a time: at most one page of edges moves. Live edges keep their relative order, so the halves
+    /// stay paired; each one that moves is reported. Once the slots need nothing, a paged bucket's
+    /// target index merges sparse leaves, a pair per step, moving no edge. Call again while
+    /// [`Compaction::progress`] is [`Progress::Remaining`].
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`], or [`Error::OutOfMemory`] when a smaller run, moved values or the
+    /// [`Error::UnknownNode`], or [`Error::OutOfMemory`] when a smaller run, moved values or the
     /// target index's changes cannot be allocated. On error the graph is unchanged.
-    pub fn compact(&mut self, v: VertexId, label: Label, side: Side) -> Result<Compaction, Error> {
-        let Some(found) = self.find_bucket(v, BucketKey { label, side })? else {
+    pub fn compact(
+        &mut self,
+        v: NodeId,
+        label: Label,
+        direction: Direction,
+    ) -> Result<Compaction, Error> {
+        let Some(found) = self.find_label_bucket(v, LabelBucketKey { label, direction })? else {
             return Ok(Step::new(Vec::new(), Progress::Done));
         };
         // Plan everything that allocates before the step changes anything.
@@ -36,7 +41,7 @@ impl<M: Memory> Graph<M> {
             && let Some(root) = found.bucket.index.tree()
             && let Merged::Into(root) = targets::merge_step(&mut self.edges, root)
         {
-            let bucket = Bucket {
+            let bucket = LabelBucket {
                 index: Index::Tree(root),
                 ..found.bucket
             };
@@ -59,8 +64,8 @@ impl<M: Memory> Graph<M> {
             .values
             .map(|cells| self.move_values(cells, &step, old_end));
         match step.outcome {
-            Outcome::Bucket(slots) => {
-                let bucket = Bucket {
+            Outcome::LabelBucket(slots) => {
+                let bucket = LabelBucket {
                     slots,
                     values,
                     ..found.bucket
@@ -77,10 +82,11 @@ impl<M: Memory> Graph<M> {
                     self.edges.release(header);
                 }
                 let list = self
-                    .list(v)?
+                    .label_bucket_list(v)?
                     .unwrap_or_else(|| corrupt("present bucket without a list"));
-                let list = labels::remove(&mut self.lists, list, found.entry);
-                self.set_list(v, list);
+                let list =
+                    label_bucket_list::remove(&mut self.label_bucket_lists, list, found.entry);
+                self.set_label_bucket_list(v, list);
             }
         }
         Ok(Step::new(step.moves, step.progress))
@@ -88,14 +94,14 @@ impl<M: Memory> Graph<M> {
 
     /// A compacted bucket's index: the plan committed while it stays paged, dropped when it was
     /// demoted. Within reserved memory.
-    fn reindex(&mut self, bucket: Bucket, plan: Option<Plan>) -> Bucket {
+    fn reindex(&mut self, bucket: LabelBucket, plan: Option<Plan>) -> LabelBucket {
         if !matches!(bucket.slots, Descriptor::Paged(_)) {
             return self.drop_index(bucket, Index::Empty);
         }
         let Some(plan) = plan else {
             return bucket;
         };
-        Bucket {
+        LabelBucket {
             index: Index::of(reserved(targets::commit(&mut self.edges, plan))),
             ..bucket
         }
@@ -105,7 +111,7 @@ impl<M: Memory> Graph<M> {
     /// pages reserved.
     fn plan_index(
         &mut self,
-        bucket: &Bucket,
+        bucket: &LabelBucket,
         step: &compact::Planned,
     ) -> Result<Option<Plan>, Error> {
         if indexed(bucket).is_none() || !step.stays_paged() || step.moves().is_empty() {
@@ -130,7 +136,7 @@ impl<M: Memory> Graph<M> {
             let pair = (m.from().index(), m.to().index());
             plane = reserved(values::copy(&mut self.edges, plane, cells.width, pair));
         }
-        if let Outcome::Bucket(slots) = &step.outcome {
+        if let Outcome::LabelBucket(slots) = &step.outcome {
             let ranges = [
                 (slots.stored() < old_end).then_some((slots.stored(), u32::MAX)),
                 step.hollowed

@@ -1,11 +1,43 @@
-//! How a bucket is stored in its list entry: a plain descriptor, or a header for a bucket with
-//! more to it.
+//! How a label bucket is stored in its label bucket list entry: a plain descriptor, or a header
+//! for a bucket with more to it.
 //!
 //! The 16-byte list entry holds a [`Descriptor`] for a plain bucket. A bucket whose edges carry
 //! values (never tiny: three inline slots leave no room for them), or a paged bucket with its
-//! target index (or one dropped while its vertex detaches), holds `Extended`: the extent of a 32-byte header in the edge store with the slot
-//! descriptor, the value plane's root and width, and the target index's root. Plain buckets pay
-//! nothing; an extended one costs one more 32-byte read.
+//! target index (or one dropped while its node detaches), holds `Extended`: the extent of a
+//! 32-byte header in the edge store with the slot descriptor, the value plane's root and width, and
+//! the target index's root. Plain buckets pay nothing; an extended one costs one more 32-byte read.
+//!
+//! # Extended entry
+//!
+//! ```text
+//! ---------------------------------------- <- Offset 0
+//! Kind (4)                        ↕ 1 byte
+//! ----------------------------------------
+//! Header extent                   ↕ 7 bytes
+//! ----------------------------------------
+//! Reserved space                  ↕ 8 bytes
+//! ----------------------------------------
+//! ```
+//!
+//! # Header
+//!
+//! A 32-byte extent in the edge store.
+//!
+//! ```text
+//! ---------------------------------------- <- Offset 0
+//! Slot descriptor                 ↕ 16 bytes
+//! ---------------------------------------- <- Offset 16
+//! Value plane root                ↕ 8 bytes
+//! ---------------------------------------- <- Offset 24
+//! Value width; 0 for none         ↕ 2 bytes
+//! ----------------------------------------
+//! Target index root page          ↕ 4 bytes       (u32::MAX none, u32::MAX - 1 dropped)
+//! ----------------------------------------
+//! Target index depth              ↕ 1 byte
+//! ----------------------------------------
+//! Reserved space                  ↕ 1 byte
+//! ----------------------------------------
+//! ```
 
 use crate::corrupt::corrupt;
 use crate::descriptor::{DESCRIPTOR_BYTES, Descriptor};
@@ -70,7 +102,7 @@ pub(crate) enum Index {
     Empty,
     /// The tree of postings.
     Tree(Root),
-    /// Released while its vertex detaches, as all its edges are going: lookups scan the bucket.
+    /// Released while its node detaches, as all its edges are going: lookups scan the bucket.
     Dropped,
 }
 
@@ -92,9 +124,9 @@ impl Index {
     }
 }
 
-/// A bucket resolved from its list entry.
+/// A label bucket resolved from its label bucket list entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Bucket {
+pub(crate) struct LabelBucket {
     pub(crate) slots: Descriptor,
     /// The header, while the bucket has values or an index.
     pub(crate) header: Option<Extent>,
@@ -102,7 +134,7 @@ pub(crate) struct Bucket {
     pub(crate) index: Index,
 }
 
-impl Bucket {
+impl LabelBucket {
     /// A bucket with only slots.
     pub(crate) const fn plain(slots: Descriptor) -> Self {
         Self {

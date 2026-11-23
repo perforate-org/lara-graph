@@ -13,8 +13,12 @@ workspace = true
 default = []
 # Unstable internals for measurement crates; never part of the public API.
 bench-internals = []
+# Every ic-stable-structures memory (a `VirtualMemory` from a `MemoryManager`, say) is a
+# lara-core memory.
+ic-stable-structures = ["dep:ic-stable-structures"]
 
 [dependencies]
+ic-stable-structures = { version = "0.7", optional = true }
 
 [dev-dependencies]
 expect-test = "1.5"

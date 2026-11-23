@@ -1,19 +1,75 @@
 //! Index leaves: a page of postings in independently coded segments, laid out as a slotted page
 //! so that a change reads and writes only the segments it touches.
 //!
-//! Layout: segment count u16 and the low end of the slots u16, then a table entry per segment in
-//! key order ([`ENTRY_BYTES`]: its first posting's target u32 and block u32, the total count of
-//! its postings u32, then packed in eight bytes its slot's offset and capacity, the length of
-//! its code in bits, its Rice parameter `k`, block width `w`, count width and posting count).
-//! Slots fill the leaf from
-//! its end down; the space between the table and the lowest slot is free.
+//! A table entry per segment, in key order, comes after the header; slots fill the leaf from its
+//! end down, and the space between is free.
 //!
 //! A segment (`segment`) codes a run of sorted postings: each target gap after the first in
-//! Rice(`k`) (0 for the same target), each count (one bit for one, else Elias gamma), each block
-//! in `w` bits. A rewritten segment that still fits its slot stays there; one that outgrows it
-//! moves to a new slot with some slack, leaving the old one as garbage, which rewriting the whole
-//! leaf reclaims when space runs out (`write`). A lookup reads the table entries it probes and
-//! one slot; a change also writes that slot and its table entry.
+//! Rice(`k`) (0 for the same target), each count in `c` bits (none when every count is one), each
+//! block's code in `w` bits. A rewritten segment that still fits its slot stays there; one that
+//! outgrows it moves to a new slot with some slack, leaving the old one as garbage, which rewriting
+//! the whole leaf reclaims when space runs out (`write`). A lookup reads the table entries it
+//! probes and one slot; a change also writes that slot and its table entry.
+//!
+//! # Leaf page
+//!
+//! ```text
+//! ---------------------------------------- <- Offset 0
+//! Segment count = S               ↕ 2 bytes
+//! ----------------------------------------
+//! Lowest slot offset              ↕ 2 bytes
+//! ---------------------------------------- <- Offset 4
+//! Table entry of segment 0        ↕ 20 bytes
+//! ----------------------------------------
+//! ...
+//! ----------------------------------------
+//! Table entry of segment S - 1    ↕ 20 bytes
+//! ----------------------------------------
+//! Free space
+//! ---------------------------------------- <- Lowest slot offset
+//! Slots: segment codes, and garbage left by moves
+//! ---------------------------------------- <- Offset 4096
+//! ```
+//!
+//! # Table entry
+//!
+//! The last eight bytes pack fields from the least significant bit.
+//!
+//! ```text
+//! ---------------------------------------- <- Offset 0
+//! First posting: target           ↕ 4 bytes
+//! ----------------------------------------
+//! First posting: block            ↕ 4 bytes
+//! ----------------------------------------
+//! Total count of the postings     ↕ 4 bytes
+//! ---------------------------------------- <- Offset 12
+//! Slot offset                     ↕ 12 bits
+//! Slot capacity                   ↕ 12 bits
+//! Code length                     ↕ 15 bits
+//! Rice parameter k                ↕ 5 bits
+//! Block width w                   ↕ 6 bits
+//! Count width c                   ↕ 6 bits
+//! Posting count                   ↕ 7 bits
+//! First count is zero (c = 0)     ↕ 1 bit
+//! ----------------------------------------
+//! ```
+//!
+//! # Segment code
+//!
+//! Bits go least significant first. Block codes are zigzagged offsets from the first block.
+//!
+//! ```text
+//! ---------------------------------------- <- Bit 0
+//! Posting 0: count                ↕ c bits
+//! Posting 0: block code           ↕ w bits
+//! ----------------------------------------
+//! Posting 1: target gap           ↕ Rice(k)
+//! Posting 1: count                ↕ c bits
+//! Posting 1: block code           ↕ w bits
+//! ----------------------------------------
+//! ...
+//! ---------------------------------------- <- Code length
+//! ```
 
 mod segment;
 mod write;

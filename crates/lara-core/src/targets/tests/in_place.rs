@@ -6,7 +6,7 @@ use super::*;
 /// still applies over the zero counts they leave.
 #[test]
 fn single_decrements_lower_counts_in_place() {
-    let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+    let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
     let mut model: BTreeMap<(u32, u32), u32> = BTreeMap::new();
     let mut rng = Rng(0x5851_F42D_4C95_7F2D);
     let seed: Vec<Change> = (0..3000).map(|_| add_some(&mut model, &mut rng)).collect();
@@ -43,7 +43,7 @@ fn single_decrements_lower_counts_in_place() {
 /// in-place ones take no pages.
 #[test]
 fn single_increments_go_in_place_or_through_a_plan() {
-    let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+    let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
     let mut model: BTreeMap<(u32, u32), u32> = BTreeMap::new();
     let mut rng = Rng(0x2D35_8DCC_AA6C_78A5);
     let seed: Vec<Change> = (0..3000).map(|_| add_some(&mut model, &mut rng)).collect();
@@ -84,7 +84,7 @@ fn single_increments_go_in_place_or_through_a_plan() {
 /// only, at zero, and the tree reads as empty.
 #[test]
 fn single_decrements_drain_postings_out_of_their_segments() {
-    let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+    let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
     let mut model: BTreeMap<(u32, u32), u32> = BTreeMap::new();
     let mut rng = Rng(0x6A09_E667_F3BC_C908);
     let seed: Vec<Change> = (0..2000).map(|_| add_some(&mut model, &mut rng)).collect();
@@ -115,7 +115,7 @@ fn single_decrements_drain_postings_out_of_their_segments() {
 /// way, until no pair is sparse enough; the postings left read the same, and pages come back.
 #[test]
 fn merge_steps_fold_sparse_leaves_and_give_pages_back() {
-    let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+    let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
     let mut model: BTreeMap<(u32, u32), u32> = BTreeMap::new();
     let mut rng = Rng(0xBB67_AE85_84CA_A73B);
     // One edge per posting: a leaf's count is its postings.
@@ -160,7 +160,7 @@ fn merge_steps_fold_sparse_leaves_and_give_pages_back() {
 /// marked, a raise that needs count bits goes through a plan.
 #[test]
 fn segments_without_count_bits_take_every_change() {
-    let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+    let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
     let mut model: BTreeMap<(u32, u32), u32> = BTreeMap::new();
     let mut rng = Rng(0x3C6E_F372_FE94_F82B);
     let fresh = |rng: &mut Rng| {

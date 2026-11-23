@@ -1,22 +1,22 @@
-//! Sets of vertices that a scan asks about at every slot it reads.
+//! Sets of nodes that a scan asks about at every slot it reads.
 
-use crate::id::VertexId;
+use crate::id::NodeId;
 use alloc::vec::Vec;
 
-/// A set of vertices, built once and asked about cheaply: a bit per id when the ids are close
+/// A set of nodes, built once and asked about cheaply: a bit per id when the ids are close
 /// together, else a sorted list. [`crate::Graph::sweep`] asks it about every slot it reads.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VertexSet {
-    sorted: Vec<VertexId>,
+pub struct NodeSet {
+    sorted: Vec<NodeId>,
     /// One bit per id from the smallest member on, when that takes 64 bits per member or fewer.
     bits: Option<(u32, Vec<u64>)>,
 }
 
-impl VertexSet {
-    /// The set of `vertices`.
+impl NodeSet {
+    /// The set of `nodes`.
     #[must_use]
-    pub fn new(vertices: impl IntoIterator<Item = VertexId>) -> Self {
-        let mut sorted: Vec<VertexId> = vertices.into_iter().collect();
+    pub fn new(nodes: impl IntoIterator<Item = NodeId>) -> Self {
+        let mut sorted: Vec<NodeId> = nodes.into_iter().collect();
         sorted.sort_unstable();
         sorted.dedup();
         let bits = match (sorted.first(), sorted.last()) {
@@ -41,7 +41,7 @@ impl VertexSet {
 
     /// Whether `v` is in the set.
     #[must_use]
-    pub fn contains(&self, v: VertexId) -> bool {
+    pub fn contains(&self, v: NodeId) -> bool {
         match &self.bits {
             Some((low, words)) => v.index().checked_sub(*low).is_some_and(|at| {
                 usize::try_from(at / 64)
@@ -54,7 +54,7 @@ impl VertexSet {
     }
 
     /// The members, in id order.
-    pub fn iter(&self) -> impl Iterator<Item = VertexId> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.sorted.iter().copied()
     }
 }
@@ -65,18 +65,18 @@ mod tests {
 
     #[test]
     fn dense_and_sparse_sets_answer_alike() {
-        let dense = VertexSet::new((100..300).step_by(3).map(VertexId::new));
-        let sparse = VertexSet::new([5, 1_000_000, 70, 5].map(VertexId::new));
+        let dense = NodeSet::new((100..300).step_by(3).map(NodeId::new));
+        let sparse = NodeSet::new([5, 1_000_000, 70, 5].map(NodeId::new));
         assert!(dense.bits.is_some() && sparse.bits.is_none());
         for i in 0..400 {
             assert_eq!(
-                dense.contains(VertexId::new(i)),
+                dense.contains(NodeId::new(i)),
                 (100..300).contains(&i) && (i - 100) % 3 == 0
             );
         }
-        let members: Vec<u32> = sparse.iter().map(VertexId::index).collect();
+        let members: Vec<u32> = sparse.iter().map(NodeId::index).collect();
         assert_eq!(members, [5, 70, 1_000_000]);
-        assert!(sparse.contains(VertexId::new(70)) && !sparse.contains(VertexId::new(71)));
-        assert!(!VertexSet::new([]).contains(VertexId::new(0)));
+        assert!(sparse.contains(NodeId::new(70)) && !sparse.contains(NodeId::new(71)));
+        assert!(!NodeSet::new([]).contains(NodeId::new(0)));
     }
 }

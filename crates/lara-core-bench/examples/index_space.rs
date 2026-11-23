@@ -47,7 +47,7 @@ struct Hub {
     targets: Vec<u32>,
 }
 
-/// Distinct targets whose ids grow with insertion order, other vertices interleaved (new leaves
+/// Distinct targets whose ids grow with insertion order, other nodes interleaved (new leaves
 /// of an old hub).
 fn sequential(rng: &mut Rng) -> Hub {
     let mut id = 1_000u32;

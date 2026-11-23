@@ -2,17 +2,17 @@
 
 use super::index::{Batch, Between};
 use super::{Error, Graph, reserved};
-use crate::bucket::{self, Spot};
 use crate::corrupt::corrupt;
 use crate::descriptor::{Descriptor, Slot};
-use crate::id::{EdgeRef, Halves, Label, Placement, Position, Side, VertexId, VertexState, Width};
-use crate::labels::{self, BucketKey, BucketList, EntryAt, Lookup};
+use crate::id::{Direction, EdgeRef, Halves, Label, NodeId, NodeState, Placement, Position, Width};
+use crate::label_bucket::{self, Spot};
+use crate::label_bucket_list::{self, EntryAt, LabelBucketKey, LabelBucketList, Lookup};
 use crate::memory::Memory;
+use crate::node::Record;
 use crate::page_store::Pages;
-use crate::stored::{Bucket, Stored, Values};
+use crate::stored::{LabelBucket, Stored, Values};
 use crate::targets;
 use crate::values::{self, Plane};
-use crate::vertex::Record;
 
 impl<M: Memory> Graph<M> {
     /// Adds the edge `from -[label]-> to`, placed by `placement` in both buckets, with `value`
@@ -23,20 +23,20 @@ impl<M: Memory> Graph<M> {
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`] for either endpoint, [`Error::Detaching`] or [`Error::Deleted`]
+    /// [`Error::UnknownNode`] for either endpoint, [`Error::Detaching`] or [`Error::Deleted`]
     /// for an endpoint being or already deleted, [`Error::WrongValueLength`],
-    /// [`Error::TooManyBuckets`], [`Error::OutOfMemory`] or [`Error::AddressSpaceExhausted`].
+    /// [`Error::TooManyLabelBuckets`], [`Error::OutOfMemory`] or [`Error::AddressSpaceExhausted`].
     /// On error the graph is unchanged.
-    pub fn insert_directed(
+    pub fn add_edge(
         &mut self,
-        from: VertexId,
+        from: NodeId,
         label: Label,
-        to: VertexId,
+        to: NodeId,
         placement: Placement,
         value: &[u8],
     ) -> Result<Halves, Error> {
-        let out = Half::new(from, (label, Side::Out), to, placement);
-        let into = Half::new(to, (label, Side::In), from, placement);
+        let out = Half::new(from, (label, Direction::Outgoing), to, placement);
+        let into = Half::new(to, (label, Direction::Incoming), from, placement);
         let [canonical, other] = self.insert_halves([out, into], value)?;
         Ok(Halves::new(canonical, other))
     }
@@ -46,22 +46,22 @@ impl<M: Memory> Graph<M> {
     ///
     /// # Errors
     ///
-    /// As [`Self::insert_directed`]. On error the graph is unchanged.
-    pub fn insert_undirected(
+    /// As [`Self::add_edge`]. On error the graph is unchanged.
+    pub fn add_undirected_edge(
         &mut self,
-        a: VertexId,
+        a: NodeId,
         label: Label,
-        b: VertexId,
+        b: NodeId,
         placement: Placement,
         value: &[u8],
     ) -> Result<Halves, Error> {
         let (low, high) = (a.min(b), a.max(b));
-        let at_high = Half::new(high, (label, Side::Undirected), low, placement);
+        let at_high = Half::new(high, (label, Direction::Undirected), low, placement);
         if low == high {
             let [half] = self.insert_halves([at_high], value)?;
             return Ok(Halves::new(half, half));
         }
-        let at_low = Half::new(low, (label, Side::Undirected), high, placement);
+        let at_low = Half::new(low, (label, Direction::Undirected), high, placement);
         let [canonical, other] = self.insert_halves([at_high, at_low], value)?;
         Ok(Halves::new(canonical, other))
     }
@@ -86,7 +86,7 @@ impl<M: Memory> Graph<M> {
             };
             match place.target {
                 Target::Present(_, stored) => {
-                    let bucket = Bucket::resolve(&self.edges.pages(), stored);
+                    let bucket = LabelBucket::resolve(&self.edges.pages(), stored);
                     // The other half's bucket, as it stands, tells whether the two ends have
                     // edges between them already.
                     let partner = (N == 2)
@@ -110,20 +110,21 @@ impl<M: Memory> Graph<M> {
             .sum();
         self.edges
             .reserve(pages_per_half(width) * n + batch_pages)?;
-        self.lists.reserve(labels::PAGES_PER_ADD * n)?;
+        self.label_bucket_lists
+            .reserve(label_bucket_list::PAGES_PER_ADD * n)?;
         let mut places = places.into_iter();
         let mut spots = spots.into_iter();
-        let mut touched: Option<VertexId> = None;
+        let mut touched: Option<NodeId> = None;
         Ok(halves.map(|half| {
             let planned = places.next().unwrap_or_else(|| corrupt("an admitted half"));
-            // An earlier half at the same vertex may have changed its list: look again.
-            let place = if touched == Some(half.vertex) {
+            // An earlier half at the same node may have changed its list: look again.
+            let place = if touched == Some(half.node) {
                 self.place(half)
-                    .unwrap_or_else(|_| corrupt("an admitted vertex"))
+                    .unwrap_or_else(|_| corrupt("an admitted node"))
             } else {
                 planned
             };
-            touched = Some(half.vertex);
+            touched = Some(half.node);
             let (spot, batch) = spots.next().unwrap_or_else(|| corrupt("an admitted half"));
             self.insert_half(half, place, (spot, batch), width.map(|w| (w, value)))
         }))
@@ -145,13 +146,13 @@ impl<M: Memory> Graph<M> {
     }
 
     /// Fails as an insert of `halves` would, before anything changes; otherwise returns where
-    /// each half goes. Reads each vertex record once, and allocates nothing.
+    /// each half goes. Reads each node record once, and allocates nothing.
     fn admit<const N: usize>(&self, halves: &[Half; N]) -> Result<[Place; N], Error> {
         let mut records = Records::default();
         let mut places: [Option<Place>; N] = [None; N];
-        let mut fresh: [Option<(VertexId, Option<BucketList>)>; N] = [None; N];
+        let mut fresh: [Option<(NodeId, Option<LabelBucketList>)>; N] = [None; N];
         for ((&half, place), new) in halves.iter().zip(&mut places).zip(&mut fresh) {
-            let own = records.get(self, half.vertex)?;
+            let own = records.get(self, half.node)?;
             records.get(self, half.target)?;
             let planned = self.place_in(own, half);
             match planned.target {
@@ -159,20 +160,24 @@ impl<M: Memory> Graph<M> {
                     return Err(Error::AddressSpaceExhausted);
                 }
                 Target::Present(..) => {}
-                Target::Absent(_) => *new = Some((half.vertex, own.list)),
+                Target::Absent(_) => *new = Some((half.node, own.list)),
             }
             *place = Some(planned);
         }
-        check_room(&self.lists.pages(), &fresh)?;
+        check_room(&self.label_bucket_lists.pages(), &fresh)?;
         Ok(places.map(|p| p.unwrap_or_else(|| corrupt("an admitted half"))))
     }
 
     fn place(&self, half: Half) -> Result<Place, Error> {
-        Ok(self.place_in(self.record(half.vertex)?, half))
+        Ok(self.place_in(self.record(half.node)?, half))
     }
 
     fn place_in(&self, record: Record, half: Half) -> Place {
-        let target = match labels::lookup(&self.lists.pages(), record.list, half.key) {
+        let target = match label_bucket_list::lookup(
+            &self.label_bucket_lists.pages(),
+            record.list,
+            half.key,
+        ) {
             Lookup::Present { entry, stored } => Target::Present(entry, stored),
             Lookup::Absent { gap } => Target::Absent(gap),
         };
@@ -191,7 +196,7 @@ impl<M: Memory> Graph<M> {
             None => self.insert_plain(half, place, spot),
             Some(value) => self.insert_extended(half, place, spot, Some(value)),
         };
-        EdgeRef::new(half.vertex, half.key.label, half.key.side, at)
+        EdgeRef::new(half.node, half.key.label, half.key.direction, at)
     }
 
     /// A half of a label without values. A plain bucket that stays below a page takes the slot
@@ -209,14 +214,15 @@ impl<M: Memory> Graph<M> {
                 return self.insert_extended(half, place, (destination, batch), None);
             }
         };
-        let (next, at) = reserved(bucket::insert(
+        let (next, at) = reserved(label_bucket::insert(
             slots,
             half.target,
             destination,
             &mut self.edges,
         ));
         // A run that just became paged gets its target index.
-        let bucket = self.index_inserted(Bucket::plain(next), &slots, (half.target, at), batch);
+        let bucket =
+            self.index_inserted(LabelBucket::plain(next), &slots, (half.target, at), batch);
         self.finish(half, place, slot, bucket);
         at
     }
@@ -233,15 +239,15 @@ impl<M: Memory> Graph<M> {
     ) -> Position {
         let (slot, bucket) = match place.target {
             Target::Present(entry, stored) => {
-                (Ok(entry), Bucket::resolve(&self.edges.pages(), stored))
+                (Ok(entry), LabelBucket::resolve(&self.edges.pages(), stored))
             }
-            Target::Absent(gap) => (Err(gap), Bucket::plain(Descriptor::EMPTY)),
+            Target::Absent(gap) => (Err(gap), LabelBucket::plain(Descriptor::EMPTY)),
         };
         let mut bucket = match value {
             Some((width, _)) if bucket.values.is_none() => self.with_values(bucket, width),
             Some(_) | None => bucket,
         };
-        let (slots, at) = reserved(bucket::insert(
+        let (slots, at) = reserved(label_bucket::insert(
             bucket.slots,
             half.target,
             destination,
@@ -263,20 +269,26 @@ impl<M: Memory> Graph<M> {
     }
 
     /// Publishes a half's bucket: in place when it existed, else as a new list entry.
-    fn finish(&mut self, half: Half, place: Place, slot: Result<EntryAt, EntryAt>, bucket: Bucket) {
+    fn finish(
+        &mut self,
+        half: Half,
+        place: Place,
+        slot: Result<EntryAt, EntryAt>,
+        bucket: LabelBucket,
+    ) {
         match slot {
             Ok(entry) => self.publish(entry, bucket),
             Err(gap) => {
                 let bucket = self.settle(bucket);
                 bucket.write_header(&self.edges);
-                let list = reserved(labels::add(
-                    &mut self.lists,
+                let list = reserved(label_bucket_list::add(
+                    &mut self.label_bucket_lists,
                     place.record.list,
                     gap,
                     half.key,
                     &bucket.stored(),
                 ));
-                self.set_record_list(half.vertex, place.record, list);
+                self.set_record_label_bucket_list(half.node, place.record, list);
             }
         }
     }
@@ -285,14 +297,17 @@ impl<M: Memory> Graph<M> {
     fn stored_positions(&self, stored: Stored) -> u32 {
         match stored {
             Stored::Plain(d) => d.stored(),
-            Stored::Extended(_) => Bucket::resolve(&self.edges.pages(), stored).slots.stored(),
+            Stored::Extended(_) => LabelBucket::resolve(&self.edges.pages(), stored)
+                .slots
+                .stored(),
         }
     }
 
-    /// Publishes `vertex`'s new list, keeping the rest of the record it was admitted with.
-    fn set_record_list(&self, vertex: VertexId, record: Record, list: BucketList) {
+    /// Publishes `node`'s new label bucket list, keeping the rest of the record it was admitted
+    /// with.
+    fn set_record_label_bucket_list(&self, node: NodeId, record: Record, list: LabelBucketList) {
         self.write_record(
-            vertex,
+            node,
             Record {
                 list: Some(list),
                 ..record
@@ -302,9 +317,9 @@ impl<M: Memory> Graph<M> {
 
     /// `bucket` with an empty value plane, never tiny; [`Self::publish`] gives it a header.
     /// Within reserved memory.
-    pub(super) fn with_values(&mut self, bucket: Bucket, width: Width) -> Bucket {
-        let slots = reserved(bucket::without_tiny(bucket.slots, &mut self.edges));
-        Bucket {
+    pub(super) fn with_values(&mut self, bucket: LabelBucket, width: Width) -> LabelBucket {
+        let slots = reserved(label_bucket::without_tiny(bucket.slots, &mut self.edges));
+        LabelBucket {
             slots,
             values: Some(Values {
                 plane: Plane::Empty,
@@ -318,7 +333,7 @@ impl<M: Memory> Graph<M> {
 /// Pages one half can take from the edge store: its slots, a header, the target index's change,
 /// and for a label with a width, a run replacing a tiny bucket and the value's write.
 pub(super) fn pages_per_half(width: Option<Width>) -> u32 {
-    bucket::PAGES_PER_INSERT
+    label_bucket::PAGES_PER_INSERT
         + 1
         + targets::PAGES_PER_CHANGE
         + width.map_or(0, |_| 1 + values::PAGES_PER_WRITE)
@@ -338,10 +353,10 @@ fn between(half: &Half, place: &Place) -> Between {
     }
 }
 
-/// Where a half goes: its vertex's record and its bucket, or where the bucket belongs.
+/// Where a half goes: its node's record and its bucket, or where the bucket belongs.
 #[derive(Clone, Copy)]
 struct Place {
-    /// The vertex's record when the half was admitted.
+    /// The node's record when the half was admitted.
     record: Record,
     target: Target,
 }
@@ -353,67 +368,67 @@ enum Target {
     Absent(EntryAt),
 }
 
-/// One half to insert: an entry to `target` in `vertex`'s bucket `key`.
+/// One half to insert: an entry to `target` in `node`'s bucket `key`.
 #[derive(Clone, Copy)]
 struct Half {
-    vertex: VertexId,
-    key: BucketKey,
-    target: VertexId,
+    node: NodeId,
+    key: LabelBucketKey,
+    target: NodeId,
     placement: Placement,
 }
 
 impl Half {
     const fn new(
-        vertex: VertexId,
-        (label, side): (Label, Side),
-        target: VertexId,
+        node: NodeId,
+        (label, direction): (Label, Direction),
+        target: NodeId,
         placement: Placement,
     ) -> Self {
         Self {
-            vertex,
-            key: BucketKey { label, side },
+            node,
+            key: LabelBucketKey { label, direction },
             target,
             placement,
         }
     }
 }
 
-/// The records of an insert's vertices (an edge touches at most two), each read once; a
-/// detaching or deleted vertex fails the insert.
+/// The records of an insert's nodes (an edge touches at most two), each read once; a
+/// detaching or deleted node fails the insert.
 #[derive(Default)]
-struct Records([Option<(VertexId, Record)>; 2]);
+struct Records([Option<(NodeId, Record)>; 2]);
 
 impl Records {
-    fn get<M: Memory>(&mut self, g: &Graph<M>, v: VertexId) -> Result<Record, Error> {
+    fn get<M: Memory>(&mut self, g: &Graph<M>, v: NodeId) -> Result<Record, Error> {
         if let Some((_, record)) = self.0.iter().flatten().find(|(w, _)| *w == v) {
             return Ok(*record);
         }
         let record = g.record(v)?;
         match record.state {
-            VertexState::Live => {}
-            VertexState::Detaching => return Err(Error::Detaching(v)),
-            VertexState::Deleted => return Err(Error::Deleted(v)),
+            NodeState::Live => {}
+            NodeState::Detaching => return Err(Error::Detaching(v)),
+            NodeState::Deleted => return Err(Error::Deleted(v)),
         }
         let free = self
             .0
             .iter_mut()
             .find(|slot| slot.is_none())
-            .unwrap_or_else(|| corrupt("an edge with more than two vertices"));
+            .unwrap_or_else(|| corrupt("an edge with more than two nodes"));
         *free = Some((v, record));
         Ok(record)
     }
 }
 
-/// Fails when new buckets would not fit a vertex's list. `fresh` lists each new bucket's vertex
-/// with its current list.
+/// Fails when new buckets would not fit a node's label bucket list. `fresh` lists each new bucket's
+/// node with its current list.
 fn check_room<M: Memory>(
     pages: &Pages<'_, M>,
-    fresh: &[Option<(VertexId, Option<BucketList>)>],
+    fresh: &[Option<(NodeId, Option<LabelBucketList>)>],
 ) -> Result<(), Error> {
     for &(v, list) in fresh.iter().flatten() {
         let adding = fresh.iter().flatten().filter(|(w, _)| *w == v).count();
-        if !labels::has_room(pages, list, adding) {
-            return Err(Error::TooManyBuckets(v));
+        if !label_bucket_list::has_room(pages, list, adding) {
+            return Err(Error::TooManyLabelBuckets(v));
         }
     }
     Ok(())

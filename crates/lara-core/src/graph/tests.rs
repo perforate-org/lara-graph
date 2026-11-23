@@ -1,13 +1,14 @@
 use super::*;
 use crate::descriptor::{PAGE_SLOTS, Paged, Slot, TINY_SLOTS};
 use crate::id::{Cursor, Halves, Order, Placement, Position, Width};
+use crate::memories::{Memories, MemoryRole};
 use crate::memory::{PAGE_SIZE, VecMemory};
+use crate::node_set::NodeSet;
 use crate::page_store::{ByteClass, Extent, Pages};
 use crate::paged;
-use crate::stored::{Bucket, Index};
+use crate::stored::{Index, LabelBucket};
 use crate::targets;
 use crate::values;
-use crate::vertex_set::VertexSet;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use core::num::NonZeroU32;
@@ -21,37 +22,24 @@ struct Backing {
 
 impl Backing {
     fn memories(&self) -> Memories<&VecMemory> {
-        let [
-            vertices,
-            edge_pages,
-            edge_directory,
-            list_pages,
-            list_directory,
-        ] = &self.memories;
-        Memories::new(
-            vertices,
-            edge_pages,
-            edge_directory,
-            list_pages,
-            list_directory,
-        )
+        Memories::from_fn(|role| &self.memories[usize::from(role.index())])
     }
 
     fn create(&self, n: u32) -> Graph<&VecMemory> {
-        let mut g = Graph::create(self.memories()).unwrap();
+        let mut g = Graph::new(self.memories());
         for _ in 0..n {
-            g.add_vertex().unwrap();
+            g.add_node().unwrap();
         }
         g
     }
 
     fn open(&self) -> Graph<&VecMemory> {
-        Graph::open(self.memories()).unwrap()
+        Graph::load(self.memories())
     }
 }
 
-fn v(i: u32) -> VertexId {
-    VertexId::new(i)
+fn v(i: u32) -> NodeId {
+    NodeId::new(i)
 }
 
 fn l(i: u16) -> Label {
@@ -62,27 +50,32 @@ fn p(i: u32) -> Position {
     Position::new(i)
 }
 
-/// The live edges of `x`'s `(label, side)` bucket as `(position, target)`.
-fn edges_on<M: Memory>(g: &Graph<M>, x: VertexId, label: Label, side: Side) -> Vec<(u32, u32)> {
+/// The live edges of `x`'s `(label, direction)` bucket as `(position, target)`.
+fn edges_on<M: Memory>(
+    g: &Graph<M>,
+    x: NodeId,
+    label: Label,
+    direction: Direction,
+) -> Vec<(u32, u32)> {
     let mut out = Vec::new();
-    g.neighbors(x, label, side, &mut out).unwrap();
+    g.neighbors_directed(x, label, direction, &mut out).unwrap();
     out.into_iter()
         .map(|e| (e.position().index(), e.target().index()))
         .collect()
 }
 
 /// The live out-edges of `x` under `label`.
-fn edges<M: Memory>(g: &Graph<M>, x: VertexId, label: Label) -> Vec<(u32, u32)> {
-    edges_on(g, x, label, Side::Out)
+fn edges<M: Memory>(g: &Graph<M>, x: NodeId, label: Label) -> Vec<(u32, u32)> {
+    edges_on(g, x, label, Direction::Outgoing)
 }
 
-fn out_ref(x: VertexId, label: Label, at: Position) -> EdgeRef {
-    EdgeRef::new(x, label, Side::Out, at)
+fn out_ref(x: NodeId, label: Label, at: Position) -> EdgeRef {
+    EdgeRef::new(x, label, Direction::Outgoing, at)
 }
 
 /// Inserts `from -[label]-> to` and returns the out half's position.
-fn insert<M: Memory>(g: &mut Graph<M>, from: VertexId, label: Label, to: VertexId) -> Position {
-    g.insert_directed(from, label, to, Placement::ReuseHoles, &[])
+fn insert<M: Memory>(g: &mut Graph<M>, from: NodeId, label: Label, to: NodeId) -> Position {
+    g.add_edge(from, label, to, Placement::ReuseHoles, &[])
         .unwrap()
         .canonical()
         .position()
@@ -94,37 +87,37 @@ fn removed(halves: Halves) -> Removal {
 }
 
 /// Removes the directed edge whose out half is at `at`; returns its target if it was live.
-fn remove<M: Memory>(g: &mut Graph<M>, from: VertexId, label: Label, at: Position) -> Option<u32> {
+fn remove<M: Memory>(g: &mut Graph<M>, from: NodeId, label: Label, at: Position) -> Option<u32> {
     match g.remove_edge(out_ref(from, label, at)).unwrap() {
-        Removal::Removed(r) => Some(r.halves().other().vertex().index()),
+        Removal::Removed(r) => Some(r.halves().other().node().index()),
         Removal::Absent => None,
     }
 }
 
-fn out_bucket<M: Memory>(g: &Graph<M>, x: VertexId, label: Label) -> Option<Descriptor> {
+fn out_bucket<M: Memory>(g: &Graph<M>, x: NodeId, label: Label) -> Option<Descriptor> {
     g.bucket(
         x,
-        BucketKey {
+        LabelBucketKey {
             label,
-            side: Side::Out,
+            direction: Direction::Outgoing,
         },
     )
     .unwrap()
 }
 
 #[test]
-fn a_new_graph_is_empty_and_rejects_unknown_vertices() {
+fn a_new_graph_is_empty_and_rejects_unknown_nodes() {
     let backing = Backing::default();
     let mut g = backing.create(2);
-    assert_eq!(g.vertex_count(), 2);
-    assert_eq!(g.degree(v(1), l(0), Side::Out), Ok(0));
+    assert_eq!(g.node_count(), 2);
+    assert_eq!(g.degree(v(1), l(0), Direction::Outgoing), Ok(0));
     assert_eq!(
-        g.insert_directed(v(0), l(0), v(2), Placement::ReuseHoles, &[]),
-        Err(Error::UnknownVertex(v(2)))
+        g.add_edge(v(0), l(0), v(2), Placement::ReuseHoles, &[]),
+        Err(Error::UnknownNode(v(2)))
     );
     assert_eq!(
-        g.insert_undirected(v(5), l(0), v(0), Placement::ReuseHoles, &[]),
-        Err(Error::UnknownVertex(v(5)))
+        g.add_undirected_edge(v(5), l(0), v(0), Placement::ReuseHoles, &[]),
+        Err(Error::UnknownNode(v(5)))
     );
     assert_eq!(
         g.remove_edge(out_ref(v(0), l(0), p(0))),
@@ -139,23 +132,29 @@ fn a_directed_edge_is_stored_at_both_ends() {
     let backing = Backing::default();
     let mut g = backing.create(3);
     let e = g
-        .insert_directed(v(0), l(4), v(2), Placement::ReuseHoles, &[])
+        .add_edge(v(0), l(4), v(2), Placement::ReuseHoles, &[])
         .unwrap();
-    assert_eq!(e.canonical(), EdgeRef::new(v(0), l(4), Side::Out, p(0)));
-    assert_eq!(e.other(), EdgeRef::new(v(2), l(4), Side::In, p(0)));
-    assert_eq!(edges_on(&g, v(2), l(4), Side::In), [(0, 0)]);
-    assert_eq!(g.edge(e.other()), Ok(Some(v(0))));
+    assert_eq!(
+        e.canonical(),
+        EdgeRef::new(v(0), l(4), Direction::Outgoing, p(0))
+    );
+    assert_eq!(
+        e.other(),
+        EdgeRef::new(v(2), l(4), Direction::Incoming, p(0))
+    );
+    assert_eq!(edges_on(&g, v(2), l(4), Direction::Incoming), [(0, 0)]);
+    assert_eq!(g.edge_target(e.other()), Ok(Some(v(0))));
     assert_eq!(g.counterpart(e.canonical()), Ok(Some(e.other())));
     assert_eq!(g.counterpart(e.other()), Ok(Some(e.canonical())));
     let mut labels = Vec::new();
-    g.labels(v(2), Side::In, &mut labels).unwrap();
+    g.labels(v(2), Direction::Incoming, &mut labels).unwrap();
     assert_eq!(labels, [l(4)]);
-    g.labels(v(2), Side::Out, &mut labels).unwrap();
+    g.labels(v(2), Direction::Outgoing, &mut labels).unwrap();
     assert_eq!(labels, Vec::<Label>::new());
     check(&g);
     assert_eq!(g.remove_edge(e.other()), Ok(removed(e)));
-    assert_eq!(g.degree(v(0), l(4), Side::Out), Ok(0));
-    assert_eq!(g.degree(v(2), l(4), Side::In), Ok(0));
+    assert_eq!(g.degree(v(0), l(4), Direction::Outgoing), Ok(0));
+    assert_eq!(g.degree(v(2), l(4), Direction::Incoming), Ok(0));
     check(&g);
 }
 
@@ -168,27 +167,27 @@ fn has_edges_sees_every_side_and_looks_past_buckets_of_holes() {
     g.declare_width(l(3), Width::new(2).unwrap()).unwrap();
     assert_eq!(g.has_edges(v(0)), Ok(false));
     let directed = g
-        .insert_directed(v(0), l(1), v(1), Placement::ReuseHoles, &[])
+        .add_edge(v(0), l(1), v(1), Placement::ReuseHoles, &[])
         .unwrap();
     let undirected = g
-        .insert_undirected(v(2), l(2), v(3), Placement::Append, &[])
+        .add_undirected_edge(v(2), l(2), v(3), Placement::Append, &[])
         .unwrap();
     let valued = g
-        .insert_directed(v(4), l(3), v(5), Placement::Append, &[1, 2])
+        .add_edge(v(4), l(3), v(5), Placement::Append, &[1, 2])
         .unwrap();
     for x in 0..6 {
-        assert_eq!(g.has_edges(v(x)), Ok(true), "vertex {x}");
+        assert_eq!(g.has_edges(v(x)), Ok(true), "node {x}");
     }
     for halves in [directed, undirected, valued] {
         g.remove_edge(halves.other()).unwrap();
     }
     let mut labels = Vec::new();
-    g.labels(v(0), Side::Out, &mut labels).unwrap();
+    g.labels(v(0), Direction::Outgoing, &mut labels).unwrap();
     assert_eq!(labels, [l(1)], "a bucket of holes stays listed");
     for x in 0..6 {
-        assert_eq!(g.has_edges(v(x)), Ok(false), "vertex {x}");
+        assert_eq!(g.has_edges(v(x)), Ok(false), "node {x}");
     }
-    assert_eq!(g.has_edges(v(9)), Err(Error::UnknownVertex(v(9))));
+    assert_eq!(g.has_edges(v(9)), Err(Error::UnknownNode(v(9))));
     check(&g);
 }
 
@@ -198,22 +197,19 @@ fn has_edges_sees_every_side_and_looks_past_buckets_of_holes() {
 fn compacting_a_mostly_emptied_hub_shrinks_its_index() {
     let backing = Backing::default();
     let mut g = backing.create(1);
-    let hub = g.add_vertex().unwrap();
+    let hub = g.add_node().unwrap();
     let mut edges = Vec::new();
     for _ in 0..6000 {
-        let leaf = g.add_vertex().unwrap();
-        edges.push(
-            g.insert_directed(hub, l(0), leaf, Placement::Append, &[])
-                .unwrap(),
-        );
+        let leaf = g.add_node().unwrap();
+        edges.push(g.add_edge(hub, l(0), leaf, Placement::Append, &[]).unwrap());
     }
     let index_pages = |g: &Graph<_>| {
         let found = g
-            .find_bucket(
+            .find_label_bucket(
                 hub,
-                BucketKey {
+                LabelBucketKey {
                     label: l(0),
-                    side: Side::Out,
+                    direction: Direction::Outgoing,
                 },
             )
             .unwrap()
@@ -226,7 +222,12 @@ fn compacting_a_mostly_emptied_hub_shrinks_its_index() {
             g.remove_edge(halves.other()).unwrap();
         }
     }
-    while g.compact(hub, l(0), Side::Out).unwrap().progress() == Progress::Remaining {}
+    while g
+        .compact(hub, l(0), Direction::Outgoing)
+        .unwrap()
+        .progress()
+        == Progress::Remaining
+    {}
     let after = index_pages(&g);
     assert!(after * 2 < before, "{after} index pages of {before}");
     for halves in edges.iter().step_by(16) {
@@ -237,30 +238,36 @@ fn compacting_a_mostly_emptied_hub_shrinks_its_index() {
 }
 
 #[test]
-fn an_undirected_edges_canonical_half_is_at_the_larger_vertex_and_a_self_loop_has_one_half() {
+fn an_undirected_edges_canonical_half_is_at_the_larger_node_and_a_self_loop_has_one_half() {
     let backing = Backing::default();
     let mut g = backing.create(3);
     let e = g
-        .insert_undirected(v(2), l(0), v(1), Placement::ReuseHoles, &[])
+        .add_undirected_edge(v(2), l(0), v(1), Placement::ReuseHoles, &[])
         .unwrap();
-    // The canonical half is at the larger vertex.
+    // The canonical half is at the larger node.
     assert_eq!(
         e.canonical(),
-        EdgeRef::new(v(2), l(0), Side::Undirected, p(0))
+        EdgeRef::new(v(2), l(0), Direction::Undirected, p(0))
     );
-    assert_eq!(e.other(), EdgeRef::new(v(1), l(0), Side::Undirected, p(0)));
+    assert_eq!(
+        e.other(),
+        EdgeRef::new(v(1), l(0), Direction::Undirected, p(0))
+    );
     assert_eq!(g.counterpart(e.other()), Ok(Some(e.canonical())));
     let s = g
-        .insert_undirected(v(1), l(0), v(1), Placement::ReuseHoles, &[])
+        .add_undirected_edge(v(1), l(0), v(1), Placement::ReuseHoles, &[])
         .unwrap();
     assert_eq!(s.canonical(), s.other());
     assert_eq!(s.canonical().position(), p(1));
     assert_eq!(g.counterpart(s.canonical()), Ok(Some(s.canonical())));
-    assert_eq!(edges_on(&g, v(1), l(0), Side::Undirected), [(0, 2), (1, 1)]);
+    assert_eq!(
+        edges_on(&g, v(1), l(0), Direction::Undirected),
+        [(0, 2), (1, 1)]
+    );
     check(&g);
     assert_eq!(g.remove_edge(s.other()), Ok(removed(s)));
     assert_eq!(g.remove_edge(e.other()), Ok(removed(e)));
-    assert_eq!(g.degree(v(1), l(0), Side::Undirected), Ok(0));
+    assert_eq!(g.degree(v(1), l(0), Direction::Undirected), Ok(0));
     check(&g);
 }
 
@@ -269,16 +276,19 @@ fn a_directed_self_loop_has_an_out_and_an_in_half() {
     let backing = Backing::default();
     let mut g = backing.create(1);
     let first = g
-        .insert_directed(v(0), l(0), v(0), Placement::ReuseHoles, &[])
+        .add_edge(v(0), l(0), v(0), Placement::ReuseHoles, &[])
         .unwrap();
     let second = g
-        .insert_directed(v(0), l(0), v(0), Placement::ReuseHoles, &[])
+        .add_edge(v(0), l(0), v(0), Placement::ReuseHoles, &[])
         .unwrap();
     assert_eq!(
         second.canonical(),
-        EdgeRef::new(v(0), l(0), Side::Out, p(1))
+        EdgeRef::new(v(0), l(0), Direction::Outgoing, p(1))
     );
-    assert_eq!(second.other(), EdgeRef::new(v(0), l(0), Side::In, p(1)));
+    assert_eq!(
+        second.other(),
+        EdgeRef::new(v(0), l(0), Direction::Incoming, p(1))
+    );
     assert_eq!(g.remove_edge(first.other()), Ok(removed(first)));
     assert_eq!(g.counterpart(second.other()), Ok(Some(second.canonical())));
     check(&g);
@@ -290,25 +300,17 @@ fn parallel_edges_pair_by_rank() {
     let mut g = backing.create(3);
     let (a, b) = (v(0), v(1));
     // a→b at Out 0, 2, 3; other traffic interleaves the In side at b.
-    let first = g
-        .insert_directed(a, l(0), b, Placement::ReuseHoles, &[])
+    let first = g.add_edge(a, l(0), b, Placement::ReuseHoles, &[]).unwrap();
+    g.add_edge(a, l(0), v(2), Placement::ReuseHoles, &[])
         .unwrap();
-    g.insert_directed(a, l(0), v(2), Placement::ReuseHoles, &[])
+    g.add_edge(v(2), l(0), b, Placement::ReuseHoles, &[])
         .unwrap();
-    g.insert_directed(v(2), l(0), b, Placement::ReuseHoles, &[])
-        .unwrap();
-    let second = g
-        .insert_directed(a, l(0), b, Placement::ReuseHoles, &[])
-        .unwrap();
-    let third = g
-        .insert_directed(a, l(0), b, Placement::ReuseHoles, &[])
-        .unwrap();
+    let second = g.add_edge(a, l(0), b, Placement::ReuseHoles, &[]).unwrap();
+    let third = g.add_edge(a, l(0), b, Placement::ReuseHoles, &[]).unwrap();
     assert_eq!(second.other().position(), p(2));
     g.remove_edge(first.canonical()).unwrap();
     // A new a→b must not take hole 0 on either side: it would rank before the survivors.
-    let fourth = g
-        .insert_directed(a, l(0), b, Placement::ReuseHoles, &[])
-        .unwrap();
+    let fourth = g.add_edge(a, l(0), b, Placement::ReuseHoles, &[]).unwrap();
     assert_eq!(fourth.canonical().position(), p(4));
     assert_eq!(fourth.other().position(), p(4));
     for e in [second, third, fourth] {
@@ -327,13 +329,13 @@ fn visiting_neighbors_sees_live_edges_in_order_and_stops_on_break() {
     }
     remove(&mut g, v(0), l(0), p(1));
     let mut seen = Vec::new();
-    let none = g.visit_neighbors(v(0), l(0), Side::Out, Order::Ascending, |e| {
+    let none = g.visit_neighbors(v(0), l(0), Direction::Outgoing, Order::Ascending, |e| {
         seen.push((e.position().index(), e.target().index()));
         ControlFlow::<()>::Continue(())
     });
     assert_eq!(none, Ok(None));
     assert_eq!(seen, edges(&g, v(0), l(0)));
-    let second_to_2 = g.visit_neighbors(v(0), l(0), Side::Out, Order::Ascending, |e| {
+    let second_to_2 = g.visit_neighbors(v(0), l(0), Direction::Outgoing, Order::Ascending, |e| {
         if e.target() == v(2) {
             ControlFlow::Break(e.position())
         } else {
@@ -342,7 +344,7 @@ fn visiting_neighbors_sees_live_edges_in_order_and_stops_on_break() {
     });
     assert_eq!(second_to_2, Ok(Some(p(3))));
     assert_eq!(
-        g.visit_neighbors(v(1), l(5), Side::In, Order::Ascending, |_| {
+        g.visit_neighbors(v(1), l(5), Direction::Incoming, Order::Ascending, |_| {
             ControlFlow::Break(())
         }),
         Ok(None)
@@ -359,14 +361,14 @@ fn appending_never_fills_a_hole_in_any_bucket_form() {
             insert(&mut g, v(0), label, v(1));
         }
         remove(&mut g, v(0), label, p(total - 2));
-        // An edge to another vertex could safely take the hole; appending must not.
+        // An edge to another node could safely take the hole; appending must not.
         let appended = g
-            .insert_directed(v(0), label, v(2), Placement::Append, &[])
+            .add_edge(v(0), label, v(2), Placement::Append, &[])
             .unwrap();
         assert_eq!(appended.canonical().position(), p(total), "{total} edges");
-        // No live edge to vertex 0 follows the hole, so reusing it is safe.
+        // No live edge to node 0 follows the hole, so reusing it is safe.
         let reused = g
-            .insert_directed(v(0), label, v(0), Placement::ReuseHoles, &[])
+            .add_edge(v(0), label, v(0), Placement::ReuseHoles, &[])
             .unwrap();
         assert_eq!(reused.canonical().position(), p(total - 2), "{total} edges");
     }
@@ -387,7 +389,7 @@ fn windows_count_holes_and_hand_back_the_next_cursor() {
     let window = |g: &Graph<&VecMemory>, cursor| {
         let mut seen = Vec::new();
         let next = g
-            .visit_window(v(0), l(0), Side::Out, cursor, |e| {
+            .visit_window(v(0), l(0), Direction::Outgoing, cursor, |e| {
                 seen.push(e.position().index());
             })
             .unwrap();
@@ -412,7 +414,7 @@ fn windows_count_holes_and_hand_back_the_next_cursor() {
         .visit_window(
             v(1),
             l(9),
-            Side::In,
+            Direction::Incoming,
             Cursor::first(Order::Ascending, span),
             |_| {},
         )
@@ -431,7 +433,7 @@ fn positional_reads_see_holes_released_pages_and_the_end() {
     for at in PAGE_SLOTS..2 * PAGE_SLOTS {
         remove(&mut g, v(0), l(0), p(at));
     }
-    g.compact(v(0), l(0), Side::Out).unwrap();
+    g.compact(v(0), l(0), Direction::Outgoing).unwrap();
     remove(&mut g, v(0), l(0), p(5));
     let positions = [
         p(3 * PAGE_SLOTS),
@@ -441,10 +443,10 @@ fn positional_reads_see_holes_released_pages_and_the_end() {
         p(2 * PAGE_SLOTS),
     ];
     let mut out = Vec::new();
-    g.targets_at(v(0), l(0), Side::Out, &positions, &mut out)
+    g.targets_at(v(0), l(0), Direction::Outgoing, &positions, &mut out)
         .unwrap();
     assert_eq!(out, [None, None, None, Some(v(1)), Some(v(1))]);
-    g.targets_at(v(1), l(3), Side::Out, &positions, &mut out)
+    g.targets_at(v(1), l(3), Direction::Outgoing, &positions, &mut out)
         .unwrap();
     assert_eq!(out, [None; 5]);
 }
@@ -486,11 +488,11 @@ fn labels_are_separate_sorted_buckets() {
     assert_eq!(insert(&mut g, v(0), l(2), v(2)), p(0));
     assert_eq!(insert(&mut g, v(0), l(7), v(2)), p(1));
     let mut labels = Vec::new();
-    g.labels(v(0), Side::Out, &mut labels).unwrap();
+    g.labels(v(0), Direction::Outgoing, &mut labels).unwrap();
     assert_eq!(labels, [l(2), l(7)]);
     assert_eq!(edges(&g, v(0), l(7)), [(0, 1), (1, 2)]);
     assert_eq!(edges(&g, v(0), l(2)), [(0, 2)]);
-    assert_eq!(g.edge(out_ref(v(0), l(7), p(1))), Ok(Some(v(2))));
+    assert_eq!(g.edge_target(out_ref(v(0), l(7), p(1))), Ok(Some(v(2))));
     check(&g);
 }
 
@@ -499,31 +501,35 @@ fn too_many_buckets_is_an_error_and_changes_nothing() {
     let backing = Backing::default();
     let mut g = backing.create(4);
     let room = |g: &Graph<&VecMemory>, x: u32, adding| {
-        labels::has_room(&g.lists.pages(), g.list(v(x)).unwrap(), adding)
+        label_bucket_list::has_room(
+            &g.label_bucket_lists.pages(),
+            g.label_bucket_list(v(x)).unwrap(),
+            adding,
+        )
     };
-    // Grow vertex 0 until its tiered list has room for one more bucket, not two.
+    // Grow node 0 until its tiered list has room for one more bucket, not two.
     let mut label = 0;
     while room(&g, 0, 2) {
         insert(&mut g, v(0), l(label), v(2));
         label += 1;
     }
     assert!(room(&g, 0, 1));
-    // A directed self-loop needs two new buckets at vertex 0.
+    // A directed self-loop needs two new buckets at node 0.
     assert_eq!(
-        g.insert_directed(v(0), l(label), v(0), Placement::ReuseHoles, &[]),
-        Err(Error::TooManyBuckets(v(0)))
+        g.add_edge(v(0), l(label), v(0), Placement::ReuseHoles, &[]),
+        Err(Error::TooManyLabelBuckets(v(0)))
     );
-    // Fill vertex 1; then an edge 0 → 1 fails on its in half and must not land at 0 either.
+    // Fill node 1; then an edge 0 → 1 fails on its in half and must not land at 0 either.
     let mut other = 0;
     while room(&g, 1, 1) {
         insert(&mut g, v(1), l(other), v(3));
         other += 1;
     }
     assert_eq!(
-        g.insert_directed(v(0), l(label), v(1), Placement::ReuseHoles, &[]),
-        Err(Error::TooManyBuckets(v(1)))
+        g.add_edge(v(0), l(label), v(1), Placement::ReuseHoles, &[]),
+        Err(Error::TooManyLabelBuckets(v(1)))
     );
-    assert_eq!(g.degree(v(0), l(label), Side::Out), Ok(0));
+    assert_eq!(g.degree(v(0), l(label), Direction::Outgoing), Ok(0));
     check(&g);
     insert(&mut g, v(0), l(label), v(2));
     check(&g);
@@ -537,7 +543,10 @@ fn an_insert_that_runs_out_of_memory_changes_nothing() {
     for _ in 0..PAGE_SLOTS {
         insert(&mut g, v(0), l(0), v(1));
     }
-    let before = (edges(&g, v(0), l(0)), edges_on(&g, v(1), l(0), Side::In));
+    let before = (
+        edges(&g, v(0), l(0)),
+        edges_on(&g, v(1), l(0), Direction::Incoming),
+    );
     // Leave room for three more pages: promoting both full runs to pages takes two each, so the
     // out half alone would fit and the in half would not.
     let memory = &backing.memories[1];
@@ -547,10 +556,13 @@ fn an_insert_that_runs_out_of_memory_changes_nothing() {
     while capacity - g.edges.minted() > 3 {
         held.push(g.edges.allocate(ByteClass::PAGE).unwrap());
     }
-    let error = g.insert_directed(v(0), l(0), v(1), Placement::ReuseHoles, &[]);
+    let error = g.add_edge(v(0), l(0), v(1), Placement::ReuseHoles, &[]);
     assert!(matches!(error, Err(Error::OutOfMemory(_))), "{error:?}");
     assert_eq!(
-        (edges(&g, v(0), l(0)), edges_on(&g, v(1), l(0), Side::In)),
+        (
+            edges(&g, v(0), l(0)),
+            edges_on(&g, v(1), l(0), Direction::Incoming)
+        ),
         before
     );
     for extent in held {
@@ -581,7 +593,7 @@ fn removal_keeps_positions_and_a_hole_is_reused_only_after_equal_targets() {
     assert_eq!(
         insert(&mut g, v(0), l(0), v(0)),
         p(1),
-        "no later edge to vertex 0: hole reused"
+        "no later edge to node 0: hole reused"
     );
     check(&g);
 }
@@ -645,7 +657,7 @@ fn the_page_index_deepens_past_one_page_of_entries() {
     for _ in 0..total {
         let before = g.edges.minted();
         // An undirected self-loop: one half, one bucket insert.
-        g.insert_undirected(v(0), l(0), v(0), Placement::ReuseHoles, &[])
+        g.add_undirected_edge(v(0), l(0), v(0), Placement::ReuseHoles, &[])
             .unwrap();
         most = most.max(g.edges.minted() - before);
     }
@@ -655,30 +667,34 @@ fn the_page_index_deepens_past_one_page_of_entries() {
         "an insert took {most} pages, more than {bound}"
     );
     check(&g);
-    let positions: Vec<u32> = edges_on(&g, v(0), l(0), Side::Undirected)
+    let positions: Vec<u32> = edges_on(&g, v(0), l(0), Direction::Undirected)
         .into_iter()
         .map(|(pos, _)| pos)
         .collect();
     assert_eq!(positions, (0..total).collect::<Vec<_>>());
     for at in [0, PAGE_SLOTS * paged::FANOUT, total - 1] {
-        let half = EdgeRef::new(v(0), l(0), Side::Undirected, p(at));
-        assert_eq!(g.edge(half), Ok(Some(v(0))));
+        let half = EdgeRef::new(v(0), l(0), Direction::Undirected, p(at));
+        assert_eq!(g.edge_target(half), Ok(Some(v(0))));
     }
     check(&backing.open());
+}
+
+/// The edges of the first four nodes, under labels 0 to 2, on both sides.
+fn snapshot(g: &Graph<&VecMemory>) -> Vec<Vec<Vec<(u32, u32)>>> {
+    (0..4.min(g.node_count()))
+        .map(|x| {
+            (0..3)
+                .flat_map(|y| {
+                    [Direction::Outgoing, Direction::Incoming].map(|s| edges_on(g, v(x), l(y), s))
+                })
+                .collect()
+        })
+        .collect()
 }
 
 #[test]
 fn reopen_reads_the_same_graph() {
     let backing = Backing::default();
-    let snapshot = |g: &Graph<&VecMemory>| {
-        (0..4)
-            .map(|x| {
-                (0..3)
-                    .flat_map(|y| [Side::Out, Side::In].map(|s| edges_on(g, v(x), l(y), s)))
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>()
-    };
     let before = {
         let mut g = backing.create(4);
         for i in 0..3_000 {
@@ -699,18 +715,50 @@ fn reopen_reads_the_same_graph() {
     check(&g);
 }
 
+/// `init` formats empty or foreign memories and reopens a graph; `load` refuses what is not a
+/// graph or is another version; `new` formats over a graph; `into_memories` gives them back as
+/// they were left.
 #[test]
-fn open_and_create_reject_the_wrong_memories() {
-    let empty = Backing::default();
+fn init_new_and_load_follow_ic_stable_structures() {
+    let backing = Backing::default();
     assert!(matches!(
-        Graph::open(empty.memories()),
-        Err(OpenError::NotAGraph)
+        Graph::try_load(backing.memories()),
+        Err(InitError::NotAGraph)
     ));
-    let used = Backing::default();
-    used.memories[0].grow(1).unwrap();
+    let mut g = Graph::init(backing.memories());
+    for _ in 0..3 {
+        g.add_node().unwrap();
+    }
+    insert(&mut g, v(0), l(1), v(2));
+    let before = snapshot(&g);
+    let memories = g.into_memories();
+    let reopened = Graph::init(memories);
+    assert_eq!(snapshot(&reopened), before);
+    check(&reopened);
+    // Formatting over a graph leaves an empty one.
+    let fresh = Graph::new(backing.memories());
+    assert_eq!(fresh.node_count(), 0);
+    check(&fresh);
+    // A foreign magic in the nodes memory: init formats, as ic-stable-structures' BTreeMap does.
+    let foreign = Backing::default();
+    foreign.memories[0].grow(1).unwrap();
+    foreign.memories[0].write(0, b"XYZ\x01");
+    assert_eq!(Graph::init(foreign.memories()).node_count(), 0);
+    // Another layout version is refused by both.
+    backing.memories[0].write(3, &[2]);
+    for result in [
+        Graph::try_load(backing.memories()),
+        Graph::try_init(backing.memories()),
+    ] {
+        assert!(matches!(result, Err(InitError::UnsupportedVersion(2))));
+    }
+    // A graph's nodes memory without its stores is not a graph.
+    let partial = Backing::default();
+    drop(Graph::new(partial.memories()));
+    partial.memories[1].write(0, b"XYZ");
     assert!(matches!(
-        Graph::create(used.memories()),
-        Err(CreateError::NotEmpty)
+        Graph::try_init(partial.memories()),
+        Err(InitError::NotAGraph)
     ));
 }
 
@@ -721,3 +769,25 @@ use invariants::check;
 mod detach;
 mod edge_values;
 mod model;
+
+/// ic-stable-structures' memories serve as a graph's, through a memory manager, and a graph
+/// reopens from them with `init`.
+#[cfg(feature = "ic-stable-structures")]
+#[test]
+fn ic_stable_structures_memories_hold_a_graph() {
+    use crate::memory::IcMemory;
+    use ic_stable_structures::memory_manager::{MemoryId, MemoryManager};
+    use ic_stable_structures::{DefaultMemoryImpl, Memory as _};
+    let manager = MemoryManager::init(DefaultMemoryImpl::default());
+    let memories =
+        || Memories::from_fn(|role| IcMemory::new(manager.get(MemoryId::new(role.index()))));
+    let mut g = Graph::init(memories());
+    let (a, b) = (g.add_node().unwrap(), g.add_node().unwrap());
+    let halves = g.add_edge(a, l(1), b, Placement::Append, &[]).unwrap();
+    drop(g);
+    let g = Graph::init(memories());
+    assert_eq!(g.node_count(), 2);
+    assert_eq!(g.counterpart(halves.canonical()), Ok(Some(halves.other())));
+    let nodes = manager.get(MemoryId::new(MemoryRole::Nodes.index()));
+    assert!(nodes.size() > 0);
+}

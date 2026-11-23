@@ -1,5 +1,25 @@
 //! Directory records: one per page. The only place that knows their wire layout; sentinel
 //! values exist only here.
+//!
+//! # Record layout
+//!
+//! ```text
+//! ---------------------------------------- <- Offset 0
+//! Kind: 1 free, 2 chunk, 3 whole  ↕ 1 byte
+//! ----------------------------------------
+//! Class log2 (chunk)              ↕ 1 byte
+//! ----------------------------------------
+//! Extents in use (chunk)          ↕ 2 bytes
+//! ----------------------------------------
+//! Previous page (chunk)           ↕ 4 bytes
+//! ----------------------------------------
+//! Next page (free, chunk)         ↕ 4 bytes
+//! ----------------------------------------
+//! Slot bitmap (chunk)             ↕ 16 bytes
+//! ----------------------------------------
+//! Reserved space                  ↕ 4 bytes
+//! ----------------------------------------
+//! ```
 
 use super::{ByteClass, PageId};
 use crate::corrupt::corrupt;
@@ -40,7 +60,7 @@ pub(super) fn decode_link(bytes: [u8; 4]) -> Option<PageId> {
 }
 
 impl PageRecord {
-    // Layout: kind u8 | class u8 | used u16 | prev u32 | next u32 | bitmap u128 | reserved u32.
+    // As the module's Record layout diagram shows.
     pub(super) fn encode(self) -> [u8; 32] {
         let (kind, class, used, prev, next, bitmap) = match self {
             Self::Free { next } => (KIND_FREE, 0, 0, None, next, 0),

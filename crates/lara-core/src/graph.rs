@@ -1,73 +1,70 @@
-//! The graph: labeled buckets of edge halves per vertex and side, over five memories.
+//! The graph: label buckets of edge halves per node and direction, over five memories.
+//!
+//! # Nodes memory
+//!
+//! ```text
+//! ---------------------------------------- <- Address 0
+//! Magic "LGN"                     ↕ 3 bytes
+//! ----------------------------------------
+//! Layout version (1)              ↕ 1 byte
+//! ----------------------------------------
+//! Node count = N                  ↕ 4 bytes
+//! ---------------------------------------- <- Address 8 (AT_WIDTHS)
+//! Width table present (0 or 1)    ↕ 1 byte
+//! ----------------------------------------
+//! Width table extent              ↕ 7 bytes
+//! ---------------------------------------- <- Address 16 (RECORDS_START)
+//! Record of node 0                ↕ 8 bytes
+//! ----------------------------------------
+//! ...
+//! ----------------------------------------
+//! Record of node N - 1            ↕ 8 bytes
+//! ----------------------------------------
+//! Unallocated space
+//! ```
 
-use crate::bucket;
 use crate::corrupt::{corrupt, reservation_exceeded};
 use crate::descriptor::Descriptor;
 use crate::id::{
-    Edge, EdgeRef, Label, Move, Position, Progress, RemovedEdge, Side, VertexId, VertexState, Width,
+    Direction, Edge, EdgeRef, Label, Move, NodeId, NodeState, Position, Progress, RemovedEdge,
+    Width,
 };
-use crate::labels::{self, BucketKey, BucketList};
+use crate::label_bucket;
+use crate::label_bucket_list::{self, LabelBucketKey, LabelBucketList};
 use crate::memory::{GrowFailed, Memory, Region, WriteError};
-use crate::page_store::{self, PageStore};
-use crate::stored::Bucket;
+use crate::node::{RECORD_BYTES, Record};
+use crate::page_store::PageStore;
+use crate::stored::LabelBucket;
 use crate::units::{ByteOffset, Overflow};
-use crate::vertex::{RECORD_BYTES, Record};
 use alloc::vec::Vec;
 use core::fmt;
 
-const MAGIC: [u8; 3] = *b"LGV";
-const VERSION: u8 = 9;
+/// The nodes memory's magic: "lara graph nodes".
+const MAGIC: [u8; 3] = *b"LGN";
+const VERSION: u8 = 1;
 const AT_COUNT: u64 = 4;
 const RECORDS_START: u64 = 16;
 
-/// The memories a graph lives in. Each must be used by this graph only.
-#[derive(Debug)]
-pub struct Memories<M> {
-    vertices: M,
-    edge_pages: M,
-    edge_directory: M,
-    list_pages: M,
-    list_directory: M,
-}
-
-impl<M> Memories<M> {
-    /// `vertices` holds one 8-byte record per vertex; `edge_pages` and `edge_directory` hold
-    /// edges; `list_pages` and `list_directory` hold each vertex's per-label buckets.
-    pub const fn new(
-        vertices: M,
-        edge_pages: M,
-        edge_directory: M,
-        list_pages: M,
-        list_directory: M,
-    ) -> Self {
-        Self {
-            vertices,
-            edge_pages,
-            edge_directory,
-            list_pages,
-            list_directory,
-        }
-    }
-}
-
-/// A multigraph with dense vertex ids and labeled edges, directed or undirected.
+/// A multigraph with dense node ids and labeled edges, directed or undirected.
 ///
 /// Every edge is stored at both ends (see [`EdgeRef`]), so traversal runs either way. Each
-/// `(vertex, label, side)` has a bucket addressed by [`Position`]. Positions are stable: removing
-/// an edge leaves a hole that a later insert may fill, and only [`Graph::compact`] moves edges.
+/// `(node, label, direction)` has a bucket addressed by [`Position`]. Positions are stable:
+/// removing an edge leaves a hole that a later insert may fill, and only [`Graph::compact`] moves
+/// edges.
 ///
 /// The two halves of an edge are matched by rank: the k-th live entry to `v` in `u`'s out
 /// bucket pairs with the k-th live entry to `u` in `v`'s in bucket (undirected alike). Inserts
-/// and compaction keep entries to one vertex in insertion order, so the ranks stay aligned
+/// and compaction keep entries to one node in insertion order, so the ranks stay aligned
 /// without links between the halves.
 ///
-/// Reading one bucket costs a vertex read, a list read and one data read (a few more past 1024
-/// edges). An insert or removal copies at most one run of under 1024 edges or one page of index.
+/// Reading one bucket costs a node read, a label bucket list read and one data read (a few more
+/// past 1024 edges). An insert or removal copies at most one run of under 1024 edges or one page of
+/// index.
 pub struct Graph<M: Memory> {
-    vertices: M,
+    nodes: M,
     edges: PageStore<M>,
-    lists: PageStore<M>,
-    /// Mirrors the vertex count in the header: the graph owns its memories.
+    label_bucket_lists: PageStore<M>,
+    /// Mirrors the node count in the header: the graph owns its memories.
     count: u32,
     /// Mirrors the label width table.
     widths: Widths,
@@ -80,16 +77,16 @@ pub enum Error {
     OutOfMemory(GrowFailed),
     /// The graph outgrew its address space or a bucket outgrew 2^32 positions.
     AddressSpaceExhausted,
-    /// The vertex was never added.
-    UnknownVertex(VertexId),
-    /// The vertex already has the maximum number of `(label, side)` buckets (215).
-    TooManyBuckets(VertexId),
-    /// The vertex is being detached ([`Graph::detach`]) and takes no new edges.
-    Detaching(VertexId),
-    /// [`Graph::detach_step`] on a vertex that is not being detached.
-    NotDetaching(VertexId),
-    /// The vertex was deleted ([`Graph::detach`]); ids are never reused.
-    Deleted(VertexId),
+    /// The node was never added.
+    UnknownNode(NodeId),
+    /// The node already has the maximum number of `(label, direction)` buckets (215).
+    TooManyLabelBuckets(NodeId),
+    /// The node is being detached ([`Graph::detach`]) and takes no new edges.
+    Detaching(NodeId),
+    /// [`Graph::detach_step`] on a node that is not being detached.
+    NotDetaching(NodeId),
+    /// The node was deleted ([`Graph::detach`]); ids are never reused.
+    Deleted(NodeId),
     /// The label already has a different width ([`Graph::declare_width`]).
     WidthConflict {
         /// The label.
@@ -110,18 +107,12 @@ pub enum Error {
     },
 }
 
-/// Creating a graph failed.
+/// A graph could not be made or opened ([`Graph::try_new`], [`Graph::try_load`],
+/// [`Graph::try_init`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CreateError {
-    /// A memory already holds data; open it instead.
-    NotEmpty,
+pub enum InitError {
     /// A memory could not grow.
     OutOfMemory(GrowFailed),
-}
-
-/// Opening a graph failed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OpenError {
     /// The memories do not hold a graph.
     NotAGraph,
     /// The graph was written by an unsupported layout version.
@@ -196,89 +187,33 @@ pub enum Removal {
 }
 
 impl<M: Memory> Graph<M> {
-    /// Formats empty memories as an empty graph.
-    ///
-    /// # Errors
-    ///
-    /// [`CreateError::NotEmpty`] if a memory holds data; [`CreateError::OutOfMemory`] if one
-    /// cannot grow.
-    pub fn create(memories: Memories<M>) -> Result<Self, CreateError> {
-        let Memories {
-            vertices,
-            edge_pages,
-            edge_directory,
-            list_pages,
-            list_directory,
-        } = memories;
-        if vertices.size() != 0 {
-            return Err(CreateError::NotEmpty);
-        }
-        let edges = PageStore::create(edge_pages, edge_directory).map_err(create_error)?;
-        let lists = PageStore::create(list_pages, list_directory).map_err(create_error)?;
-        let [m0, m1, m2] = MAGIC;
-        Region::new(&vertices)
-            .write(ByteOffset::new(0), &[m0, m1, m2, VERSION])
-            .map_err(|e| create_error(page_store::CreateError::Write(e)))?;
-        Ok(Self::assemble(vertices, edges, lists))
-    }
-
-    /// Opens a graph written by [`Self::create`]. Reads headers only.
-    ///
-    /// # Errors
-    ///
-    /// [`OpenError::NotAGraph`] if the memories do not hold one;
-    /// [`OpenError::UnsupportedVersion`] for an unknown layout.
-    pub fn open(memories: Memories<M>) -> Result<Self, OpenError> {
-        let Memories {
-            vertices,
-            edge_pages,
-            edge_directory,
-            list_pages,
-            list_directory,
-        } = memories;
-        if vertices.size() == 0 {
-            return Err(OpenError::NotAGraph);
-        }
-        let [m0, m1, m2, version] = Region::new(&vertices).read_array(ByteOffset::new(0));
-        if [m0, m1, m2] != MAGIC {
-            return Err(OpenError::NotAGraph);
-        }
-        if version != VERSION {
-            return Err(OpenError::UnsupportedVersion(version));
-        }
-        let edges = PageStore::open(edge_pages, edge_directory).map_err(open_error)?;
-        let lists = PageStore::open(list_pages, list_directory).map_err(open_error)?;
-        Ok(Self::assemble(vertices, edges, lists))
-    }
-
     /// A graph over formatted memories, with its header mirrors loaded.
-    fn assemble(vertices: M, edges: PageStore<M>, lists: PageStore<M>) -> Self {
-        let count =
-            u32::from_le_bytes(Region::new(&vertices).read_array(ByteOffset::new(AT_COUNT)));
-        let widths = Widths::load(&vertices, &lists);
+    fn assemble(nodes: M, edges: PageStore<M>, label_bucket_lists: PageStore<M>) -> Self {
+        let count = u32::from_le_bytes(Region::new(&nodes).read_array(ByteOffset::new(AT_COUNT)));
+        let widths = Widths::load(&nodes, &label_bucket_lists);
         Self {
-            vertices,
+            nodes,
             edges,
-            lists,
+            label_bucket_lists,
             count,
             widths,
         }
     }
 
-    /// Number of vertices; ids are `0..vertex_count`.
+    /// Number of nodes; ids are `0..node_count`.
     #[must_use]
-    pub const fn vertex_count(&self) -> u32 {
+    pub const fn node_count(&self) -> u32 {
         self.count
     }
 
-    /// Adds a vertex with no edges and returns its id.
+    /// Adds a node with no edges and returns its id.
     ///
     /// # Errors
     ///
-    /// [`Error::OutOfMemory`], or [`Error::AddressSpaceExhausted`] past `u32::MAX - 1` vertices
+    /// [`Error::OutOfMemory`], or [`Error::AddressSpaceExhausted`] past `u32::MAX - 1` nodes
     /// (the last id is reserved as the removed-edge marker).
-    pub fn add_vertex(&mut self) -> Result<VertexId, Error> {
-        let id = VertexId::new(self.vertex_count());
+    pub fn add_node(&mut self) -> Result<NodeId, Error> {
+        let id = NodeId::new(self.node_count());
         let next = id
             .index()
             .checked_add(1)
@@ -295,23 +230,28 @@ impl<M: Memory> Graph<M> {
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`].
-    pub fn vertex_state(&self, v: VertexId) -> Result<VertexState, Error> {
+    /// [`Error::UnknownNode`].
+    pub fn node_state(&self, v: NodeId) -> Result<NodeState, Error> {
         Ok(self.record(v)?.state)
     }
 
-    /// The labels `v` has buckets under on `side`, in order.
+    /// The labels `v` has buckets under on `direction`, in order.
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`].
-    pub fn labels(&self, v: VertexId, side: Side, out: &mut Vec<Label>) -> Result<(), Error> {
-        let list = self.list(v)?;
+    /// [`Error::UnknownNode`].
+    pub fn labels(
+        &self,
+        v: NodeId,
+        direction: Direction,
+        out: &mut Vec<Label>,
+    ) -> Result<(), Error> {
+        let list = self.label_bucket_list(v)?;
         out.clear();
         out.extend(
-            labels::keys(&self.lists.pages(), list)
+            label_bucket_list::keys(&self.label_bucket_lists.pages(), list)
                 .into_iter()
-                .filter(|k| k.side == side)
+                .filter(|k| k.direction == direction)
                 .map(|k| k.label),
         );
         Ok(())
@@ -322,109 +262,113 @@ impl<M: Memory> Graph<M> {
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`].
-    pub fn has_edges(&self, v: VertexId) -> Result<bool, Error> {
-        let list = self.list(v)?;
+    /// [`Error::UnknownNode`].
+    pub fn has_edges(&self, v: NodeId) -> Result<bool, Error> {
+        let list = self.label_bucket_list(v)?;
         let view = self.edges.pages();
-        Ok(labels::entries(&self.lists.pages(), list)
-            .into_iter()
-            .any(|(_, stored)| Bucket::resolve(&view, stored).slots.live() > 0))
+        Ok(
+            label_bucket_list::entries(&self.label_bucket_lists.pages(), list)
+                .into_iter()
+                .any(|(_, stored)| LabelBucket::resolve(&view, stored).slots.live() > 0),
+        )
     }
 
-    /// Number of live edges in `v`'s `(label, side)` bucket.
+    /// Number of live edges in `v`'s `(label, direction)` bucket.
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`].
-    pub fn degree(&self, v: VertexId, label: Label, side: Side) -> Result<u32, Error> {
+    /// [`Error::UnknownNode`].
+    pub fn degree(&self, v: NodeId, label: Label, direction: Direction) -> Result<u32, Error> {
         Ok(self
-            .bucket(v, BucketKey { label, side })?
+            .bucket(v, LabelBucketKey { label, direction })?
             .map_or(0, |d| d.live()))
     }
 
-    /// Replaces the contents of `out` with the live edges of `v`'s `(label, side)` bucket, in
-    /// position order. Each edge's target is the vertex at its other end.
+    /// Replaces the contents of `out` with the live edges of `v`'s `(label, direction)` bucket, in
+    /// position order. Each edge's target is the node at its other end.
     /// [`Self::visit_neighbors`] reads the same edges in about half the instructions when they
     /// need not be kept.
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`].
-    pub fn neighbors(
+    /// [`Error::UnknownNode`].
+    pub fn neighbors_directed(
         &self,
-        v: VertexId,
+        v: NodeId,
         label: Label,
-        side: Side,
+        direction: Direction,
         out: &mut Vec<Edge>,
     ) -> Result<(), Error> {
         out.clear();
-        if let Some(d) = self.bucket(v, BucketKey { label, side })? {
-            bucket::read(&d, &self.edges.pages(), out);
+        if let Some(d) = self.bucket(v, LabelBucketKey { label, direction })? {
+            label_bucket::read(&d, &self.edges.pages(), out);
         }
         Ok(())
     }
 
-    /// The vertex at the other end of `half`, if it is live.
+    /// The node at the other end of `half`, if it is live.
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`].
-    pub fn edge(&self, half: EdgeRef) -> Result<Option<VertexId>, Error> {
+    /// [`Error::UnknownNode`].
+    pub fn edge_target(&self, half: EdgeRef) -> Result<Option<NodeId>, Error> {
         Ok(self
-            .bucket(half.vertex(), key_of(half))?
-            .and_then(|d| bucket::get(&d, half.position(), &self.edges.pages())))
+            .bucket(half.node(), key_of(half))?
+            .and_then(|d| label_bucket::get(&d, half.position(), &self.edges.pages())))
     }
 
-    /// Removed edges `v`'s `(label, side)` bucket still holds positions for: the work compaction
-    /// can do.
+    /// Removed edges `v`'s `(label, direction)` bucket still holds positions for: the work
+    /// compaction can do.
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownVertex`].
-    pub fn holes(&self, v: VertexId, label: Label, side: Side) -> Result<u32, Error> {
+    /// [`Error::UnknownNode`].
+    pub fn holes(&self, v: NodeId, label: Label, direction: Direction) -> Result<u32, Error> {
         Ok(self
-            .bucket(v, BucketKey { label, side })?
+            .bucket(v, LabelBucketKey { label, direction })?
             .map_or(0, |d| d.stored() - d.live()))
     }
 
     fn region(&self) -> Region<'_, M> {
-        Region::new(&self.vertices)
+        Region::new(&self.nodes)
     }
 
-    fn check(&self, v: VertexId) -> Result<(), Error> {
-        if v.index() < self.vertex_count() {
+    fn check(&self, v: NodeId) -> Result<(), Error> {
+        if v.index() < self.node_count() {
             Ok(())
         } else {
-            Err(Error::UnknownVertex(v))
+            Err(Error::UnknownNode(v))
         }
     }
 
-    fn record(&self, v: VertexId) -> Result<Record, Error> {
+    fn record(&self, v: NodeId) -> Result<Record, Error> {
         self.check(v)?;
         Ok(Record::decode(self.region().read_array(record_at(v))))
     }
 
-    fn list(&self, v: VertexId) -> Result<Option<BucketList>, Error> {
+    fn label_bucket_list(&self, v: NodeId) -> Result<Option<LabelBucketList>, Error> {
         Ok(self.record(v)?.list)
     }
 
-    /// Rewrites an existing vertex's record. Cannot fail.
-    fn write_record(&self, v: VertexId, record: Record) {
+    /// Rewrites an existing node's record. Cannot fail.
+    fn write_record(&self, v: NodeId, record: Record) {
         self.region().overwrite(record_at(v), &record.encode());
     }
 
-    /// Publishes `v`'s new bucket list, keeping its state.
-    fn set_list(&self, v: VertexId, list: Option<BucketList>) {
-        let record = self.list_owner(v);
+    /// Publishes `v`'s new label bucket list, keeping its state.
+    fn set_label_bucket_list(&self, v: NodeId, list: Option<LabelBucketList>) {
+        let record = self.label_bucket_list_owner(v);
         self.write_record(v, Record { list, ..record });
     }
 
-    fn list_owner(&self, v: VertexId) -> Record {
-        self.record(v).unwrap_or_else(|_| corrupt("a known vertex"))
+    fn label_bucket_list_owner(&self, v: NodeId) -> Record {
+        self.record(v).unwrap_or_else(|_| corrupt("a known node"))
     }
 
-    fn bucket(&self, v: VertexId, key: BucketKey) -> Result<Option<Descriptor>, Error> {
-        Ok(self.find_bucket(v, key)?.map(|found| found.bucket.slots))
+    fn bucket(&self, v: NodeId, key: LabelBucketKey) -> Result<Option<Descriptor>, Error> {
+        Ok(self
+            .find_label_bucket(v, key)?
+            .map(|found| found.bucket.slots))
     }
 }
 
@@ -433,25 +377,8 @@ fn reserved<T>(result: Result<T, WriteError>) -> T {
     result.unwrap_or_else(|_| reservation_exceeded())
 }
 
-fn record_at(v: VertexId) -> ByteOffset {
+fn record_at(v: NodeId) -> ByteOffset {
     ByteOffset::new(RECORDS_START + u64::from(v.index()) * u64::try_from(RECORD_BYTES).unwrap_or(8))
-}
-
-fn create_error(error: page_store::CreateError) -> CreateError {
-    match error {
-        page_store::CreateError::NotEmpty => CreateError::NotEmpty,
-        page_store::CreateError::Write(WriteError::Grow(grow)) => CreateError::OutOfMemory(grow),
-        page_store::CreateError::Write(WriteError::Overflow(Overflow)) => {
-            unreachable!("a header at offset 0 cannot overflow the address space")
-        }
-    }
-}
-
-fn open_error(error: page_store::OpenError) -> OpenError {
-    match error {
-        page_store::OpenError::NotAPageStore => OpenError::NotAGraph,
-        page_store::OpenError::UnsupportedVersion(v) => OpenError::UnsupportedVersion(v),
-    }
 }
 
 impl From<WriteError> for Error {
@@ -468,11 +395,13 @@ impl fmt::Display for Error {
         match self {
             Self::OutOfMemory(grow) => write!(f, "out of memory: {grow}"),
             Self::AddressSpaceExhausted => f.write_str("address space exhausted"),
-            Self::UnknownVertex(v) => write!(f, "unknown vertex {}", v.index()),
-            Self::TooManyBuckets(v) => write!(f, "vertex {} has too many buckets", v.index()),
-            Self::Detaching(v) => write!(f, "vertex {} is being detached", v.index()),
-            Self::NotDetaching(v) => write!(f, "vertex {} is not being detached", v.index()),
-            Self::Deleted(v) => write!(f, "vertex {} is deleted", v.index()),
+            Self::UnknownNode(v) => write!(f, "unknown node {}", v.index()),
+            Self::TooManyLabelBuckets(v) => {
+                write!(f, "node {} has too many label buckets", v.index())
+            }
+            Self::Detaching(v) => write!(f, "node {} is being detached", v.index()),
+            Self::NotDetaching(v) => write!(f, "node {} is not being detached", v.index()),
+            Self::Deleted(v) => write!(f, "node {} is deleted", v.index()),
             Self::WidthConflict { label, declared } => write!(
                 f,
                 "label {} already has width {}",
@@ -493,32 +422,24 @@ impl fmt::Display for Error {
     }
 }
 
-impl fmt::Display for CreateError {
+impl fmt::Display for InitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotEmpty => f.write_str("memory is not empty"),
             Self::OutOfMemory(grow) => write!(f, "out of memory: {grow}"),
-        }
-    }
-}
-
-impl fmt::Display for OpenError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotAGraph => f.write_str("memories do not hold a graph"),
+            Self::NotAGraph => f.write_str("the memories do not hold a graph"),
             Self::UnsupportedVersion(v) => write!(f, "unsupported layout version {v}"),
         }
     }
 }
 
 impl core::error::Error for Error {}
-impl core::error::Error for CreateError {}
-impl core::error::Error for OpenError {}
+impl core::error::Error for InitError {}
 
 mod compaction;
 mod detach;
 mod index;
 mod insert;
+mod lifecycle;
 mod pair;
 mod props;
 mod read;

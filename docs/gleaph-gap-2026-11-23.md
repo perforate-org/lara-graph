@@ -35,30 +35,30 @@ Status key:
 
 | Gleaph need | Today (ic-stable-lara) | lara-core | Status |
 | --- | --- | --- | --- |
-| Create and reopen, failing on layout skew | `init_with_config` over 33 virtual memories | `Graph::create` / `Graph::open` over 5 memories; `OpenError::{NotAGraph, UnsupportedVersion}` | Covered. Five new memory ids are needed. |
-| Dense vertex ids, never reused | `push_vertex_row`, `push_vertices`, `vertex_count` (tombstones included) | `add_vertex`, `vertex_count` (deleted vertices included) | Covered. Bulk add is a loop. |
-| Vertex liveness | `vertex_row(v).is_tombstone()` | `vertex_state` → `Live` / `Detaching` / `Deleted` | Covered |
+| Create and reopen, failing on layout skew | `init_with_config` over 33 virtual memories | `Graph::init` (or `new` / `load`) over 5 memories; `InitError::{NotAGraph, UnsupportedVersion}` | Covered. Five new memory ids are needed. |
+| Dense vertex ids, never reused | `push_vertex_row`, `push_vertices`, `vertex_count` (tombstones included) | `add_node`, `node_count` (deleted nodes included) | Covered. Bulk add is a loop. |
+| Vertex liveness | `vertex_row(v).is_tombstone()` | `node_state` → `Live` / `Detaching` / `Deleted` | Covered |
 | Edge-free check before a plain DELETE | `has_incident_edges` | `has_edges(v)`: any side, past buckets of holes | Covered |
 | Delete an edge-free vertex | `delete_vertex_deferred` | `detach` followed by one `detach_step` | Covered |
-| Labels and directedness | `BucketLabelKey` u16 with a directed bit | `Label(u16)` and `Side::{Out, In, Undirected}` | Adapter: a fixed mapping |
+| Labels and directedness | `BucketLabelKey` u16 with a directed bit | `Label(u16)` and `Direction::{Outgoing, Incoming, Undirected}` | Adapter: a fixed mapping |
 | Buckets per vertex | 1024 per orientation | tiered lists, ~110 000 | Covered |
-| Paired insert with exact positions | `insert_*_with_locations` returning `ScalarInsertPair` | `insert_directed` / `insert_undirected` returning `Halves` | Covered |
+| Paired insert with exact positions | `insert_*_with_locations` returning `ScalarInsertPair` | `add_edge` / `add_undirected_edge` returning `Halves` | Covered |
 | Insertion or Unordered placement | `EdgePlacementPolicy` per label | `Placement::{Append, ReuseHoles}` per insert | Covered. Unordered differs in hole reuse (gap 2). |
 | Inline value width | per bucket, `ensure_*_width` before an insert | per label, `declare_width`; a different width is `WidthConflict` | Covered, as long as a label's width never changes. See question 3. |
 | Remove at a slot, with reported moves | `remove_*_at_slot_with_move` | `remove_edge(EdgeRef)`: both halves, the value returned, no moves | Covered. The adapter reports no moves. |
-| Remove-side compaction trigger | `maybe_enqueue_remove_side_compaction` with a policy closure | `holes(v, label, side)` to decide, `compact` to act | Adapter, plus gap 1 |
+| Remove-side compaction trigger | `maybe_enqueue_remove_side_compaction` with a policy closure | `holes(v, label, direction)` to decide, `compact` to act | Adapter, plus gap 1 |
 | Counterpart and canonical half | `counterparts().of` / `.canonical_handle`; `canonical_undirected_owner` (the larger id) | `counterpart`; `Halves::canonical()`, the larger id for undirected edges | Covered. Same rule. |
 | Stale handles fail closed | `SourceNotFound` | `counterpart` / `edge` return `None` for a hole | Covered while the slot stays a hole. A reused hole answers with the new edge, as today. |
-| Paired value update | `update_directed_edge_inline_property` | `set_value`: both halves, returns the old value | Covered |
-| Scans of one label, either order | `for_each_*_for_label_ordered`, topology-only variants | `visit_neighbors(.., Order, ..)`, `neighbors` | Covered |
-| Scans across all labels | `for_each_directed_out_edges` and the like | `labels(v, side)`, then one visit per label | Adapter |
+| Paired value update | `update_directed_edge_inline_property` | `set_edge_value`: both halves, returns the old value | Covered |
+| Scans of one label, either order | `for_each_*_for_label_ordered`, topology-only variants | `visit_neighbors(.., Order, ..)`, `neighbors_directed` | Covered |
+| Scans across all labels | `for_each_directed_out_edges` and the like | `labels(v, direction)`, then one visit per label | Adapter |
 | OFFSET skip, then visit (insertion DESC) | `skip_then_visit_each_*` | `visit_neighbors` in `Descending` order, counting the skip in the closure | Adapter. It skips edge by edge, not by page counts. |
 | Reads of chosen positions | `read_*_edge_slots_for_label` | `targets_at`, `values_at` | Covered |
 | Value batches, values first | `visit_*_inline_property_batches_for_label` | `visit_values` (per value; the adapter can batch) | Covered |
 | Edges with values | `visit_*_edge_inline_property_batches_for_label` | `visit_neighbors_with_values` | Covered |
 | Eligibility probe for values-first expand | `*_inline_property_bytes_first_predicate_eligible` | — | Not needed: every bucket with a width can be read values-first. |
 | Resumable window for export | `visit_forward_edges_from_slot_with_inline_property` → `(next, exhausted)` | `visit_window(.., Cursor, ..)` → next `Cursor` or none | Covered |
-| Edge by handle | linear scan for the slot | `edge(EdgeRef)`, O(1) | Covered |
+| Edge by handle | linear scan for the slot | `edge_target(EdgeRef)`, O(1) | Covered |
 | Label of an edge | `find_forward_edge_label(src, &E)` | the handle carries the label | Adapter |
 | DETACH: purge without blocking | `begin_vertex_delete_deferred`, then the queue with `DeleteEdgeObserver` | `detach`, then `detach_step(v, budget)` returning `RemovedEdge`s with values | Covered, but who drives the steps is gap 1 |
 | DETACH pre-compaction of spans | `mark_compact_vertex_edge_span` | — | Not needed: detach does not depend on compaction. |
@@ -82,7 +82,7 @@ Gleaph's maintenance today works like this:
 - **Message-end drains.**
 
 lara-core's work is explicit and bounded per call:
-- `compact(v, label, side)` takes one step;
+- `compact(v, label, direction)` takes one step;
 - `detach_step(v, budget)` removes up to `budget` edges.
 
 What is missing is the list of pending work: buckets to compact, and vertices being detached.

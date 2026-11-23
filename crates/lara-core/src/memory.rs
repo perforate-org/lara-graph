@@ -32,6 +32,49 @@ pub trait Memory {
     fn write(&self, offset: u64, buf: &[u8]);
 }
 
+/// An ic-stable-structures memory as a lara-core memory: `DefaultMemoryImpl`, a `VirtualMemory`
+/// from a `MemoryManager`, a `RestrictedMemory`. Its `grow` reports failure as −1, which becomes
+/// [`GrowFailed`].
+///
+/// A wrapper rather than an impl for every such memory: that would overlap the impl for shared
+/// references, which another crate could give ic-stable-structures' trait too.
+#[cfg(feature = "ic-stable-structures")]
+#[derive(Clone, Debug)]
+pub struct IcMemory<M>(M);
+
+#[cfg(feature = "ic-stable-structures")]
+impl<M: ic_stable_structures::Memory> IcMemory<M> {
+    /// Wraps `memory`.
+    pub const fn new(memory: M) -> Self {
+        Self(memory)
+    }
+
+    /// The memory back.
+    pub fn into_inner(self) -> M {
+        self.0
+    }
+}
+
+#[cfg(feature = "ic-stable-structures")]
+impl<M: ic_stable_structures::Memory> Memory for IcMemory<M> {
+    fn size(&self) -> u64 {
+        self.0.size()
+    }
+
+    fn grow(&self, pages: u64) -> Result<u64, GrowFailed> {
+        let previous = self.0.grow(pages);
+        u64::try_from(previous).map_err(|_| GrowFailed::new(self.0.size(), pages))
+    }
+
+    fn read(&self, offset: u64, buf: &mut [u8]) {
+        self.0.read(offset, buf);
+    }
+
+    fn write(&self, offset: u64, buf: &[u8]) {
+        self.0.write(offset, buf);
+    }
+}
+
 /// A shared reference to a memory is a memory: several stores can view one backend, and a
 /// caller can keep ownership while lending it.
 impl<M: Memory + ?Sized> Memory for &M {

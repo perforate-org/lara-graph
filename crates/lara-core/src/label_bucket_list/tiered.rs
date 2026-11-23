@@ -1,12 +1,45 @@
 //! Tiered bucket lists: a top extent of leaf references over pages of sorted entries.
 //!
-//! Top layout: leaf count u16, then per leaf its first key (3) | page id u32 | entry count u8.
 //! A lookup reads the top and one leaf. Adding to a full leaf splits it into two half-full pages;
 //! removing a leaf's last entry releases the page, and a list down to one leaf turns flat again.
+//!
+//! # Top
+//!
+//! ```text
+//! ---------------------------------------- <- Extent start
+//! Leaf count = L                  ↕ 2 bytes
+//! ---------------------------------------- <- Offset 2
+//! Leaf 0: first label             ↕ 2 bytes
+//! ----------------------------------------
+//! Leaf 0: first direction         ↕ 1 byte
+//! ----------------------------------------
+//! Leaf 0: page id                 ↕ 4 bytes
+//! ----------------------------------------
+//! Leaf 0: entry count             ↕ 1 byte
+//! ----------------------------------------
+//! ...
+//! ----------------------------------------
+//! Leaf L - 1                      ↕ 8 bytes
+//! ----------------------------------------
+//! Unused space
+//! ```
+//!
+//! # Leaf page
+//!
+//! ```text
+//! ---------------------------------------- <- Page start
+//! Entry 0                         ↕ 19 bytes
+//! ----------------------------------------
+//! ...
+//! ----------------------------------------
+//! Entry count - 1 (at most 214)   ↕ 19 bytes
+//! ----------------------------------------
+//! Unused space
+//! ```
 
 use super::{
-    BucketKey, BucketList, EntryAt, LEAF_ENTRIES, Lookup, Shape, class_len, encode_entry, flat,
-    read_entries, search, shift_in, shift_out,
+    EntryAt, LEAF_ENTRIES, LabelBucketKey, LabelBucketList, Lookup, Shape, class_len, encode_entry,
+    flat, read_entries, search, shift_in, shift_out,
 };
 use crate::corrupt::corrupt;
 use crate::memory::{Memory, WriteError};
@@ -28,7 +61,7 @@ const TOP_ENTRIES: usize = if cfg!(test) {
 /// One leaf page as the top lists it.
 #[derive(Clone, Copy)]
 struct Leaf {
-    first: BucketKey,
+    first: LabelBucketKey,
     page: PageId,
     count: u8,
 }
@@ -42,7 +75,7 @@ impl Leaf {
 
     fn decode([k0, k1, k2, p0, p1, p2, p3, count]: [u8; TOP_ENTRY_BYTES]) -> Self {
         Self {
-            first: BucketKey::decode([k0, k1, k2]),
+            first: LabelBucketKey::decode([k0, k1, k2]),
             page: PageId::new(u32::from_le_bytes([p0, p1, p2, p3])),
             count,
         }
@@ -53,8 +86,8 @@ impl Leaf {
     }
 }
 
-const fn tiered(top: Extent) -> BucketList {
-    BucketList(Shape::Tiered { top })
+const fn tiered(top: Extent) -> LabelBucketList {
+    LabelBucketList(Shape::Tiered { top })
 }
 
 fn read_top<M: Memory>(pages: &Pages<'_, M>, top: Extent) -> Vec<Leaf> {
@@ -97,7 +130,11 @@ fn write_top<M: Memory>(store: &PageStore<M>, top: Extent, leaves: &[Leaf]) {
     store.write(top.offset(), &bytes);
 }
 
-fn write_entries<M: Memory>(store: &PageStore<M>, page: PageId, entries: &[(BucketKey, Stored)]) {
+fn write_entries<M: Memory>(
+    store: &PageStore<M>,
+    page: PageId,
+    entries: &[(LabelBucketKey, Stored)],
+) {
     let bytes: Vec<u8> = entries
         .iter()
         .flat_map(|(k, d)| encode_entry(*k, d))
@@ -106,7 +143,7 @@ fn write_entries<M: Memory>(store: &PageStore<M>, page: PageId, entries: &[(Buck
 }
 
 /// The leaf for `entries`, a non-empty sorted run written to `page`.
-fn leaf_of(page: PageId, entries: &[(BucketKey, Stored)]) -> Leaf {
+fn leaf_of(page: PageId, entries: &[(LabelBucketKey, Stored)]) -> Leaf {
     let first = entries
         .first()
         .map_or_else(|| corrupt("an empty leaf"), |(k, _)| *k);
@@ -114,7 +151,7 @@ fn leaf_of(page: PageId, entries: &[(BucketKey, Stored)]) -> Leaf {
     Leaf { first, page, count }
 }
 
-pub(super) fn lookup<M: Memory>(pages: &Pages<'_, M>, top: Extent, key: BucketKey) -> Lookup {
+pub(super) fn lookup<M: Memory>(pages: &Pages<'_, M>, top: Extent, key: LabelBucketKey) -> Lookup {
     let leaves = read_top(pages, top);
     // The last leaf starting at or before `key`; keys before every leaf belong to the first.
     let i = leaves.partition_point(|l| l.first <= key).saturating_sub(1);
@@ -135,7 +172,10 @@ pub(super) fn has_room<M: Memory>(pages: &Pages<'_, M>, top: Extent, adding: usi
     leaves + adding <= TOP_ENTRIES
 }
 
-pub(super) fn entries<M: Memory>(pages: &Pages<'_, M>, top: Extent) -> Vec<(BucketKey, Stored)> {
+pub(super) fn entries<M: Memory>(
+    pages: &Pages<'_, M>,
+    top: Extent,
+) -> Vec<(LabelBucketKey, Stored)> {
     read_top(pages, top)
         .into_iter()
         .flat_map(|l| read_entries(pages, l.page.offset(), l.entries()))
@@ -173,8 +213,8 @@ pub(super) fn extents<M: Memory>(pages: &Pages<'_, M>, top: Extent) -> Vec<Exten
 /// A tiered list of two half-full leaves holding `all`, sorted. On error nothing is allocated.
 pub(super) fn from_entries<M: Memory>(
     store: &mut PageStore<M>,
-    all: &[(BucketKey, Stored)],
-) -> Result<BucketList, WriteError> {
+    all: &[(LabelBucketKey, Stored)],
+) -> Result<LabelBucketList, WriteError> {
     let mut txn = SpanTxn::begin(store);
     let left_page = txn.allocate(ByteClass::PAGE)?.page();
     let right_page = txn.allocate(ByteClass::PAGE)?.page();
@@ -195,9 +235,9 @@ pub(super) fn add<M: Memory>(
     store: &mut PageStore<M>,
     top: Extent,
     gap: EntryAt,
-    key: BucketKey,
+    key: LabelBucketKey,
     d: &Stored,
-) -> Result<BucketList, WriteError> {
+) -> Result<LabelBucketList, WriteError> {
     let mut leaves = read_top(&store.pages(), top);
     let l = usize::from(gap.leaf);
     let target = leaf(&leaves, l);
@@ -251,7 +291,7 @@ pub(super) fn remove<M: Memory>(
     store: &mut PageStore<M>,
     top: Extent,
     entry: EntryAt,
-) -> BucketList {
+) -> LabelBucketList {
     let mut leaves = read_top(&store.pages(), top);
     let l = usize::from(entry.leaf);
     let target = leaf(&leaves, l);

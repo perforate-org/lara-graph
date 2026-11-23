@@ -134,7 +134,7 @@ fn add_some(model: &mut BTreeMap<(u32, u32), u32>, rng: &mut Rng) -> Change {
 
 #[test]
 fn random_batches_match_a_map_of_postings() {
-    let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+    let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
     let mut root = None;
     let mut model: BTreeMap<(u32, u32), u32> = BTreeMap::new();
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
@@ -217,7 +217,7 @@ fn drain(store: &mut PageStore<VecMemory>, root: Option<Root>, model: &BTreeMap<
 /// before it, and must still go to its own segment.
 #[test]
 fn a_batch_over_every_posting_keeps_each_change_in_its_segment() {
-    let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+    let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
     let mut model: BTreeMap<(u32, u32), u32> = BTreeMap::new();
     let mut rng = Rng(0x2545_F491_4F6C_DD1D);
     let seed: Vec<Change> = (0..3000).map(|_| add_some(&mut model, &mut rng)).collect();
@@ -237,7 +237,7 @@ fn a_batch_over_every_posting_keeps_each_change_in_its_segment() {
 /// between and beyond the postings.
 #[test]
 fn nth_and_rank_follow_targets_across_leaves() {
-    let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+    let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
     let mut model: BTreeMap<(u32, u32), u32> = BTreeMap::new();
     let mut rng = Rng(0x1405_7B7E_F767_814F);
     let mut changes: Vec<Change> = (0..2000).map(|_| add_some(&mut model, &mut rng)).collect();

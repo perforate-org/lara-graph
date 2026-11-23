@@ -12,6 +12,20 @@
 //! from the number of data pages and is never stored. The top level is an extent sized to its
 //! entries; every lower node is a whole page. Growth is bounded: the top grows by copying at most
 //! one page of entries, and a full one-page top becomes a child of a new top without copying.
+//!
+//! # Entry
+//!
+//! The top level is an extent of entries; each lower node is a page of 512.
+//!
+//! ```text
+//! ---------------------------------------- <- Offset 0
+//! Page id; u32::MAX if hollow     ↕ 4 bytes       (the child node above the bottom)
+//! ----------------------------------------
+//! Tombstones                      ↕ 2 bytes       (children with a fillable hole above)
+//! ----------------------------------------
+//! First hole slot; 1024 for none  ↕ 2 bytes
+//! ----------------------------------------
+//! ```
 
 use crate::corrupt::corrupt;
 use crate::descriptor::{PAGE_SLOTS, Paged};

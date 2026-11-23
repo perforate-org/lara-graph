@@ -22,8 +22,8 @@ impl Rng {
     }
 }
 
-/// A bucket: `vertex`'s `(label, side)`.
-type Key = (u32, Label, Side);
+/// A bucket: `node`'s `(label, direction)`.
+type Key = (u32, Label, Direction);
 
 /// One live slot: the other end and the logical edge's id.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -37,9 +37,9 @@ struct Slot {
 struct Model {
     buckets: BTreeMap<Key, Vec<Option<Slot>>>,
     next_id: u64,
-    /// The vertex being detached, if any.
+    /// The node being detached, if any.
     detaching: Option<u32>,
-    /// Vertices detached for good.
+    /// Nodes detached for good.
     deleted: Vec<u32>,
     /// Declared widths.
     widths: BTreeMap<Label, u16>,
@@ -63,18 +63,18 @@ fn placement_of(label: Label) -> Placement {
 }
 
 /// The bucket the random test grows past one page.
-const HUB: Key = (0, Label::new(0), Side::Out);
+const HUB: Key = (0, Label::new(0), Direction::Outgoing);
 
 impl Model {
     fn half(key: Key, at: usize) -> EdgeRef {
-        let (x, label, side) = key;
-        EdgeRef::new(v(x), label, side, p(u32::try_from(at).unwrap()))
+        let (x, label, direction) = key;
+        EdgeRef::new(v(x), label, direction, p(u32::try_from(at).unwrap()))
     }
 
     /// Records a half the graph placed; it must fill a hole or append, after every live slot
-    /// to the same vertex.
+    /// to the same node.
     fn place(&mut self, half: EdgeRef, slot: Slot) {
-        let key = (half.vertex().index(), half.label(), half.side());
+        let key = (half.node().index(), half.label(), half.direction());
         let bucket = self.buckets.entry(key).or_default();
         let i = usize::try_from(half.position().index()).unwrap();
         if placement_of(half.label()) == Placement::Append {
@@ -101,7 +101,7 @@ impl Model {
         assert!(!later_equal, "equal-target edges stay in insertion order");
     }
 
-    /// A reusing insert fills the first hole after the last live slot to the same vertex, or
+    /// A reusing insert fills the first hole after the last live slot to the same node, or
     /// appends when there is none. Holes in a complete page with no live slot may be passed over:
     /// compaction may have released that page.
     fn check_reuse(bucket: &[Option<Slot>], i: usize, slot: Slot) {
@@ -164,13 +164,13 @@ impl Model {
     }
 
     fn slot(&self, half: EdgeRef) -> Option<Slot> {
-        let key = (half.vertex().index(), half.label(), half.side());
+        let key = (half.node().index(), half.label(), half.direction());
         let at = usize::try_from(half.position().index()).unwrap();
         self.buckets.get(&key)?.get(at).copied().flatten()
     }
 
     fn clear(&mut self, half: EdgeRef) {
-        let key = (half.vertex().index(), half.label(), half.side());
+        let key = (half.node().index(), half.label(), half.direction());
         let at = usize::try_from(half.position().index()).unwrap();
         self.buckets.get_mut(&key).unwrap()[at] = None;
     }
@@ -235,7 +235,11 @@ enum Phase {
     Shrink,
 }
 
-const SIDES: [Side; 3] = [Side::Out, Side::In, Side::Undirected];
+const SIDES: [Direction; 3] = [
+    Direction::Outgoing,
+    Direction::Incoming,
+    Direction::Undirected,
+];
 
 fn random_step<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n: u32) {
     let roll = rng.below(100);
@@ -252,7 +256,7 @@ fn random_step<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n:
         model_detach_step(g, model, x, rng);
         return;
     }
-    // Detach a vertex now and then; never an insert target (0..3), so the hub keeps growing.
+    // Detach a node now and then; never an insert target (0..3), so the hub keeps growing.
     // Targets' in-buckets are detached in the targeted tests.
     let x = 3 + rng.below(n - 3);
     if model.detaching.is_none() && !model.deleted.contains(&x) && rng.below(400) == 0 {
@@ -269,7 +273,7 @@ fn random_step<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n:
     let live = model.live_half(rng);
     match live {
         Some(half) if roll < compact_percent => {
-            let key = (half.vertex().index(), half.label(), half.side());
+            let key = (half.node().index(), half.label(), half.direction());
             model_compact(g, model, key);
         }
         Some(half) if roll >= compact_percent + insert_percent => {
@@ -295,7 +299,7 @@ fn model_insert<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n
     let to = rng.below(3);
     if let Some(error) = [from, to].into_iter().find_map(|x| model.blocked(x)) {
         assert_eq!(
-            g.insert_directed(
+            g.add_edge(
                 v(from),
                 label,
                 v(to),
@@ -314,32 +318,32 @@ fn model_insert<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n
     }
     let halves = if label == HUB.1 || rng.below(4) != 0 {
         let halves = g
-            .insert_directed(v(from), label, v(to), placement_of(label), &value)
+            .add_edge(v(from), label, v(to), placement_of(label), &value)
             .unwrap();
         assert_eq!(
             halves.canonical(),
-            Model::half((from, label, Side::Out), at(halves.canonical()))
+            Model::half((from, label, Direction::Outgoing), at(halves.canonical()))
         );
         assert_eq!(
             halves.other(),
-            Model::half((to, label, Side::In), at(halves.other()))
+            Model::half((to, label, Direction::Incoming), at(halves.other()))
         );
         halves
     } else {
         let halves = g
-            .insert_undirected(v(from), label, v(to), placement_of(label), &value)
+            .add_undirected_edge(v(from), label, v(to), placement_of(label), &value)
             .unwrap();
         let (low, high) = (from.min(to), from.max(to));
-        assert_eq!(halves.canonical().vertex(), v(high));
-        assert_eq!(halves.other().vertex(), v(low));
-        assert_eq!(halves.canonical().side(), Side::Undirected);
+        assert_eq!(halves.canonical().node(), v(high));
+        assert_eq!(halves.other().node(), v(low));
+        assert_eq!(halves.canonical().direction(), Direction::Undirected);
         halves
     };
     let (source, target) = (halves.canonical(), halves.other());
     model.place(
         source,
         Slot {
-            other: target.vertex().index(),
+            other: target.node().index(),
             id,
         },
     );
@@ -347,7 +351,7 @@ fn model_insert<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n
         model.place(
             target,
             Slot {
-                other: source.vertex().index(),
+                other: source.node().index(),
                 id,
             },
         );
@@ -363,8 +367,8 @@ fn model_detach_step<M: Memory>(g: &mut Graph<M>, model: &mut Model, x: u32, rng
         let halves = r.halves();
         let source = halves.canonical();
         assert!(
-            [source.vertex(), halves.other().vertex()].contains(&v(x)),
-            "an edge of the detaching vertex"
+            [source.node(), halves.other().node()].contains(&v(x)),
+            "an edge of the detaching node"
         );
         assert_eq!(halves, order(source, model.counterpart(source)));
         let id = model.slot(source).unwrap().id;
@@ -382,8 +386,8 @@ fn model_detach_step<M: Memory>(g: &mut Graph<M>, model: &mut Model, x: u32, rng
             .iter()
             .filter(|((owner, _, _), _)| *owner == x)
             .any(|(_, slots)| slots.iter().any(Option::is_some));
-        assert!(!left, "a detached vertex has no edges");
-        assert_eq!(g.vertex_state(v(x)), Ok(VertexState::Deleted));
+        assert!(!left, "a detached node has no edges");
+        assert_eq!(g.node_state(v(x)), Ok(NodeState::Deleted));
         model.detaching = None;
         model.deleted.push(x);
     }
@@ -404,7 +408,7 @@ fn model_remove<M: Memory>(g: &mut Graph<M>, model: &mut Model, half: EdgeRef) {
     );
     model.clear(half);
     model.clear(other);
-    assert_eq!(g.edge(half), Ok(None));
+    assert_eq!(g.edge_target(half), Ok(None));
     assert_eq!(g.remove_edge(other), Ok(Removal::Absent));
 }
 
@@ -413,7 +417,7 @@ fn model_set_value<M: Memory>(g: &mut Graph<M>, model: &mut Model, half: EdgeRef
     let id = model.slot(half).unwrap().id;
     let value = model.fresh_value(half.label(), rng);
     let old = model.expected(id, half.label());
-    assert_eq!(g.set_value(half, &value), Ok(Some(old)));
+    assert_eq!(g.set_edge_value(half, &value), Ok(Some(old)));
     if !value.is_empty() {
         model.values.insert(id, value);
     }
@@ -421,11 +425,12 @@ fn model_set_value<M: Memory>(g: &mut Graph<M>, model: &mut Model, half: EdgeRef
 
 /// One compaction step, applied to the model through its reported moves.
 fn model_compact<M: Memory>(g: &mut Graph<M>, model: &mut Model, key: Key) {
-    let (x, label, side) = key;
+    let (x, label, direction) = key;
     let bucket = model.buckets.entry(key).or_default();
     let before: Vec<Slot> = bucket.iter().flatten().copied().collect();
-    let compaction = g.compact(v(x), label, side).unwrap();
-    let stored = g.degree(v(x), label, side).unwrap() + g.holes(v(x), label, side).unwrap();
+    let compaction = g.compact(v(x), label, direction).unwrap();
+    let stored =
+        g.degree(v(x), label, direction).unwrap() + g.holes(v(x), label, direction).unwrap();
     let mut after = vec![None; usize::try_from(stored).unwrap()];
     let moved: BTreeMap<usize, (usize, u32)> = compaction
         .changes()
@@ -457,24 +462,23 @@ fn model_compact<M: Memory>(g: &mut Graph<M>, model: &mut Model, key: Key) {
 fn assert_matches_model<M: Memory>(g: &Graph<M>, model: &Model, n: u32) {
     for x in 0..n {
         for label in (0..3).map(l) {
-            for side in SIDES {
-                let expected: Vec<(u32, u32)> =
-                    model
-                        .buckets
-                        .get(&(x, label, side))
-                        .map_or_else(Vec::new, |slots| {
-                            (0u32..)
-                                .zip(slots)
-                                .filter_map(|(i, s)| s.map(|s| (i, s.other)))
-                                .collect()
-                        });
+            for direction in SIDES {
+                let expected: Vec<(u32, u32)> = model
+                    .buckets
+                    .get(&(x, label, direction))
+                    .map_or_else(Vec::new, |slots| {
+                        (0u32..)
+                            .zip(slots)
+                            .filter_map(|(i, s)| s.map(|s| (i, s.other)))
+                            .collect()
+                    });
                 assert_eq!(
-                    edges_on(g, v(x), label, side),
+                    edges_on(g, v(x), label, direction),
                     expected,
-                    "vertex {x} {label:?} {side:?}"
+                    "node {x} {label:?} {direction:?}"
                 );
-                assert_other_reads(g, (v(x), label, side), &expected);
-                assert_values(g, model, (v(x), label, side));
+                assert_other_reads(g, (v(x), label, direction), &expected);
+                assert_values(g, model, (v(x), label, direction));
             }
         }
     }
@@ -484,11 +488,11 @@ fn assert_matches_model<M: Memory>(g: &Graph<M>, model: &Model, n: u32) {
 /// ascending scan `expected`.
 fn assert_other_reads<M: Memory>(
     g: &Graph<M>,
-    (x, label, side): (VertexId, Label, Side),
+    (x, label, direction): (NodeId, Label, Direction),
     expected: &[(u32, u32)],
 ) {
     let mut down = Vec::new();
-    g.visit_neighbors(x, label, side, Order::Descending, |e| {
+    g.visit_neighbors(x, label, direction, Order::Descending, |e| {
         down.push((e.position().index(), e.target().index()));
         ControlFlow::<()>::Continue(())
     })
@@ -505,21 +509,21 @@ fn assert_other_reads<M: Memory>(
         let mut cursor = Some(Cursor::first(order, span));
         while let Some(at) = cursor {
             cursor = g
-                .visit_window(x, label, side, at, |e| {
+                .visit_window(x, label, direction, at, |e| {
                     seen.push((e.position().index(), e.target().index()));
                 })
                 .unwrap();
         }
         assert_eq!(seen, want, "{order:?} windows");
     }
-    let stored = g.degree(x, label, side).unwrap() + g.holes(x, label, side).unwrap();
+    let stored = g.degree(x, label, direction).unwrap() + g.holes(x, label, direction).unwrap();
     // Every position and two past the end, highest first, with a repeat.
     let positions: Vec<Position> = (0..stored + 2).rev().chain([0]).map(p).collect();
     let mut targets = Vec::new();
-    g.targets_at(x, label, side, &positions, &mut targets)
+    g.targets_at(x, label, direction, &positions, &mut targets)
         .unwrap();
     let live: BTreeMap<u32, u32> = expected.iter().copied().collect();
-    let want: Vec<Option<VertexId>> = positions
+    let want: Vec<Option<NodeId>> = positions
         .iter()
         .map(|at| live.get(&at.index()).map(|&t| v(t)))
         .collect();
@@ -531,9 +535,9 @@ fn assert_other_reads<M: Memory>(
 fn assert_values<M: Memory>(
     g: &Graph<M>,
     model: &Model,
-    (x, label, side): (VertexId, Label, Side),
+    (x, label, direction): (NodeId, Label, Direction),
 ) {
-    let Some(slots) = model.buckets.get(&(x.index(), label, side)) else {
+    let Some(slots) = model.buckets.get(&(x.index(), label, direction)) else {
         return;
     };
     let live: BTreeMap<u32, Vec<u8>> = (0u32..)
@@ -541,20 +545,23 @@ fn assert_values<M: Memory>(
         .filter_map(|(at, s)| s.map(|s| (at, model.expected(s.id, label))))
         .collect();
     let mut combined = BTreeMap::new();
-    g.visit_neighbors_with_values(x, (label, side), Order::Ascending, |e, value| {
+    g.visit_neighbors_with_values(x, (label, direction), Order::Ascending, |e, value| {
         combined.insert(e.position().index(), value.to_vec());
         ControlFlow::<()>::Continue(())
     })
     .unwrap();
-    assert_eq!(combined, live, "combined scan of {x:?} {label:?} {side:?}");
+    assert_eq!(
+        combined, live,
+        "combined scan of {x:?} {label:?} {direction:?}"
+    );
     let positions: Vec<Position> = live.keys().rev().map(|&at| p(at)).collect();
     let mut bytes = Vec::new();
-    g.values_at(x, (label, side), &positions, &mut bytes)
+    g.values_at(x, (label, direction), &positions, &mut bytes)
         .unwrap();
     let want: Vec<u8> = live.values().rev().flatten().copied().collect();
-    assert_eq!(bytes, want, "values_at of {x:?} {label:?} {side:?}");
+    assert_eq!(bytes, want, "values_at of {x:?} {label:?} {direction:?}");
     let mut first_phase = BTreeMap::new();
-    g.visit_values(x, (label, side), Order::Descending, |at, value| {
+    g.visit_values(x, (label, direction), Order::Descending, |at, value| {
         if live.contains_key(&at.index()) {
             first_phase.insert(at.index(), value.to_vec());
         }
@@ -564,19 +571,19 @@ fn assert_values<M: Memory>(
     if model.widths.contains_key(&label) {
         assert_eq!(
             first_phase, live,
-            "values-first scan of {x:?} {label:?} {side:?}"
+            "values-first scan of {x:?} {label:?} {direction:?}"
         );
     }
 }
 
 /// Compacts a bucket until done; a bounded number of steps must get there.
 fn compact_fully<M: Memory>(g: &mut Graph<M>, model: &mut Model, key: Key) {
-    let (x, label, side) = key;
+    let (x, label, direction) = key;
     for _ in 0..10_000 {
-        let before = g.holes(v(x), label, side).unwrap();
+        let before = g.holes(v(x), label, direction).unwrap();
         model_compact(g, model, key);
-        if g.compact(v(x), label, side).unwrap().progress() == Progress::Done
-            && g.holes(v(x), label, side).unwrap() <= before
+        if g.compact(v(x), label, direction).unwrap().progress() == Progress::Done
+            && g.holes(v(x), label, direction).unwrap() <= before
         {
             return;
         }

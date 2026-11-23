@@ -1,17 +1,57 @@
-//! Per-vertex bucket lists: which `(label, side)` buckets a vertex has, and their descriptors.
+//! Per-node label bucket lists: which `(label, direction)` label buckets a node has, and their
+//! descriptors.
 //!
-//! Entries are 19 bytes (label, side, 16-byte descriptor), sorted by key. A list starts **flat**:
-//! one extent in its own page store, read whole and searched in memory; adding a bucket shifts
-//! entries in place or moves the list to the next class. A flat list that would outgrow a page
-//! becomes **tiered** (`tiered`): a small top extent lists leaf pages with their first key and
+//! Entries are 19 bytes (label, direction, 16-byte descriptor), sorted by key. A list starts
+//! **flat**: one extent in its own page store, read whole and searched in memory; adding a bucket
+//! shifts entries in place or moves the list to the next class. A flat list that would outgrow a
+//! page becomes **tiered** (`tiered`): a small top extent lists leaf pages with their first key and
 //! count, and each leaf holds a page of entries. Every update copies at most one page. Lists are
-//! independent: changing one never touches another vertex.
+//! independent: changing one never touches another node.
+//!
+//! # Reference
+//!
+//! A node's record holds it ([`LABEL_BUCKET_LIST_REF_BYTES`]); an empty list is all zeros.
+//!
+//! ```text
+//! ---------------------------------------- <- Offset 0
+//! Extent: the flat list or the top↕ 7 bytes
+//! ----------------------------------------
+//! Entry count; 0xFF if tiered     ↕ 1 byte
+//! ----------------------------------------
+//! ```
+//!
+//! # Flat list
+//!
+//! ```text
+//! ---------------------------------------- <- Extent start
+//! Entry 0                         ↕ 19 bytes
+//! ----------------------------------------
+//! ...
+//! ----------------------------------------
+//! Entry count - 1                 ↕ 19 bytes
+//! ----------------------------------------
+//! Unused space
+//! ```
+//!
+//! # Entry
+//!
+//! Entries are sorted by label, then direction.
+//!
+//! ```text
+//! ---------------------------------------- <- Offset 0
+//! Label                           ↕ 2 bytes
+//! ----------------------------------------
+//! Direction: 0 out, 1 in, 2 undir.↕ 1 byte
+//! ----------------------------------------
+//! Stored: descriptor or header ref↕ 16 bytes
+//! ----------------------------------------
+//! ```
 
 mod tiered;
 
 use crate::corrupt::corrupt;
 use crate::descriptor::DESCRIPTOR_BYTES;
-use crate::id::{Label, Side};
+use crate::id::{Direction, Label};
 use crate::memory::{Memory, WriteError};
 use crate::page_store::{ByteClass, EXTENT_BYTES, Extent, PageStore, Pages};
 use crate::stored::Stored;
@@ -25,52 +65,52 @@ const LEAF_ENTRIES: usize = if cfg!(test) { 8 } else { 4096 / ENTRY_BYTES };
 const _: () = assert!(crate::page_store::PAGE_BYTES == 4096);
 /// Pages one [`add`] can take from the store: tiering takes two leaves and a top.
 pub(crate) const PAGES_PER_ADD: u32 = 3;
-/// Bytes of a vertex's list reference.
-pub(crate) const LIST_REF_BYTES: usize = EXTENT_BYTES + 1;
+/// Bytes of a node's label bucket list reference.
+pub(crate) const LABEL_BUCKET_LIST_REF_BYTES: usize = EXTENT_BYTES + 1;
 /// The count byte that marks a tiered list; flat counts stay below it.
 const TIERED: u8 = u8::MAX;
 // Flat counts never reach [`TIERED`] (0xFF).
 const _: () = assert!(LEAF_ENTRIES < 0xFF);
 
-/// Which bucket of a vertex: a label on one side.
+/// Which label bucket of a node: a label in one direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct BucketKey {
+pub(crate) struct LabelBucketKey {
     pub(crate) label: Label,
-    pub(crate) side: Side,
+    pub(crate) direction: Direction,
 }
 
-const SIDE_OUT: u8 = 0;
-const SIDE_IN: u8 = 1;
-const SIDE_UNDIRECTED: u8 = 2;
+const DIRECTION_OUTGOING: u8 = 0;
+const DIRECTION_INCOMING: u8 = 1;
+const DIRECTION_UNDIRECTED: u8 = 2;
 
-impl BucketKey {
+impl LabelBucketKey {
     fn encode(self) -> [u8; 3] {
         let [l0, l1] = self.label.get().to_le_bytes();
-        let side = match self.side {
-            Side::Out => SIDE_OUT,
-            Side::In => SIDE_IN,
-            Side::Undirected => SIDE_UNDIRECTED,
+        let direction = match self.direction {
+            Direction::Outgoing => DIRECTION_OUTGOING,
+            Direction::Incoming => DIRECTION_INCOMING,
+            Direction::Undirected => DIRECTION_UNDIRECTED,
         };
-        [l0, l1, side]
+        [l0, l1, direction]
     }
 
-    fn decode([l0, l1, side]: [u8; 3]) -> Self {
-        let side = match side {
-            SIDE_OUT => Side::Out,
-            SIDE_IN => Side::In,
-            SIDE_UNDIRECTED => Side::Undirected,
-            _ => corrupt("bucket side"),
+    fn decode([l0, l1, direction]: [u8; 3]) -> Self {
+        let direction = match direction {
+            DIRECTION_OUTGOING => Direction::Outgoing,
+            DIRECTION_INCOMING => Direction::Incoming,
+            DIRECTION_UNDIRECTED => Direction::Undirected,
+            _ => corrupt("bucket direction"),
         };
         Self {
             label: Label::new(u16::from_le_bytes([l0, l1])),
-            side,
+            direction,
         }
     }
 }
 
-/// Where a vertex's bucket list is.
+/// Where a node's label bucket list is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct BucketList(Shape);
+pub(crate) struct LabelBucketList(Shape);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Shape {
@@ -98,10 +138,10 @@ pub(crate) enum Lookup {
     Absent { gap: EntryAt },
 }
 
-/// Layout: extent (7) | count u8, [`TIERED`] for a tiered list. An empty list is all zeros.
-pub(crate) fn encode_ref(list: Option<BucketList>) -> [u8; LIST_REF_BYTES] {
-    let mut out = [0u8; LIST_REF_BYTES];
-    let encoded = list.map(|BucketList(shape)| match shape {
+/// As the module's Reference diagram shows.
+pub(crate) fn encode_ref(list: Option<LabelBucketList>) -> [u8; LABEL_BUCKET_LIST_REF_BYTES] {
+    let mut out = [0u8; LABEL_BUCKET_LIST_REF_BYTES];
+    let encoded = list.map(|LabelBucketList(shape)| match shape {
         Shape::Flat { extent, count } => (extent, count),
         Shape::Tiered { top } => (top, TIERED),
     });
@@ -116,11 +156,11 @@ pub(crate) fn encode_ref(list: Option<BucketList>) -> [u8; LIST_REF_BYTES] {
     out
 }
 
-pub(crate) fn decode_ref(bytes: [u8; LIST_REF_BYTES]) -> Option<BucketList> {
+pub(crate) fn decode_ref(bytes: [u8; LABEL_BUCKET_LIST_REF_BYTES]) -> Option<LabelBucketList> {
     let [e0, e1, e2, e3, e4, e5, e6, count] = bytes;
     (count != 0).then(|| {
         let extent = Extent::decode([e0, e1, e2, e3, e4, e5, e6]);
-        BucketList(match count {
+        LabelBucketList(match count {
             TIERED => Shape::Tiered { top: extent },
             count => Shape::Flat { extent, count },
         })
@@ -130,10 +170,10 @@ pub(crate) fn decode_ref(bytes: [u8; LIST_REF_BYTES]) -> Option<BucketList> {
 /// Finds a bucket with one read of a flat list, or a top and a leaf read of a tiered one.
 pub(crate) fn lookup<M: Memory>(
     pages: &Pages<'_, M>,
-    list: Option<BucketList>,
-    key: BucketKey,
+    list: Option<LabelBucketList>,
+    key: LabelBucketKey,
 ) -> Lookup {
-    match list.map(|BucketList(shape)| shape) {
+    match list.map(|LabelBucketList(shape)| shape) {
         None => Lookup::Absent {
             gap: EntryAt {
                 leaf: 0,
@@ -153,7 +193,7 @@ fn search<M: Memory>(
     pages: &Pages<'_, M>,
     base: ByteOffset,
     count: usize,
-    key: BucketKey,
+    key: LabelBucketKey,
     leaf: u16,
 ) -> Lookup {
     let place = |index| EntryAt {
@@ -163,8 +203,8 @@ fn search<M: Memory>(
     };
     pages.with_read(base, count * ENTRY_BYTES, |bytes| {
         let (entries, _) = bytes.as_chunks::<ENTRY_BYTES>();
-        let found =
-            entries.binary_search_by(|&[k0, k1, k2, ..]| BucketKey::decode([k0, k1, k2]).cmp(&key));
+        let found = entries
+            .binary_search_by(|&[k0, k1, k2, ..]| LabelBucketKey::decode([k0, k1, k2]).cmp(&key));
         match found {
             Ok(index) => Lookup::Present {
                 entry: place(index),
@@ -177,11 +217,11 @@ fn search<M: Memory>(
     })
 }
 
-/// A vertex's first bucket in key order, with one small read (two for a tiered list).
+/// A node's first bucket in key order, with one small read (two for a tiered list).
 pub(crate) fn first<M: Memory>(
     pages: &Pages<'_, M>,
-    list: BucketList,
-) -> (EntryAt, BucketKey, Stored) {
+    list: LabelBucketList,
+) -> (EntryAt, LabelBucketKey, Stored) {
     let (leaf_page, leaf) = match list.0 {
         Shape::Flat { extent, .. } => (extent.offset(), 0),
         Shape::Tiered { top } => (tiered::first_leaf(pages, top), 0),
@@ -199,26 +239,29 @@ pub(crate) fn first<M: Memory>(
 /// can split a leaf per bucket while its top has entries to spare.
 pub(crate) fn has_room<M: Memory>(
     pages: &Pages<'_, M>,
-    list: Option<BucketList>,
+    list: Option<LabelBucketList>,
     adding: usize,
 ) -> bool {
-    match list.map(|BucketList(shape)| shape) {
+    match list.map(|LabelBucketList(shape)| shape) {
         None | Some(Shape::Flat { .. }) => true,
         Some(Shape::Tiered { top }) => tiered::has_room(pages, top, adding),
     }
 }
 
-/// The keys of a vertex's buckets, in order.
-pub(crate) fn keys<M: Memory>(pages: &Pages<'_, M>, list: Option<BucketList>) -> Vec<BucketKey> {
+/// The keys of a node's buckets, in order.
+pub(crate) fn keys<M: Memory>(
+    pages: &Pages<'_, M>,
+    list: Option<LabelBucketList>,
+) -> Vec<LabelBucketKey> {
     entries(pages, list).into_iter().map(|(k, _)| k).collect()
 }
 
 /// Every entry of a list, in order.
 pub(crate) fn entries<M: Memory>(
     pages: &Pages<'_, M>,
-    list: Option<BucketList>,
-) -> Vec<(BucketKey, Stored)> {
-    match list.map(|BucketList(shape)| shape) {
+    list: Option<LabelBucketList>,
+) -> Vec<(LabelBucketKey, Stored)> {
+    match list.map(|LabelBucketList(shape)| shape) {
         None => Vec::new(),
         Some(Shape::Flat { extent, count }) => {
             read_entries(pages, extent.offset(), usize::from(count))
@@ -231,7 +274,7 @@ fn read_entries<M: Memory>(
     pages: &Pages<'_, M>,
     base: ByteOffset,
     count: usize,
-) -> Vec<(BucketKey, Stored)> {
+) -> Vec<(LabelBucketKey, Stored)> {
     let bytes = pages.read(base, count * ENTRY_BYTES);
     bytes
         .as_chunks::<ENTRY_BYTES>()
@@ -241,19 +284,19 @@ fn read_entries<M: Memory>(
         .collect()
 }
 
-/// Every bucket of a vertex (test invariant checks).
+/// Every bucket of a node (test invariant checks).
 #[cfg(test)]
 pub(crate) fn buckets<M: Memory>(
     pages: &Pages<'_, M>,
-    list: Option<BucketList>,
-) -> Vec<(BucketKey, Stored)> {
+    list: Option<LabelBucketList>,
+) -> Vec<(LabelBucketKey, Stored)> {
     entries(pages, list)
 }
 
 /// Panics unless the list's shape is within its limits: a flat list or each leaf holds 1 to
 /// [`LEAF_ENTRIES`] entries, and a tiered list has 2 to `TOP_ENTRIES` leaves (test checks).
 #[cfg(test)]
-pub(crate) fn check_shape<M: Memory>(pages: &Pages<'_, M>, list: BucketList) {
+pub(crate) fn check_shape<M: Memory>(pages: &Pages<'_, M>, list: LabelBucketList) {
     match list.0 {
         Shape::Flat { count, .. } => {
             assert!(
@@ -267,19 +310,19 @@ pub(crate) fn check_shape<M: Memory>(pages: &Pages<'_, M>, list: BucketList) {
 
 /// Every extent a list owns (test invariant checks).
 #[cfg(test)]
-pub(crate) fn extents<M: Memory>(pages: &Pages<'_, M>, list: BucketList) -> Vec<Extent> {
+pub(crate) fn extents<M: Memory>(pages: &Pages<'_, M>, list: LabelBucketList) -> Vec<Extent> {
     match list.0 {
         Shape::Flat { extent, .. } => alloc::vec![extent],
         Shape::Tiered { top } => tiered::extents(pages, top),
     }
 }
 
-fn decode_entry(entry: [u8; ENTRY_BYTES]) -> (BucketKey, Stored) {
+fn decode_entry(entry: [u8; ENTRY_BYTES]) -> (LabelBucketKey, Stored) {
     let [k0, k1, k2, rest @ ..] = entry;
-    (BucketKey::decode([k0, k1, k2]), Stored::decode(rest))
+    (LabelBucketKey::decode([k0, k1, k2]), Stored::decode(rest))
 }
 
-fn encode_entry(key: BucketKey, d: &Stored) -> impl Iterator<Item = u8> {
+fn encode_entry(key: LabelBucketKey, d: &Stored) -> impl Iterator<Item = u8> {
     key.encode().into_iter().chain(d.encode())
 }
 
@@ -292,12 +335,12 @@ pub(crate) fn set<M: Memory>(store: &PageStore<M>, entry: EntryAt, d: &Stored) {
 /// unchanged. The caller checks [`has_room`] first.
 pub(crate) fn add<M: Memory>(
     store: &mut PageStore<M>,
-    list: Option<BucketList>,
+    list: Option<LabelBucketList>,
     gap: EntryAt,
-    key: BucketKey,
+    key: LabelBucketKey,
     d: &Stored,
-) -> Result<BucketList, WriteError> {
-    match list.map(|BucketList(shape)| shape) {
+) -> Result<LabelBucketList, WriteError> {
+    match list.map(|LabelBucketList(shape)| shape) {
         None => add_flat(store, None, gap.index, key, d),
         Some(Shape::Flat { extent, count }) if usize::from(count) < LEAF_ENTRIES => {
             add_flat(store, Some((extent, count)), gap.index, key, d)
@@ -317,9 +360,9 @@ fn add_flat<M: Memory>(
     store: &mut PageStore<M>,
     list: Option<(Extent, u8)>,
     index: usize,
-    key: BucketKey,
+    key: LabelBucketKey,
     d: &Stored,
-) -> Result<BucketList, WriteError> {
+) -> Result<LabelBucketList, WriteError> {
     let count = list.map_or(0, |(_, c)| usize::from(c));
     let new_count = u8::try_from(count + 1).unwrap_or_else(|_| corrupt("flat list count"));
     let bytes = (count + 1) * ENTRY_BYTES;
@@ -350,9 +393,9 @@ fn add_flat<M: Memory>(
 /// extents are released). Never fails.
 pub(crate) fn remove<M: Memory>(
     store: &mut PageStore<M>,
-    list: BucketList,
+    list: LabelBucketList,
     entry: EntryAt,
-) -> Option<BucketList> {
+) -> Option<LabelBucketList> {
     match list.0 {
         Shape::Flat { extent, count } => {
             if count <= 1 {
@@ -381,7 +424,7 @@ fn shift_in<M: Memory>(
     base: ByteOffset,
     count: usize,
     index: usize,
-    (key, d): (BucketKey, &Stored),
+    (key, d): (LabelBucketKey, &Stored),
 ) {
     let view = store.pages();
     let len = (count - index) * ENTRY_BYTES;
@@ -392,7 +435,7 @@ fn shift_in<M: Memory>(
 }
 
 /// Writes one entry at `at`.
-fn write_entry<M: Memory>(store: &PageStore<M>, at: ByteOffset, key: BucketKey, d: &Stored) {
+fn write_entry<M: Memory>(store: &PageStore<M>, at: ByteOffset, key: LabelBucketKey, d: &Stored) {
     let mut bytes = [0u8; ENTRY_BYTES];
     for (dst, src) in bytes.iter_mut().zip(encode_entry(key, d)) {
         *dst = src;
@@ -400,8 +443,8 @@ fn write_entry<M: Memory>(store: &PageStore<M>, at: ByteOffset, key: BucketKey, 
     store.write(at, &bytes);
 }
 
-const fn flat(extent: Extent, count: u8) -> BucketList {
-    BucketList(Shape::Flat { extent, count })
+const fn flat(extent: Extent, count: u8) -> LabelBucketList {
+    LabelBucketList(Shape::Flat { extent, count })
 }
 
 fn class_len(extent: Extent) -> usize {

@@ -1,9 +1,12 @@
 //! The page store: every byte of adjacency lives in fixed 4096-byte pages.
 //!
-//! - **pages** holds page data only, at `page_id × 4096`: no headers, so an extent reads as one
+//! - **pages** holds a header, then page data at `64 + page_id × 4096`, so an extent reads as one
 //!   contiguous range.
-//! - **directory** holds one 32-byte record per page, addressed by page id: free-list links for
-//!   free pages, and the class, use count and slot bitmap for pages split into chunks.
+//! - **directory** holds a header, then one 32-byte record per page, addressed by page id:
+//!   free-list links for free pages, and the class, use count and slot bitmap for pages split
+//!   into chunks.
+//!
+//! Each memory starts as ic-stable-structures' memories do: a 3-byte magic and a version byte.
 //!
 //! An allocation is an [`Extent`] of a power-of-two byte class from 32 to 4096. Classes below a
 //! page are carved from chunk pages (one class per page, a bitmap of slots); a full-page extent
@@ -12,6 +15,71 @@
 //!
 //! Allocation fails only when a memory cannot grow, and grows before changing anything. Release
 //! never fails.
+//!
+//! # Directory memory
+//!
+//! ```text
+//! ---------------------------------------- <- Address 0
+//! Magic "LPS"                     ↕ 3 bytes
+//! ----------------------------------------
+//! Layout version (1)              ↕ 1 byte
+//! ----------------------------------------
+//! Pages minted = N                ↕ 4 bytes
+//! ----------------------------------------
+//! Free list head (page id)        ↕ 4 bytes
+//! ---------------------------------------- <- Address 12 (AT_PARTIAL_HEADS)
+//! Partial list head, 32 B class   ↕ 4 bytes
+//! ----------------------------------------
+//! ...
+//! ----------------------------------------
+//! Partial list head, 2 KiB class  ↕ 4 bytes
+//! ---------------------------------------- <- Address 40
+//! Reserved space                  ↕ 24 bytes
+//! ---------------------------------------- <- Address 64 (RECORDS_START)
+//! Record of page 0                ↕ 32 bytes
+//! ----------------------------------------
+//! ...
+//! ----------------------------------------
+//! Record of page N - 1            ↕ 32 bytes
+//! ----------------------------------------
+//! Unallocated space
+//! ```
+//!
+//! A page id of `u32::MAX` stands for none.
+//!
+//! # Pages memory
+//!
+//! ```text
+//! ---------------------------------------- <- Address 0
+//! Magic "LPD"                     ↕ 3 bytes
+//! ----------------------------------------
+//! Layout version (1)              ↕ 1 byte
+//! ----------------------------------------
+//! Reserved space                  ↕ 60 bytes
+//! ---------------------------------------- <- Address 64 (PAGES_START)
+//! Page 0                          ↕ 4096 bytes
+//! ----------------------------------------
+//! ...
+//! ----------------------------------------
+//! Page N - 1                      ↕ 4096 bytes
+//! ----------------------------------------
+//! Unallocated space
+//! ```
+//!
+//! # Extent
+//!
+//! Extent `index` of class `2^log2` bytes in a page starts at `64 + page × 4096 + index ×
+//! 2^log2` in the pages memory.
+//!
+//! ```text
+//! ---------------------------------------- <- Offset 0
+//! Page id                         ↕ 4 bytes
+//! ----------------------------------------
+//! Index in the page               ↕ 2 bytes
+//! ----------------------------------------
+//! Class log2 (5 to 12)            ↕ 1 byte
+//! ----------------------------------------
+//! ```
 
 mod record;
 
@@ -24,15 +92,21 @@ use record::{PageRecord, RECORD_BYTES, decode_link, encode_link};
 
 /// Bytes per page.
 pub(crate) const PAGE_BYTES: u32 = 4096;
-/// Bytes a stack buffer covers in [`Pages::with_read`]: three bucket-list entries.
+/// Bytes a stack buffer covers in [`Pages::with_read`]: three label bucket list entries.
 const SMALL_READ: usize = 64;
 
-const MAGIC: [u8; 3] = *b"LPS";
+/// The directory's magic: "lara page store".
+const DIRECTORY_MAGIC: [u8; 3] = *b"LPS";
+/// The pages memory's magic: "lara page data".
+const PAGES_MAGIC: [u8; 3] = *b"LPD";
 const VERSION: u8 = 1;
 const AT_MINTED: u64 = 4;
 const AT_FREE_HEAD: u64 = 8;
 const AT_PARTIAL_HEADS: u64 = 12;
-const RECORDS_START: u64 = 64;
+/// Bytes each memory's header takes before its records or pages.
+const HEADER_BYTES: u64 = 64;
+const RECORDS_START: u64 = HEADER_BYTES;
+const PAGES_START: u64 = HEADER_BYTES;
 
 /// One page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -49,7 +123,7 @@ impl PageId {
 
     /// Where the page's data starts.
     pub(crate) fn offset(self) -> ByteOffset {
-        ByteOffset::new(u64::from(self.0) * u64::from(PAGE_BYTES))
+        ByteOffset::new(PAGES_START + u64::from(self.0) * u64::from(PAGE_BYTES))
     }
 }
 
@@ -154,7 +228,7 @@ impl Extent {
         ByteOffset::new(self.page.offset().get() + within)
     }
 
-    /// Layout: page u32 | index u16 | class log2 u8.
+    /// As the module's Extent diagram shows.
     pub(crate) fn encode(self) -> [u8; EXTENT_BYTES] {
         let [p0, p1, p2, p3] = self.page.0.to_le_bytes();
         let [i0, i1] = self.index.to_le_bytes();
@@ -183,13 +257,6 @@ pub(crate) enum OpenError {
     UnsupportedVersion(u8),
 }
 
-/// Creating a page store failed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CreateError {
-    NotEmpty,
-    Write(WriteError),
-}
-
 /// The store owns its memories exclusively, so it keeps two header values in the heap: how many
 /// pages were ever taken, and how many both memories can hold without growing.
 pub(crate) struct PageStore<M: Memory> {
@@ -202,16 +269,13 @@ pub(crate) struct PageStore<M: Memory> {
 }
 
 impl<M: Memory> PageStore<M> {
-    /// Formats two empty memories.
-    pub(crate) fn create(pages: M, directory: M) -> Result<Self, CreateError> {
-        if pages.size() != 0 || directory.size() != 0 {
-            return Err(CreateError::NotEmpty);
-        }
+    /// Formats two memories as an empty store, whatever they held: every header field is
+    /// written, and nothing past the headers is read before it is written. Constant time.
+    pub(crate) fn format(pages: M, directory: M) -> Result<Self, WriteError> {
         let region = Region::new(&directory);
-        let [m0, m1, m2] = MAGIC;
-        region
-            .write(ByteOffset::new(0), &[m0, m1, m2, VERSION])
-            .map_err(CreateError::Write)?;
+        let [d0, d1, d2] = DIRECTORY_MAGIC;
+        region.write(ByteOffset::new(0), &[d0, d1, d2, VERSION])?;
+        region.overwrite(ByteOffset::new(AT_MINTED), &0u32.to_le_bytes());
         region.overwrite(ByteOffset::new(AT_FREE_HEAD), &encode_link(None));
         for lane in 0..ByteClass::CHUNK_CLASSES {
             region.overwrite(
@@ -219,16 +283,15 @@ impl<M: Memory> PageStore<M> {
                 &encode_link(None),
             );
         }
+        let [p0, p1, p2] = PAGES_MAGIC;
+        Region::new(&pages).write(ByteOffset::new(0), &[p0, p1, p2, VERSION])?;
         Ok(Self::with_header(pages, directory, 0))
     }
 
-    /// Opens memories written by [`Self::create`]. Reads the header only.
+    /// Opens memories written by [`Self::format`]. Reads the headers only.
     pub(crate) fn open(pages: M, directory: M) -> Result<Self, OpenError> {
-        if directory.size() == 0 {
-            return Err(OpenError::NotAPageStore);
-        }
-        let [m0, m1, m2, version] = Region::new(&directory).read_array(ByteOffset::new(0));
-        if [m0, m1, m2] != MAGIC {
+        let version = header(&directory, DIRECTORY_MAGIC).ok_or(OpenError::NotAPageStore)?;
+        if header(&pages, PAGES_MAGIC) != Some(version) {
             return Err(OpenError::NotAPageStore);
         }
         if version != VERSION {
@@ -237,6 +300,11 @@ impl<M: Memory> PageStore<M> {
         let minted =
             u32::from_le_bytes(Region::new(&directory).read_array(ByteOffset::new(AT_MINTED)));
         Ok(Self::with_header(pages, directory, minted))
+    }
+
+    /// The memories back, as they were given.
+    pub(crate) fn into_memories(self) -> (M, M) {
+        (self.pages, self.directory)
     }
 
     fn with_header(pages: M, directory: M, minted: u32) -> Self {
@@ -253,7 +321,7 @@ impl<M: Memory> PageStore<M> {
     /// Recomputes [`Self::room`] from the memories' sizes.
     fn measure_room(&mut self) {
         let bytes = |m: &M| m.size().saturating_mul(crate::memory::PAGE_SIZE);
-        let pages = bytes(&self.pages) / u64::from(PAGE_BYTES);
+        let pages = bytes(&self.pages).saturating_sub(PAGES_START) / u64::from(PAGE_BYTES);
         let records = bytes(&self.directory).saturating_sub(RECORDS_START) / RECORD_BYTES;
         self.room = u32::try_from(pages.min(records)).unwrap_or(u32::MAX);
     }
@@ -527,7 +595,7 @@ impl<M: Memory> Pages<'_, M> {
     }
 
     /// Calls `f` with `len` bytes read at `at`: from a small stack buffer when they fit (the usual
-    /// short bucket list), else from the heap.
+    /// short label bucket list), else from the heap.
     pub(crate) fn with_read<R>(&self, at: ByteOffset, len: usize, f: impl FnOnce(&[u8]) -> R) -> R {
         let mut small = [0u8; SMALL_READ];
         if let Some(buf) = small.get_mut(..len) {
@@ -574,6 +642,16 @@ impl<M: Memory> PageStore<M> {
         }
         out
     }
+}
+
+/// The version a memory's header gives, when it starts with `magic`; `None` for an empty memory or
+/// another magic.
+pub(crate) fn header<M: Memory>(memory: &M, magic: [u8; 3]) -> Option<u8> {
+    if memory.size() == 0 {
+        return None;
+    }
+    let [m0, m1, m2, version] = Region::new(memory).read_array(ByteOffset::new(0));
+    ([m0, m1, m2] == magic).then_some(version)
 }
 
 fn record_at(page: PageId) -> ByteOffset {
