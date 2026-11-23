@@ -10,7 +10,6 @@ use crate::id::{Label, Width};
 use crate::memory::{Memory, Region};
 use crate::page_store::{ByteClass, EXTENT_BYTES, Extent, PageStore};
 use crate::units::ByteOffset;
-use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 /// Where the table's reference sits in the vertices header.
@@ -19,10 +18,10 @@ const ENTRY_BYTES: usize = 4;
 /// Labels with a width: one page of entries.
 const MAX_WIDTHS: usize = (4096 - 2) / ENTRY_BYTES;
 
-/// The table and where it is stored.
+/// The table and where it is stored: its entries in label order, as they are stored.
 #[derive(Default)]
 pub(super) struct Widths {
-    map: BTreeMap<Label, Width>,
+    sorted: Vec<(Label, Width)>,
     at: Option<Extent>,
 }
 
@@ -38,7 +37,7 @@ impl Widths {
         let view = lists.pages();
         let count = usize::from(u16::from_le_bytes(view.read_array(at.offset())));
         let bytes = view.read(ByteOffset::new(at.offset().get() + 2), count * ENTRY_BYTES);
-        let map = bytes
+        let sorted = bytes
             .as_chunks::<ENTRY_BYTES>()
             .0
             .iter()
@@ -48,11 +47,15 @@ impl Widths {
                 (Label::new(u16::from_le_bytes([l0, l1])), width)
             })
             .collect();
-        Self { map, at: Some(at) }
+        Self {
+            sorted,
+            at: Some(at),
+        }
     }
 
     pub(super) fn get(&self, label: Label) -> Option<Width> {
-        self.map.get(&label).copied()
+        let i = self.sorted.binary_search_by_key(&label, |&(l, _)| l).ok()?;
+        self.sorted.get(i).map(|&(_, width)| width)
     }
 }
 
@@ -69,16 +72,17 @@ impl<M: Memory> Graph<M> {
         match self.widths.get(label) {
             Some(declared) if declared == width => return Ok(()),
             Some(declared) => return Err(Error::WidthConflict { label, declared }),
-            None if self.widths.map.len() >= MAX_WIDTHS => return Err(Error::TooManyWidths),
+            None if self.widths.sorted.len() >= MAX_WIDTHS => return Err(Error::TooManyWidths),
             None => {}
         }
-        let mut map = self.widths.map.clone();
-        map.insert(label, width);
-        let count = u16::try_from(map.len()).map_err(|_| Error::TooManyWidths)?;
+        let mut sorted = self.widths.sorted.clone();
+        let place = sorted.partition_point(|&(l, _)| l < label);
+        sorted.insert(place, (label, width));
+        let count = u16::try_from(sorted.len()).map_err(|_| Error::TooManyWidths)?;
         let bytes: Vec<u8> = count
             .to_le_bytes()
             .into_iter()
-            .chain(map.iter().flat_map(|(l, w)| {
+            .chain(sorted.iter().flat_map(|(l, w)| {
                 let [l0, l1] = l.get().to_le_bytes();
                 let [w0, w1] = w.get().to_le_bytes();
                 [l0, l1, w0, w1]
@@ -94,7 +98,10 @@ impl<M: Memory> Graph<M> {
         if let Some(old) = self.widths.at {
             self.lists.release(old);
         }
-        self.widths = Widths { map, at: Some(at) };
+        self.widths = Widths {
+            sorted,
+            at: Some(at),
+        };
         Ok(())
     }
 

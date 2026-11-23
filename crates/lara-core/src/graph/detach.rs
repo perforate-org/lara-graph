@@ -13,7 +13,6 @@ use crate::memory::Memory;
 use crate::stored::{Bucket, Index};
 use crate::vertex::Record;
 use crate::vertex_set::VertexSet;
-use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::num::NonZeroU32;
 use core::ops::ControlFlow;
@@ -57,10 +56,13 @@ impl<M: Memory> Graph<M> {
             return Err(Error::NotDetaching(v));
         }
         let mut removed = Vec::new();
-        // Per bucket of `v`: positions before hold no live entry.
-        let mut cursors: BTreeMap<BucketKey, Position> = BTreeMap::new();
-        // Per neighbour bucket: positions before hold no live entry to `v`.
-        let mut hints = BTreeMap::new();
+        // In `v`'s bucket being drained (always its first, until it goes): positions before
+        // hold no live entry.
+        let mut cursor: Option<(BucketKey, Position)> = None;
+        // In the neighbour bucket of the last edge: positions before hold no live entry to `v`.
+        // Parallel edges to one neighbour follow each other there; any other bucket is scanned
+        // from its start, or reached through its target index.
+        let mut hint: Option<((VertexId, BucketKey), Position)> = None;
         for _ in 0..budget.get() {
             let list = self.list(v)?;
             let Some((entry, key, stored)) =
@@ -72,22 +74,21 @@ impl<M: Memory> Graph<M> {
                 entry,
                 bucket: Bucket::resolve(&self.edges.pages(), stored),
             });
-            let from = cursors.get(&key).copied().unwrap_or(Position::new(0));
+            let from = start_in(cursor, &key);
             let first = bucket::find(&found.bucket.slots, &self.edges.pages(), from, |_| true);
             let Some(edge) = first else {
                 // All holes: compaction drops the bucket without moving anything.
                 self.compact(v, key.label, key.side)?;
-                cursors.clear();
-                hints.clear();
+                (cursor, hint) = (None, None);
                 continue;
             };
-            cursors.insert(key, edge.position());
+            cursor = Some((key, edge.position()));
             let half = EdgeRef::new(v, key.label, key.side, edge.position());
-            let key = (edge.target(), opposite_key(half));
-            let from = hints.get(&key).copied().unwrap_or(Position::new(0));
+            let theirs_key = (edge.target(), opposite_key(half));
+            let from = start_in(hint, &theirs_key);
             let (theirs, other) = self.first_half_from(v, half, (edge.target(), from));
-            // Now a hole, so the next scan starts there.
-            hints.insert(key, other.position());
+            // Now a hole, so the next scan there starts at it.
+            hint = Some((theirs_key, other.position()));
             removed.push(self.take_pair((found, half), (theirs, other)));
         }
         let progress = if self.list(v)?.is_none() {
@@ -228,4 +229,10 @@ const fn opposite_key(half: EdgeRef) -> BucketKey {
         label: half.label(),
         side: opposite(half.side()),
     }
+}
+
+/// Where a scan of the bucket `key` starts: at `mark` when it is that bucket's, else at the start.
+fn start_in<K: PartialEq>(mark: Option<(K, Position)>, key: &K) -> Position {
+    mark.filter(|(k, _)| k == key)
+        .map_or(Position::new(0), |(_, at)| at)
 }

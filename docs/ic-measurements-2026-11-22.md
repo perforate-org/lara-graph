@@ -361,3 +361,17 @@ Tried and dropped:
 - Collecting the hub index's decrements into one batch. Segments without count bits remove
   postings one at a time either way, so it saved nothing.
 
+
+## Tenth round (2026-11-23): no ordered maps on hot paths
+
+- **`detach_step` kept two `BTreeMap`s per call.** It drains its vertex's first bucket until that
+  bucket goes, so one cursor is enough. The scan hint now remembers only the last neighbour bucket.
+  Parallel edges to one neighbour follow each other there, and any other bucket is scanned from its
+  start (at most 1024 slots) or reached through its target index.
+  - Before, a hub's detach put one map entry per neighbour.
+  - Hub detach: 1024 / 4096 / 65536 edges −26 / −24 / −29 % (65536: 928 M to 661 M); in steps of
+    64, −13 %. Satellite detach −4 %.
+- **The label width table** is a sorted vector, as stored, instead of a `BTreeMap`. No measured
+  change.
+
+No `BTreeMap` or `BTreeSet` is left outside tests.
