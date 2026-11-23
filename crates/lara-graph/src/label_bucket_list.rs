@@ -57,6 +57,7 @@ use crate::page_store::{ByteClass, EXTENT_BYTES, Extent, PageStore, Pages};
 use crate::stored::Stored;
 use crate::units::ByteOffset;
 use alloc::vec::Vec;
+use core::ops::ControlFlow;
 
 /// Bytes per list entry.
 const ENTRY_BYTES: usize = 3 + DESCRIPTOR_BYTES;
@@ -312,26 +313,52 @@ pub(crate) fn has_room<M: Memory>(
     }
 }
 
-/// The keys of a node's buckets, in order.
-pub(crate) fn keys<M: Memory>(
+/// Every entry of a list, in order, until `f` breaks.
+pub(crate) fn for_each<M: Memory, B>(
     pages: &Pages<'_, M>,
     list: Option<LabelBucketList>,
-) -> Vec<LabelBucketKey> {
-    entries(pages, list).into_iter().map(|(k, _)| k).collect()
+    mut f: impl FnMut(LabelBucketKey, Stored) -> ControlFlow<B>,
+) -> Option<B> {
+    match list.map(|LabelBucketList(shape)| shape) {
+        None => None,
+        Some(Shape::Flat { extent, count }) => {
+            for_each_in(pages, extent.offset(), usize::from(count), &mut f)
+        }
+        Some(Shape::Tiered { top }) => tiered::for_each(pages, top, &mut f),
+    }
 }
 
-/// Every entry of a list, in order.
+/// [`for_each`] over `count` entries at `base`.
+pub(crate) fn for_each_in<M: Memory, B>(
+    pages: &Pages<'_, M>,
+    base: ByteOffset,
+    count: usize,
+    f: &mut impl FnMut(LabelBucketKey, Stored) -> ControlFlow<B>,
+) -> Option<B> {
+    pages.with_read(base, count * ENTRY_BYTES, |bytes| {
+        let (entries, _) = bytes.as_chunks::<ENTRY_BYTES>();
+        for &entry in entries {
+            let (key, stored) = decode_entry(entry);
+            if let ControlFlow::Break(value) = f(key, stored) {
+                return Some(value);
+            }
+        }
+        None
+    })
+}
+
+/// Every entry of a list, in order (test invariant checks).
+#[cfg(test)]
 pub(crate) fn entries<M: Memory>(
     pages: &Pages<'_, M>,
     list: Option<LabelBucketList>,
 ) -> Vec<(LabelBucketKey, Stored)> {
-    match list.map(|LabelBucketList(shape)| shape) {
-        None => Vec::new(),
-        Some(Shape::Flat { extent, count }) => {
-            read_entries(pages, extent.offset(), usize::from(count))
-        }
-        Some(Shape::Tiered { top }) => tiered::entries(pages, top),
-    }
+    let mut all = Vec::new();
+    for_each(pages, list, |key, stored| {
+        all.push((key, stored));
+        ControlFlow::<()>::Continue(())
+    });
+    all
 }
 
 fn read_entries<M: Memory>(

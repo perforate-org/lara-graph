@@ -48,6 +48,7 @@ use crate::stored::Stored;
 use crate::txn::SpanTxn;
 use crate::units::ByteOffset;
 use alloc::vec::Vec;
+use core::ops::ControlFlow;
 
 const TOP_HEADER_BYTES: usize = 2;
 const TOP_ENTRY_BYTES: usize = 8;
@@ -169,14 +170,18 @@ pub(super) fn has_room<M: Memory>(pages: &Pages<'_, M>, top: Extent, adding: usi
     leaves + adding <= TOP_ENTRIES
 }
 
-pub(super) fn entries<M: Memory>(
+/// Every leaf's entries, in order, until `f` breaks.
+pub(super) fn for_each<M: Memory, B>(
     pages: &Pages<'_, M>,
     top: Extent,
-) -> Vec<(LabelBucketKey, Stored)> {
-    read_top(pages, top)
-        .into_iter()
-        .flat_map(|l| read_entries(pages, l.page.offset(), l.entries()))
-        .collect()
+    f: &mut impl FnMut(LabelBucketKey, Stored) -> ControlFlow<B>,
+) -> Option<B> {
+    for leaf in read_top(pages, top) {
+        if let Some(value) = super::for_each_in(pages, leaf.page.offset(), leaf.entries(), f) {
+            return Some(value);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

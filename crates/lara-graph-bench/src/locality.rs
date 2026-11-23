@@ -158,11 +158,68 @@ fn visit_run_1024_batch_context() -> BenchResult {
     let mut g = stable_graph();
     let hub = two_hop::build(&mut g, Layout::Ordered);
     let satellites = two_hop::satellites(&g, hub);
+    let mut batch = g.read_batch();
     bench_fn(|| {
         black_box(two_hop::visit_many_batch(
-            &g,
+            &mut batch,
             &satellites,
             Direction::Outgoing,
         ))
     })
+}
+
+/// The out-degree of every satellite through one `ReadBatch`.
+#[bench(raw)]
+fn degree_1024_batched() -> BenchResult {
+    let mut g = stable_graph();
+    let hub = two_hop::build(&mut g, Layout::Ordered);
+    let satellites = two_hop::satellites(&g, hub);
+    bench_fn(|| black_box(two_hop::degree_many(&g, &satellites, Direction::Outgoing)))
+}
+
+/// The state of every satellite through one `ReadBatch`.
+#[bench(raw)]
+fn node_state_1024_batched() -> BenchResult {
+    let mut g = stable_graph();
+    let hub = two_hop::build(&mut g, Layout::Ordered);
+    let satellites = two_hop::satellites(&g, hub);
+    bench_fn(|| black_box(two_hop::node_state_many(&g, &satellites)))
+}
+
+/// Reads each satellite's outgoing labels one node at a time.
+#[bench(raw)]
+fn labels_1024() -> BenchResult {
+    per_satellite(|g, s| {
+        let mut labels = Vec::new();
+        g.labels(s, Direction::Outgoing, &mut labels)
+            .unwrap_or_else(|err| panic!("labels: {err}"));
+        labels.len()
+    })
+}
+
+/// The same label reads through one `ReadBatch`.
+#[bench(raw)]
+fn labels_1024_batched() -> BenchResult {
+    let mut g = stable_graph();
+    let hub = two_hop::build(&mut g, Layout::Ordered);
+    let satellites = two_hop::satellites(&g, hub);
+    bench_fn(|| black_box(two_hop::labels_many(&g, &satellites, Direction::Outgoing)))
+}
+
+/// Checks each satellite for live edges one node at a time.
+#[bench(raw)]
+fn has_edges_1024() -> BenchResult {
+    per_satellite(|g, s| {
+        g.has_edges(s)
+            .unwrap_or_else(|err| panic!("has_edges: {err}"))
+    })
+}
+
+/// The same edge checks through one `ReadBatch`.
+#[bench(raw)]
+fn has_edges_1024_batched() -> BenchResult {
+    let mut g = stable_graph();
+    let hub = two_hop::build(&mut g, Layout::Ordered);
+    let satellites = two_hop::satellites(&g, hub);
+    bench_fn(|| black_box(two_hop::has_edges_many(&g, &satellites)))
 }

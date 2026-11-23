@@ -182,11 +182,15 @@ impl<M: Memory> Graph<M> {
             },
         );
         let mut removed = Vec::with_capacity(doomed.len());
+        // Each removal publishes the shared bucket; carry it to the next edge instead of
+        // looking the node and its list up again.
+        let mut found = found;
         for edge in doomed {
-            let found = self.present(v, key);
             let half = EdgeRef::new(v, label, direction, edge.position());
             let (theirs, other) = self.first_half_from(v, half, (edge.target(), Position::new(0)));
-            removed.push(self.take_pair((found, half), (theirs, other)).0);
+            let (pair, next) = self.take_pair((found, half), (theirs, other));
+            removed.push(pair);
+            found = next;
         }
         let next = (high < stored).then(|| Position::new(high));
         Ok(Sweep::new(removed, next))

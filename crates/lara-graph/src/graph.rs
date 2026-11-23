@@ -38,6 +38,7 @@ use crate::stored::{LabelBucket, Stored};
 use crate::units::{ByteOffset, Overflow};
 use alloc::vec::Vec;
 use core::fmt;
+use core::ops::ControlFlow;
 
 /// The nodes memory's magic: "lara graph nodes".
 const MAGIC: [u8; 3] = *b"LGN";
@@ -246,14 +247,17 @@ impl<M: Memory> Graph<M> {
         direction: Direction,
         out: &mut Vec<Label>,
     ) -> Result<(), Error> {
-        let list = self.label_bucket_list(v)?;
+        let Some(list) = self.label_bucket_list(v)? else {
+            out.clear();
+            return Ok(());
+        };
         out.clear();
-        out.extend(
-            label_bucket_list::keys(&self.label_bucket_lists.pages(), list)
-                .into_iter()
-                .filter(|k| k.direction == direction)
-                .map(|k| k.label),
-        );
+        label_bucket_list::for_each(&self.label_bucket_lists.pages(), Some(list), |key, _| {
+            if key.direction == direction {
+                out.push(key.label);
+            }
+            ControlFlow::<()>::Continue(())
+        });
         Ok(())
     }
 
@@ -264,13 +268,22 @@ impl<M: Memory> Graph<M> {
     ///
     /// [`Error::UnknownNode`].
     pub fn has_edges(&self, v: NodeId) -> Result<bool, Error> {
-        let list = self.label_bucket_list(v)?;
+        let Some(list) = self.label_bucket_list(v)? else {
+            return Ok(false);
+        };
         let view = self.edges.pages();
-        Ok(
-            label_bucket_list::entries(&self.label_bucket_lists.pages(), list)
-                .into_iter()
-                .any(|(_, stored)| LabelBucket::resolve(&view, stored).slots.live() > 0),
+        Ok(label_bucket_list::for_each(
+            &self.label_bucket_lists.pages(),
+            Some(list),
+            |_, stored| {
+                if LabelBucket::resolve(&view, stored).slots.live() > 0 {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::<()>::Continue(())
+                }
+            },
         )
+        .is_some())
     }
 
     /// Number of live edges in `v`'s `(label, direction)` bucket.

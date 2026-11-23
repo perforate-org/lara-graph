@@ -484,6 +484,22 @@ fn read_batch_shares_buffers_across_reads() {
         )
         .unwrap();
     assert_eq!(seen, 12);
+    let mut labels = Vec::new();
+    batch
+        .labels_each(&nodes, Direction::Incoming, |node, label| {
+            labels.push((node.index(), label.get()));
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert_eq!(labels, (1..=12).map(|v| (v, 0)).collect::<Vec<_>>());
+    let mut edges = Vec::new();
+    batch
+        .has_edges_each(&nodes, |node, has| {
+            edges.push((node.index(), has));
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert_eq!(edges, (1..=12).map(|v| (v, true)).collect::<Vec<_>>());
     let mut degrees = Vec::new();
     assert_eq!(
         batch.degree_each(&[v(0), v(99)], l(0), Direction::Outgoing, &mut degrees),

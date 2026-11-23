@@ -87,9 +87,9 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
     /// Calls `f` with `(node, edge)` for every live edge of each node's `(label, direction)`
     /// bucket, in `nodes` order and `order` within each bucket, until `f` breaks.
     ///
-    /// The batch keeps both `Pages` views, an eight-record line of node records and, when a run
-    /// of flat lists shares a 4 KiB page, that page. All nodes are checked before the first
-    /// callback, so an unknown node leaves the callbacks untouched.
+    /// The batch keeps an eight-record line of node records and, when a run of flat lists shares
+    /// a 4 KiB page, that page. All nodes are checked before the first callback, so an unknown
+    /// node leaves the callbacks untouched.
     ///
     /// # Errors
     ///
@@ -152,6 +152,84 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
             out.push(slots(&view, stored).live());
         }
         Ok(())
+    }
+
+    /// Calls `f` with `(node, label)` for every bucket of each node on `direction`, in list
+    /// order, until `f` breaks.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`] for any node at or past [`Graph::node_count`].
+    pub fn labels_each<B>(
+        &mut self,
+        nodes: &[NodeId],
+        direction: Direction,
+        mut f: impl FnMut(NodeId, Label) -> ControlFlow<B>,
+    ) -> Result<Option<B>, Error> {
+        let graph = self.graph;
+        for &v in nodes {
+            graph.check(v)?;
+        }
+        let mode = mode(nodes);
+        let records = &mut self.records;
+        for &v in nodes {
+            let record = record(graph, records, v, mode);
+            let Some(list) = record.list else { continue };
+            let pages = graph.label_bucket_lists.pages();
+            if let Some(found) = label_bucket_list::for_each(&pages, Some(list), |key, _| {
+                if key.direction == direction {
+                    f(v, key.label)
+                } else {
+                    ControlFlow::<B>::Continue(())
+                }
+            }) {
+                return Ok(Some(found));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Calls `f` with `(node, bool)` for each node: whether it has a live edge under any label,
+    /// on any side. Within a node, stops at the first live bucket.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`] for any node at or past [`Graph::node_count`].
+    pub fn has_edges_each<B>(
+        &mut self,
+        nodes: &[NodeId],
+        mut f: impl FnMut(NodeId, bool) -> ControlFlow<B>,
+    ) -> Result<Option<B>, Error> {
+        let graph = self.graph;
+        for &v in nodes {
+            graph.check(v)?;
+        }
+        let mode = mode(nodes);
+        let records = &mut self.records;
+        for &v in nodes {
+            let record = record(graph, records, v, mode);
+            let has = if let Some(list) = record.list {
+                let view = graph.edges.pages();
+                label_bucket_list::for_each(
+                    &graph.label_bucket_lists.pages(),
+                    Some(list),
+                    |_, stored| {
+                        if slots(&view, stored).live() > 0 {
+                            ControlFlow::Break(())
+                        } else {
+                            ControlFlow::<()>::Continue(())
+                        }
+                    },
+                )
+                .is_some()
+            } else {
+                false
+            };
+            if let ControlFlow::Break(found) = f(v, has) {
+                return Ok(Some(found));
+            }
+        }
+        Ok(None)
     }
 
     /// Replaces `out` with the state of each input node. Validates all nodes before it writes

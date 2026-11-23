@@ -5,7 +5,7 @@
 //! of its own (a run bucket). The traversal visits the hub's neighbours, then each neighbour's.
 
 use core::ops::ControlFlow;
-use lara_graph::{Direction, Graph, Label, Memory, NodeId, Order, Placement};
+use lara_graph::{Direction, Graph, Label, Memory, NodeId, NodeState, Order, Placement, ReadBatch};
 
 /// Satellites around the hub: the first hop.
 pub const SATELLITES: u32 = 1024;
@@ -188,13 +188,16 @@ pub fn visit_many<M: Memory>(g: &Graph<M>, nodes: &[NodeId], direction: Directio
     seen
 }
 
-/// The same batch through an explicit [`lara_graph::ReadBatch`].
+/// The same batch through a caller-held [`ReadBatch`].
 ///
 /// # Panics
 ///
 /// If a node is not in `g`.
-pub fn visit_many_batch<M: Memory>(g: &Graph<M>, nodes: &[NodeId], direction: Direction) -> u64 {
-    let mut batch = g.read_batch();
+pub fn visit_many_batch<M: Memory>(
+    batch: &mut ReadBatch<'_, M>,
+    nodes: &[NodeId],
+    direction: Direction,
+) -> u64 {
     let mut seen = 0u64;
     batch
         .visit_neighbors_each(nodes, LABEL, direction, Order::Ascending, |_, _| {
@@ -202,5 +205,75 @@ pub fn visit_many_batch<M: Memory>(g: &Graph<M>, nodes: &[NodeId], direction: Di
             ControlFlow::<()>::Continue(())
         })
         .unwrap_or_else(|err| panic!("batch: {err}"));
+    seen
+}
+
+/// Sums the `direction` degree of every node in `nodes` through one batch.
+///
+/// # Panics
+///
+/// If a node is not in `g`.
+pub fn degree_many<M: Memory>(g: &Graph<M>, nodes: &[NodeId], direction: Direction) -> u64 {
+    let mut batch = g.read_batch();
+    let mut degrees = Vec::new();
+    batch
+        .degree_each(nodes, LABEL, direction, &mut degrees)
+        .unwrap_or_else(|err| panic!("degree batch: {err}"));
+    degrees.into_iter().map(u64::from).sum()
+}
+
+/// Counts the live nodes in `nodes` through one batch.
+///
+/// # Panics
+///
+/// If a node is not in `g`.
+pub fn node_state_many<M: Memory>(g: &Graph<M>, nodes: &[NodeId]) -> u64 {
+    let mut batch = g.read_batch();
+    let mut states = Vec::new();
+    batch
+        .node_state_each(nodes, &mut states)
+        .unwrap_or_else(|err| panic!("state batch: {err}"));
+    u64::try_from(
+        states
+            .iter()
+            .filter(|state| **state == NodeState::Live)
+            .count(),
+    )
+    .unwrap_or(u64::MAX)
+}
+
+/// Counts the `direction` labels of every node in `nodes` through one batch.
+///
+/// # Panics
+///
+/// If a node is not in `g`.
+pub fn labels_many<M: Memory>(g: &Graph<M>, nodes: &[NodeId], direction: Direction) -> u64 {
+    let mut batch = g.read_batch();
+    let mut seen = 0u64;
+    batch
+        .labels_each(nodes, direction, |_, _| {
+            seen += 1;
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap_or_else(|err| panic!("labels batch: {err}"));
+    seen
+}
+
+/// Counts the nodes in `nodes` that have a live edge, through one batch.
+///
+/// # Panics
+///
+/// If a node is not in `g`.
+pub fn has_edges_many<M: Memory>(g: &Graph<M>, nodes: &[NodeId]) -> u64 {
+    let mut batch = g.read_batch();
+    let mut seen = 0u64;
+    batch
+        .has_edges_each(nodes, |_, has| {
+            if has {
+                seen += 1;
+            }
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap_or_else(|err| panic!("has_edges batch: {err}"));
     seen
 }
