@@ -69,8 +69,22 @@ impl ListPageCache {
         extent: Extent,
         count: usize,
     ) -> Option<Stored> {
-        if let Some(bytes) = self.page(pages, extent) {
-            return label_bucket_list::lookup_stored_in(bytes, 0, count, key);
+        let page = extent.page().get();
+        if page == self.last_page {
+            self.run += 1;
+        } else {
+            self.last_page = page;
+            self.run = 1;
+        }
+        if self.run >= 3 {
+            if self.page != Some(page) {
+                self.bytes.resize(LIST_PAGE_BYTES, 0);
+                pages.read_into(extent.page().offset(), &mut self.bytes);
+                self.page = Some(page);
+            }
+            let at = usize::try_from(extent.offset().get() - extent.page().offset().get())
+                .unwrap_or_else(|_| corrupt("list page offset"));
+            return label_bucket_list::lookup_stored_in(&self.bytes, at, count, key);
         }
         label_bucket_list::lookup_stored(pages, Some(list), key)
     }
