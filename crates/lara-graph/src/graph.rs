@@ -34,7 +34,7 @@ use crate::label_bucket_list::{self, LabelBucketKey, LabelBucketList};
 use crate::memory::{GrowFailed, Memory, Region, WriteError};
 use crate::node::{RECORD_BYTES, Record};
 use crate::page_store::PageStore;
-use crate::stored::LabelBucket;
+use crate::stored::{LabelBucket, Stored};
 use crate::units::{ByteOffset, Overflow};
 use alloc::vec::Vec;
 use core::fmt;
@@ -365,10 +365,21 @@ impl<M: Memory> Graph<M> {
         self.record(v).unwrap_or_else(|_| corrupt("a known node"))
     }
 
+    /// A bucket's slot descriptor, without building the bucket's values or index: a read that
+    /// only scans slots does not pay for the rest of an extended header.
     fn bucket(&self, v: NodeId, key: LabelBucketKey) -> Result<Option<Descriptor>, Error> {
-        Ok(self
-            .find_label_bucket(v, key)?
-            .map(|found| found.bucket.slots))
+        let list = self.label_bucket_list(v)?;
+        let view = self.edges.pages();
+        Ok(
+            label_bucket_list::lookup_stored(&self.label_bucket_lists.pages(), list, key).map(
+                |stored| match stored {
+                    Stored::Plain(slots) => slots,
+                    Stored::Extended(header) => {
+                        Descriptor::decode(view.read_array(header.offset()))
+                    }
+                },
+            ),
+        )
     }
 }
 

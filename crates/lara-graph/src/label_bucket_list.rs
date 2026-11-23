@@ -187,6 +187,42 @@ pub(crate) fn lookup<M: Memory>(
     }
 }
 
+/// Finds a bucket's stored form, without the entry's position: a read that only scans slots
+/// does not build an [`EntryAt`] it will discard.
+pub(crate) fn lookup_stored<M: Memory>(
+    pages: &Pages<'_, M>,
+    list: Option<LabelBucketList>,
+    key: LabelBucketKey,
+) -> Option<Stored> {
+    match list.map(|LabelBucketList(shape)| shape) {
+        None => None,
+        Some(Shape::Flat { extent, count }) => {
+            search_stored(pages, extent.offset(), usize::from(count), key)
+        }
+        Some(Shape::Tiered { top }) => match tiered::lookup(pages, top, key) {
+            Lookup::Present { stored, .. } => Some(stored),
+            Lookup::Absent { .. } => None,
+        },
+    }
+}
+
+/// [`search`], returning only what was found.
+fn search_stored<M: Memory>(
+    pages: &Pages<'_, M>,
+    base: ByteOffset,
+    count: usize,
+    key: LabelBucketKey,
+) -> Option<Stored> {
+    let want = key.rank();
+    pages.with_read(base, count * ENTRY_BYTES, |bytes| {
+        let (entries, _) = bytes.as_chunks::<ENTRY_BYTES>();
+        entries
+            .binary_search_by(|&[k0, k1, k2, ..]| rank_of([k0, k1, k2]).cmp(&want))
+            .ok()
+            .and_then(|index| entries.get(index).map(|&entry| decode_entry(entry).1))
+    })
+}
+
 /// Searches the `count` sorted entries at `base`, leaf `leaf` of their list.
 fn search<M: Memory>(
     pages: &Pages<'_, M>,
