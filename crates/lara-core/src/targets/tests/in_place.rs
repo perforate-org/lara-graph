@@ -154,3 +154,76 @@ fn merge_steps_fold_sparse_leaves_and_give_pages_back() {
     );
     assert!(root.depth < depth, "depth {} from {depth}", root.depth);
 }
+
+/// Segments whose counts are all one carry no count bits. Single lowers and raises, new postings
+/// and batches of decrements all keep such a tree equal to the model: a first posting at zero is
+/// marked, a raise that needs count bits goes through a plan.
+#[test]
+fn segments_without_count_bits_take_every_change() {
+    let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
+    let mut model: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+    let mut rng = Rng(0x3C6E_F372_FE94_F82B);
+    let fresh = |rng: &mut Rng| {
+        (
+            u32::try_from(rng.below(5_000_000)).unwrap(),
+            u32::try_from(rng.below(4000)).unwrap(),
+        )
+    };
+    let seed: Vec<Change> = (0..3000)
+        .map(|_| {
+            let key = fresh(&mut rng);
+            *model.entry(key).or_default() += 1;
+            Change { key, delta: 1 }
+        })
+        .collect();
+    let mut root = commit_planned(&mut store, None, &seed);
+    for round in 0..2000 {
+        let pick = |model: &BTreeMap<(u32, u32), u32>, rng: &mut Rng| {
+            let i = usize::try_from(rng.below(u64::try_from(model.len()).unwrap())).unwrap();
+            *model.keys().nth(i).unwrap()
+        };
+        match rng.below(4) {
+            0 => {
+                let key = pick(&model, &mut rng);
+                let count = model.get_mut(&key).unwrap();
+                *count -= 1;
+                if *count == 0 {
+                    model.remove(&key);
+                }
+                lower(&store, root.unwrap(), key);
+            }
+            1 | 2 => {
+                let key = if rng.below(2) == 0 {
+                    pick(&model, &mut rng)
+                } else {
+                    fresh(&mut rng)
+                };
+                *model.entry(key).or_default() += 1;
+                if raise(&store, root.unwrap(), key) == InPlace::Unfit {
+                    root = commit_planned(&mut store, root, &[Change { key, delta: 1 }]);
+                }
+            }
+            _ => {
+                let mut keys: Vec<(u32, u32)> = (0..4).map(|_| pick(&model, &mut rng)).collect();
+                keys.sort_unstable();
+                keys.dedup();
+                let batch: Vec<Change> = keys
+                    .iter()
+                    .map(|&key| {
+                        let count = model.get_mut(&key).unwrap();
+                        *count -= 1;
+                        if *count == 0 {
+                            model.remove(&key);
+                        }
+                        Change { key, delta: -1 }
+                    })
+                    .collect();
+                root = commit_planned(&mut store, root, &batch);
+            }
+        }
+        if round % 300 == 0 {
+            check(&store, root, &model);
+        }
+    }
+    check(&store, root, &model);
+}

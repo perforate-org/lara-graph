@@ -1,8 +1,9 @@
 //! Changing a segment in its own slot: lowering or raising one posting's count, or adding a
 //! posting, without re-coding the rest of the segment.
 
-use super::{Entry, Read, SEGMENT_MAX, bits_of, block_code, block_of, count_bits};
+use super::{Entry, Head, Read, SEGMENT_MAX, bits_of, block_code, block_of, count_bits};
 use crate::corrupt::corrupt;
+use crate::targets::bits::PADDING;
 use crate::targets::bits::{Reader, Writer};
 use crate::targets::tree::Change;
 use alloc::vec::Vec;
@@ -25,6 +26,11 @@ impl Entry {
         let spot = self.spot_of(&code, key)?;
         let total = self.total.checked_add(1)?;
         match spot {
+            // Without count bits, only a first posting at zero can go up, by its mark.
+            Spot::Held { count: 0, .. } if self.c == 0 => {
+                Some(self.head_marked(code, total, Head::Counted))
+            }
+            Spot::Held { .. } if self.c == 0 => None,
             Spot::Held { count_at, count } => {
                 self.recounted(code, total, (count_at, count.checked_add(1)?))
             }
@@ -99,8 +105,15 @@ impl Entry {
         read: Read<'_>,
         key: (u32, u32),
     ) -> Option<Lowered> {
-        let code = self.padded(read);
+        self.lower_in(self.padded(read), key)
+    }
+
+    /// [`Self::lower_one`] on `code` (padded).
+    fn lower_in(&self, code: Vec<u8>, key: (u32, u32)) -> Option<Lowered> {
         let held = self.held(&code, key)?;
+        if held.count == 0 {
+            return None;
+        }
         let total = self.total.checked_sub(1)?;
         if held.count > 1 {
             let patched = self.recounted(code, total, (held.count_at, held.count - 1))?;
@@ -121,12 +134,61 @@ impl Entry {
         let patched = if let Some(previous) = held.previous {
             let gap = (next.target - previous, self.k);
             self.dropped(code, total, (held.start, next.gap_end), Some(gap))?
-        } else {
+        } else if self.c == 0 {
             // The first posting's block is what the others' blocks are coded against: it stays,
-            // at zero, until the segment is next rewritten.
+            // at zero, until the segment is next rewritten, marked so when there are no count
+            // bits to say it.
+            self.head_marked(code, total, Head::Zero)
+        } else {
             self.recounted(code, total, (held.count_at, 0))?
         };
         Some(Lowered::Patched(patched))
+    }
+
+    /// The patch that marks the first posting's count as `head`, in a segment without count
+    /// bits: only the table entry changes.
+    fn head_marked(&self, code: Vec<u8>, total: u32, head: Head) -> Patched {
+        Patched {
+            code,
+            changed: 0..0,
+            entry: Self {
+                total,
+                head,
+                ..*self
+            },
+        }
+    }
+
+    /// [`Self::lower`] for a segment without count bits: every count is one (or a marked zero),
+    /// so each change removes its posting, or marks the first, one after another.
+    fn lower_each(&self, read: Read<'_>, changes: &[Change]) -> Option<Patched> {
+        let mut entry = *self;
+        let mut code = self.padded(read);
+        let mut low = usize::MAX;
+        for c in changes {
+            if c.delta != -1 {
+                return None;
+            }
+            let patched = match entry.lower_in(code.clone(), c.key)? {
+                Lowered::Patched(patched) => patched,
+                Lowered::Emptied => {
+                    entry.head_marked(code.clone(), entry.total.checked_sub(1)?, Head::Zero)
+                }
+            };
+            if !patched.changed.is_empty() {
+                low = low.min(patched.changed.start);
+            }
+            entry = patched.entry;
+            code = patched.code;
+            // A reader loads whole words past the code's end.
+            code.resize(entry.len() + PADDING, 0);
+        }
+        let end = entry.len();
+        Some(Patched {
+            code,
+            changed: low.min(end)..end,
+            entry,
+        })
     }
 
     /// The patch that removes the bits `at..rest` of a posting with count one, writing `gap` (a
@@ -189,7 +251,7 @@ impl Entry {
                 target += reader.rice(self.k);
             }
             let count_at = reader.position();
-            let count = reader.fixed(self.c);
+            let count = self.count(i, reader.fixed(self.c));
             let block = block_of(reader.fixed(self.w), self.first.1);
             match (target, block).cmp(&key) {
                 Ordering::Less => previous = Some(target),
@@ -225,7 +287,7 @@ impl Entry {
                 target += reader.rice(self.k);
             }
             let gap_end = reader.position();
-            let count = reader.fixed(self.c);
+            let count = self.count(i, reader.fixed(self.c));
             let block = block_of(reader.fixed(self.w), self.first.1);
             match (target, block).cmp(&key) {
                 Ordering::Less => previous = Some(target),
@@ -260,6 +322,9 @@ impl Entry {
         read: Read<'_>,
         changes: &[Change],
     ) -> Option<Patched> {
+        if self.c == 0 {
+            return self.lower_each(read, changes);
+        }
         let mut code = self.padded(read);
         let mut found: Vec<(usize, u32)> = Vec::with_capacity(changes.len());
         let mut rest = changes.iter().peekable();

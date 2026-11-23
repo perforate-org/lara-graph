@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 const MAGIC: [u8; 3] = *b"LGV";
-const VERSION: u8 = 8;
+const VERSION: u8 = 9;
 const AT_COUNT: u64 = 4;
 const RECORDS_START: u64 = 16;
 

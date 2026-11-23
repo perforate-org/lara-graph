@@ -326,3 +326,11 @@ in place of the block itself.
 - Five inline slots would take a 24-byte descriptor. At 127 K cycles per GiB-second, 8 more bytes
   per bucket cost about 30 K cycles a year, so three slots stay.
 
+**Implicit counts of one.** A segment whose counts are all one carries no count bits; a flag in
+its table entry marks a first posting at zero.
+- Index pages: distinct targets in id order 24 to 22 (1.38 bytes per edge, 0.34× the slots);
+  random targets among a million vertices 83 to 77.
+- No scenario moved by 2 % or more.
+- A posting alone with a count of one and its segment's first block codes to no bits. Its slot
+  still takes a byte, so it starts inside the leaf.
+

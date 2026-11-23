@@ -25,12 +25,23 @@ pub(super) struct Coded {
     pub(super) total: u32,
     pub(super) k: u32,
     pub(super) w: u32,
-    /// Bits of each count: a count changes in place while it fits.
+    /// Bits of each count: a count changes in place while it fits. None when every count is
+    /// one.
     pub(super) c: u32,
+    pub(super) head: Head,
     pub(super) n: usize,
     /// The length of the code in bits.
     pub(super) bits: usize,
     pub(super) bytes: Vec<u8>,
+}
+
+/// The first posting's count in a segment without count bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Head {
+    /// As the count bits say: one when there are none.
+    Counted,
+    /// Zero: it stays as the others' block base until the segment is rewritten.
+    Zero,
 }
 
 /// Bits a count field takes for counts up to `max`.
@@ -71,7 +82,11 @@ impl Coded {
         let widest = postings.iter().map(|p| block_code(p.block, base)).max();
         let w = bits_of(widest.unwrap_or(0));
         let k = best_k(postings);
-        let c = count_bits(postings.iter().map(|p| p.count).max().unwrap_or(1));
+        // Counts of one, the usual case, take no bits.
+        let c = match postings.iter().map(|p| p.count).max().unwrap_or(1) {
+            0 | 1 => 0,
+            most => bits_of(most),
+        };
         Self::code(postings, (k, w, c))
     }
 
@@ -97,6 +112,7 @@ impl Coded {
             k,
             w,
             c,
+            head: Head::Counted,
             n: postings.len(),
             bits: out.bits(),
             bytes: out.into_bytes(),
@@ -113,6 +129,7 @@ impl Coded {
             k: e.k,
             w: e.w,
             c: e.c,
+            head: e.head,
             n: e.n,
             bits: e.bits,
             bytes,
@@ -153,13 +170,14 @@ pub(super) struct Entry {
     k: u32,
     w: u32,
     c: u32,
+    head: Head,
     n: usize,
 }
 
 /// Bit widths of the packed fields after an entry's total: offset and capacity (12 bits each, as
 /// a leaf is at most 4096 bytes), the code's length in bits (15), `k` (5), `w` (6), the count
-/// width less one (5) and `n` (7).
-const PACKED: [u32; 7] = [12, 12, 15, 5, 6, 5, 7];
+/// width (6), `n` (7), and whether the first posting is at zero without count bits (1).
+const PACKED: [u32; 8] = [12, 12, 15, 5, 6, 6, 7, 1];
 
 impl Entry {
     /// The entry of `c` placed in the slot `(offset, cap)`.
@@ -173,6 +191,7 @@ impl Entry {
             k: c.k,
             w: c.w,
             c: c.c,
+            head: c.head,
             n: c.n,
         }
     }
@@ -189,8 +208,9 @@ impl Entry {
             wide(self.bits),
             u64::from(self.k),
             u64::from(self.w),
-            u64::from(self.c.saturating_sub(1)),
+            u64::from(self.c),
             wide(self.n),
+            u64::from(self.head == Head::Zero),
         ];
         let mut packed = 0u64;
         let mut shift = 0;
@@ -239,7 +259,7 @@ impl Entry {
             packed >>= width;
             value
         };
-        let [offset, cap, bits, k, w, c, n] = PACKED.map(&mut field);
+        let [offset, cap, bits, k, w, c, n, zero] = PACKED.map(&mut field);
         let narrow = |v: u64| usize::try_from(v).unwrap_or(usize::MAX);
         let small = |v: u64| u32::try_from(v).unwrap_or(u32::MAX);
         Self {
@@ -253,7 +273,8 @@ impl Entry {
             bits: narrow(bits),
             k: small(k),
             w: small(w),
-            c: small(c) + 1,
+            c: small(c),
+            head: if zero == 1 { Head::Zero } else { Head::Counted },
             n: narrow(n),
         }
     }
@@ -283,7 +304,7 @@ impl Entry {
                 target += reader.rice(self.k);
             }
             let at = reader.position();
-            let count = reader.fixed(self.c);
+            let count = self.count(i, reader.fixed(self.c));
             let block = block_of(reader.fixed(self.w), self.first.1);
             if f(
                 Posting {
@@ -295,6 +316,17 @@ impl Entry {
             ) {
                 return;
             }
+        }
+    }
+
+    /// The count of posting `i`, whose count bits read `bits`: without count bits, one, or zero
+    /// for a first posting marked so.
+    #[inline]
+    const fn count(&self, i: usize, bits: u32) -> u32 {
+        match (self.c, self.head) {
+            (0, Head::Zero) if i == 0 => 0,
+            (0, _) => 1,
+            _ => bits,
         }
     }
 

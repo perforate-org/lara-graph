@@ -286,12 +286,17 @@ postings are usually reached in one descent, by walking the leaf where they star
   - Batches are planned once in memory, reserved exactly and committed. A block's batch is planned
     before the insert that completes the block; compaction plans its moves.
 - **Leaves are slotted pages of coded segments.** Each segment holds 24-48 postings, coded as
-  Rice target gaps, fixed-width counts and fixed-width block offsets.
+  Rice target gaps, fixed-width counts (none when every count is one) and fixed-width block
+  offsets.
   - A block is coded as its offset from the segment's first block, zigzagged so that small
     offsets either way are small. Targets inserted about together have blocks near each other,
     so the offsets take a few bits where the blocks took ten or more.
   - The segment's first posting is what the others' blocks are coded against. When its count
-    reaches zero it stays, at zero, until the segment is next rewritten; the others leave.
+    reaches zero it stays, at zero, until the segment is next rewritten; the others leave. In a
+    segment without count bits, a flag in its table entry says the first posting is at zero.
+  - Without count bits, a posting can go to two only by re-coding its segment, through a plan.
+    Removals stay in place and take no memory; a batch of decrements removes postings one at a
+    time.
   - A change reads and writes only the segments it touches.
   - Internal nodes keep keys, pages and counts in separate arrays, so a lookup reads only what it
     probes.
@@ -319,9 +324,8 @@ are in `docs/ic-measurements-2026-11-22.md` (eighth round).
 | Leaf merge | counts summing to 512 or less | Leaves hold 700 to 1200 postings, so merged ones fit one. After merging, every pair of neighbours indexes more than 512 edges. |
 | Search windows | 32 slots, then 128 | Most searches stop within a few slots of where they start. 16 slots first made a block scan take two reads. |
 
-Measured and left out: implicit counts of one (no count bits in a segment whose counts are all one)
-would save about 8 % of a sparse hub's index. In exchange, a segment's first posting could not
-stay at zero, so a removal could need a whole re-coded segment.
+Segments whose counts are all one carry no count bits. This saves 7-8 % of a hub's index, and no
+instructions moved by 2 % or more. A flag in the table entry marks the first posting at zero.
 
 ## Not yet
 

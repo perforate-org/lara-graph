@@ -134,12 +134,13 @@ pub(super) fn gather(leaf: &Leaf<'_>, touched: Vec<Touched>) -> Vec<(Coded, bool
     out
 }
 
-/// The slot capacity a segment gets in a freshly written leaf.
+/// The slot capacity a segment gets in a freshly written leaf: at least a byte, so that the slot
+/// starts inside the leaf even for an empty code (one posting without count or block bits).
 fn cap_of((coded, fresh): &(Coded, bool)) -> usize {
     if *fresh {
         with_slack(coded.bytes.len())
     } else {
-        coded.bytes.len()
+        coded.bytes.len().max(1)
     }
 }
 
@@ -237,5 +238,33 @@ fn even(segments: &[(Coded, bool)], total: usize) -> Vec<&[(Coded, bool)]> {
         if parts > segments.len() {
             corrupt("an index segment larger than a leaf");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::targets::Posting;
+    use crate::targets::leaf::segment::rebuild;
+
+    /// A posting alone, with a count of one, codes to no bits at all. Kept as it is in a rewritten
+    /// leaf, its slot still starts inside the leaf, where its table entry can name it.
+    #[test]
+    fn an_empty_code_gets_a_slot_inside_the_leaf() {
+        let lone = rebuild(&[Posting {
+            target: 7,
+            block: 3,
+            count: 1,
+        }]);
+        let [coded] = lone.as_slice() else {
+            panic!("one segment")
+        };
+        assert!(coded.bytes.is_empty(), "no count or block bits");
+        let image = image(&[(coded.clone(), false)]);
+        let read = |offset: usize, buf: &mut [u8]| {
+            buf.copy_from_slice(&image.bytes[offset..offset + buf.len()]);
+        };
+        let entry = Leaf::open(&read).entry(0).unwrap();
+        assert!(entry.offset < CAPACITY, "slot at {}", entry.offset);
     }
 }
