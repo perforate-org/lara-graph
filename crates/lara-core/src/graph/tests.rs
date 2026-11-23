@@ -191,6 +191,50 @@ fn has_edges_sees_every_side_and_looks_past_buckets_of_holes() {
     check(&g);
 }
 
+/// Compacting a hub whose edges were mostly removed packs its pages, then merges its index's
+/// sparse leaves: the index gives most of its pages back and still pairs every half.
+#[test]
+fn compacting_a_mostly_emptied_hub_shrinks_its_index() {
+    let backing = Backing::default();
+    let mut g = backing.create(1);
+    let hub = g.add_vertex().unwrap();
+    let mut edges = Vec::new();
+    for _ in 0..6000 {
+        let leaf = g.add_vertex().unwrap();
+        edges.push(
+            g.insert_directed(hub, l(0), leaf, Placement::Append, &[])
+                .unwrap(),
+        );
+    }
+    let index_pages = |g: &Graph<_>| {
+        let found = g
+            .find_bucket(
+                hub,
+                BucketKey {
+                    label: l(0),
+                    side: Side::Out,
+                },
+            )
+            .unwrap()
+            .unwrap();
+        targets::extents(&g.edges.pages(), found.bucket.index.tree()).len()
+    };
+    let before = index_pages(&g);
+    for (i, halves) in edges.iter().enumerate() {
+        if i % 16 != 0 {
+            g.remove_edge(halves.other()).unwrap();
+        }
+    }
+    while g.compact(hub, l(0), Side::Out).unwrap().progress() == Progress::Remaining {}
+    let after = index_pages(&g);
+    assert!(after * 2 < before, "{after} index pages of {before}");
+    for halves in edges.iter().step_by(16) {
+        let canonical = g.counterpart(halves.other()).unwrap().unwrap();
+        assert_eq!(g.counterpart(canonical), Ok(Some(halves.other())));
+    }
+    check(&g);
+}
+
 #[test]
 fn an_undirected_edges_canonical_half_is_at_the_larger_vertex_and_a_self_loop_has_one_half() {
     let backing = Backing::default();

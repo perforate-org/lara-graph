@@ -273,8 +273,15 @@ postings are usually reached in one descent, by walking the leaf where they star
   - An append that completes a block brings the block's live entries in as one batch, sized
     beforehand by a counting pass.
   - A removal lowers its posting's count in place in one descent, and takes no memory. Counts are
-    fixed-width per segment, and a posting that reaches zero stays until its segment is
-    rewritten. Batches of decrements are lowered in place too.
+    fixed-width per segment. A posting whose count reaches zero leaves its segment: the bits after
+    it move along. A segment it empties leaves the leaf's table, and only a leaf's last posting
+    stays, at zero, since a leaf is never emptied in place. Batches of decrements (compaction's)
+    lower counts in place and leave zeros until the segment is next rewritten.
+  - **Sparse leaves merge.** Once a paged bucket's slots need no compaction, each `compact` step
+    merges one pair of neighbours, found by going down from the root: leaves whose counts sum to
+    512 or less, or nodes whose children fit one node. A root with one child gives way to it.
+    - Keeping one edge in sixteen of a 65536-edge hub, then compacting, brings its index from 53 to
+      13 pages (distinct targets) and from 89 to 11 (random targets among a million vertices).
   - Batches are planned once in memory, reserved exactly and committed. A block's batch is planned
     before the insert that completes the block; compaction plans its moves.
 - **Leaves are slotted pages of coded segments.** Each segment holds 16-32 postings, coded as
@@ -293,8 +300,6 @@ postings are usually reached in one descent, by walking the leaf where they star
 
 ## Not yet
 
-- Reclaiming zero-count postings and index pages of hubs whose edges were mostly removed,
-  short of demotion.
 - Detaching many vertices at once with one pass over each shared hub.
 - Settling the constants (descriptor size, inline slots, page threshold) by measuring on the IC
   with canbench (`crates/lara-core-bench`).

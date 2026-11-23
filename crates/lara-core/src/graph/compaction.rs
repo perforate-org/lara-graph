@@ -9,15 +9,16 @@ use crate::id::{Label, Progress, Side, VertexId};
 use crate::labels::{self, BucketKey};
 use crate::memory::Memory;
 use crate::stored::{Bucket, Index, Values};
-use crate::targets::{self, Change, Plan};
+use crate::targets::{self, Change, Merged, Plan};
 use crate::values;
 use alloc::vec::Vec;
 
 impl<M: Memory> Graph<M> {
     /// Reclaims removed edges' positions in `v`'s `(label, side)` bucket, one bounded step at a
     /// time: at most one page of edges moves. Live edges keep their relative order, so the
-    /// halves stay paired; each one that moves is reported. Call again while
-    /// [`Compaction::progress`] is [`Progress::Remaining`].
+    /// halves stay paired; each one that moves is reported. Once the slots need nothing, a paged
+    /// bucket's target index merges sparse leaves, a pair per step, moving no edge. Call again
+    /// while [`Compaction::progress`] is [`Progress::Remaining`].
     ///
     /// # Errors
     ///
@@ -29,6 +30,19 @@ impl<M: Memory> Graph<M> {
         };
         // Plan everything that allocates before the step changes anything.
         let planned = compact::plan(found.bucket.slots, &self.edges);
+        // With nothing to do in the slots, a paged bucket's index gives back sparse leaves.
+        if planned.is_idle()
+            && matches!(found.bucket.slots, Descriptor::Paged(_))
+            && let Some(root) = found.bucket.index.tree()
+            && let Merged::Into(root) = targets::merge_step(&mut self.edges, root)
+        {
+            let bucket = Bucket {
+                index: Index::Tree(root),
+                ..found.bucket
+            };
+            self.publish(found.entry, bucket);
+            return Ok(Step::new(Vec::new(), Progress::Remaining));
+        }
         let plan = self.plan_index(&found.bucket, &planned)?;
         let inline = match found.bucket.values {
             Some(values) => {

@@ -233,36 +233,6 @@ fn a_batch_over_every_posting_keeps_each_change_in_its_segment() {
     }
 }
 
-/// Single decrements lower counts in place, down to zero, and take no pages; a batch after them
-/// still applies over the zero counts they leave.
-#[test]
-fn single_decrements_lower_counts_in_place() {
-    let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
-    let mut model: BTreeMap<(u32, u32), u32> = BTreeMap::new();
-    let mut rng = Rng(0x5851_F42D_4C95_7F2D);
-    let seed: Vec<Change> = (0..3000).map(|_| add_some(&mut model, &mut rng)).collect();
-    let mut root = commit_planned(&mut store, None, &seed);
-    assert!(depth(root) >= 2, "depth {}", depth(root));
-    let pages = store.allocated();
-    for round in 0..2000 {
-        let i = usize::try_from(rng.below(u64::try_from(model.len()).unwrap())).unwrap();
-        let (&key, count) = model.iter_mut().nth(i).unwrap();
-        *count -= 1;
-        if *count == 0 {
-            model.remove(&key);
-        }
-        lower(&store, root.unwrap(), key);
-        if round % 250 == 0 {
-            check(&store, root, &model);
-        }
-    }
-    check(&store, root, &model);
-    assert_eq!(store.allocated(), pages, "no page taken or released");
-    let more: Vec<Change> = (0..500).map(|_| add_some(&mut model, &mut rng)).collect();
-    root = commit_planned(&mut store, root, &more);
-    check(&store, root, &model);
-}
-
 /// Targets whose postings fill several leaves are found and ranked across them; so are targets
 /// between and beyond the postings.
 #[test]
@@ -294,44 +264,4 @@ fn nth_and_rank_follow_targets_across_leaves() {
     check_target(&store.pages(), root, &model, 7);
 }
 
-/// Single increments go in place when the segment takes them (an existing posting or a new one
-/// inside it) and otherwise through a plan; either way the tree matches the model, and the
-/// in-place ones take no pages.
-#[test]
-fn single_increments_go_in_place_or_through_a_plan() {
-    let mut store = PageStore::create(VecMemory::new(), VecMemory::new()).unwrap();
-    let mut model: BTreeMap<(u32, u32), u32> = BTreeMap::new();
-    let mut rng = Rng(0x2D35_8DCC_AA6C_78A5);
-    let seed: Vec<Change> = (0..3000).map(|_| add_some(&mut model, &mut rng)).collect();
-    let mut root = commit_planned(&mut store, None, &seed);
-    let (mut in_place, mut planned) = (0, 0);
-    for round in 0..3000 {
-        let key = if rng.below(2) == 0 {
-            let i = usize::try_from(rng.below(u64::try_from(model.len()).unwrap())).unwrap();
-            *model.keys().nth(i).unwrap()
-        } else {
-            let target = u32::try_from(rng.below(5_000_000)).unwrap();
-            (target, u32::try_from(rng.below(4000)).unwrap())
-        };
-        *model.entry(key).or_default() += 1;
-        let pages = store.allocated();
-        match raise(&store, root.unwrap(), key) {
-            InPlace::Done => {
-                in_place += 1;
-                assert_eq!(store.allocated(), pages, "an in-place raise takes no page");
-            }
-            InPlace::Unfit => {
-                planned += 1;
-                root = commit_planned(&mut store, root, &[Change { key, delta: 1 }]);
-            }
-        }
-        if round % 300 == 0 {
-            check(&store, root, &model);
-        }
-    }
-    check(&store, root, &model);
-    assert!(
-        in_place > 1000 && planned > 100,
-        "{in_place} in place, {planned} planned"
-    );
-}
+mod in_place;

@@ -252,3 +252,23 @@ Changes:
 | Refill with parallel edges, 65536 | 1.12 B | 1.04 B (−7 %) |
 
 No other scenario moved by 2 % or more.
+
+## Seventh round (2026-11-23): reclaiming a thinned hub's index
+
+Changes:
+- **A single removal's zero leaves its segment.** The bits after the posting move along, and a
+  segment it empties leaves the leaf's table.
+- **Compaction merges sparse leaves.** Once a paged bucket's slots need nothing, each step merges
+  one pair of neighbours. Leaves merge when their counts sum to 512 or less; nodes merge when
+  their children fit one node.
+
+| Scenario | Before | Now |
+| --- | ---: | ---: |
+| Removals of half a hub, 4096 / 65536 | 30.7 M / 519 M | 32.0 M / 543 M (+4 to +5 %) |
+| Compaction after them, 4096 / 65536 | 3.67 M / 114 M | 3.39 M / 105 M (−8 %) |
+| Remove one edge from the leaf's side, 65536 | 28.2 K | 29.6 K (+5 %) |
+| Index pages of a 65536-edge hub kept to one edge in 16, distinct / random targets | 53 / 89 | 13 / 11 after compacting |
+
+- Removing a posting re-codes one gap and moves the bits after it, so it costs more than
+  rewriting its count bits. That is the price of the space.
+- Removal and compaction together cost +2.4 %.

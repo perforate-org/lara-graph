@@ -1,11 +1,12 @@
 //! Space the target index takes in real hubs, against the hub's 4-byte slots.
 //!
 //! Builds hubs of 65536 out-edges of several shapes through the graph API and prints the index's
-//! pages and bytes per edge. Run with `cargo run --release --example index_pages -p
+//! pages and bytes per edge. Then removes fifteen edges in sixteen from two of them, and prints
+//! the pages before and after compacting. Run with `cargo run --release --example index_pages -p
 //! lara-core-bench`.
 
 use lara_core::bench_internals::index_pages;
-use lara_core::{Graph, Label, Placement, Side, VecMemory, VertexId};
+use lara_core::{Graph, Halves, Label, Placement, Progress, Side, VecMemory, VertexId};
 use lara_core_bench::heap_graph;
 
 const EDGES: u32 = 65536;
@@ -27,20 +28,54 @@ impl Rng {
 
 /// A hub with an edge to each of `targets` (by index into `pool`), in order.
 fn hub(pool: u32, targets: impl Iterator<Item = u32>) -> (Graph<VecMemory>, VertexId) {
+    let (g, hub, _) = hub_with_edges(pool, targets);
+    (g, hub)
+}
+
+/// [`hub`], with each edge's halves.
+fn hub_with_edges(
+    pool: u32,
+    targets: impl Iterator<Item = u32>,
+) -> (Graph<VecMemory>, VertexId, Vec<Halves>) {
     let mut g = heap_graph();
     let hub = g.add_vertex().unwrap_or_else(|e| panic!("vertex: {e}"));
     let leaves: Vec<VertexId> = (0..pool)
         .map(|_| g.add_vertex().unwrap_or_else(|e| panic!("vertex: {e}")))
         .collect();
+    let mut edges = Vec::new();
     for t in targets {
         let leaf = leaves
             .get(usize::try_from(t).unwrap_or(usize::MAX))
             .copied()
             .unwrap_or_else(|| panic!("target {t} outside the pool"));
-        g.insert_directed(hub, LABEL, leaf, Placement::ReuseHoles, &[])
-            .unwrap_or_else(|e| panic!("insert: {e}"));
+        edges.push(
+            g.insert_directed(hub, LABEL, leaf, Placement::ReuseHoles, &[])
+                .unwrap_or_else(|e| panic!("insert: {e}")),
+        );
     }
-    (g, hub)
+    (g, hub, edges)
+}
+
+/// Removes fifteen edges in sixteen, reporting the index's pages then and after compacting.
+fn thin(shape: &str, (mut g, hub, edges): (Graph<VecMemory>, VertexId, Vec<Halves>)) {
+    for (i, halves) in edges.iter().enumerate() {
+        if i % 16 != 0 {
+            g.remove_edge(halves.canonical())
+                .unwrap_or_else(|e| panic!("remove: {e}"));
+        }
+    }
+    let pages = |g: &Graph<VecMemory>| index_pages(g, hub, LABEL, Side::Out);
+    let removed = pages(&g);
+    while g
+        .compact(hub, LABEL, Side::Out)
+        .unwrap_or_else(|e| panic!("compact: {e}"))
+        .progress()
+        == Progress::Remaining
+    {}
+    println!(
+        "{shape:<40} {removed:>4} pages after removing, {:>4} after compacting",
+        pages(&g)
+    );
 }
 
 fn report(shape: &str, g: &Graph<VecMemory>, hub: VertexId) {
@@ -71,4 +106,17 @@ fn main() {
         (0..EDGES).map(|_| u32::try_from(rng.below(1_000_000)).unwrap_or(0)),
     );
     report("random targets among 1M vertices", &g, h);
+    println!("\nKeeping one edge in sixteen (4096):");
+    thin(
+        "distinct targets, ascending",
+        hub_with_edges(EDGES, 0..EDGES),
+    );
+    let mut rng = Rng(11);
+    thin(
+        "random targets among 1M vertices",
+        hub_with_edges(
+            1_000_000,
+            (0..EDGES).map(|_| u32::try_from(rng.below(1_000_000)).unwrap_or(0)),
+        ),
+    );
 }

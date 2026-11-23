@@ -299,6 +299,8 @@ These figures include two later changes (2026-11-23):
   that exist rewrites their count bits and the segment's total, without re-encoding the segment.
   - A posting whose count reaches zero stays until its segment is next rewritten. So a tree may
     outlive its last indexed edge, until the bucket is demoted or detached.
+  - Later (2026-11-23), a single removal's zero leaves its segment at once, and compaction merges
+    sparse leaves; see `crates/lara-core/DESIGN.md`.
 
 Against the tree before these changes: inserts are 6-19 % cheaper, a single removal 21 %,
 removing half a hub 26 %, and compaction 33 %.

@@ -19,11 +19,11 @@ mod tree;
 #[cfg(any(test, feature = "bench-internals"))]
 pub(crate) use tree::extents;
 pub(crate) use tree::{
-    Change, InPlace, Nth, Plan, Root, apply_reserved, commit, last_block, lower, nth, plan, raise,
-    rank, release,
+    Change, InPlace, Merged, Nth, Plan, Root, apply_reserved, commit, last_block, lower,
+    merge_step, nth, plan, raise, rank, release,
 };
 #[cfg(test)]
-pub(crate) use tree::{count_before, postings, select};
+pub(crate) use tree::{count_before, postings, select, zeros_per_leaf};
 
 /// Positions per block.
 pub(crate) const BLOCK: u32 = 64;

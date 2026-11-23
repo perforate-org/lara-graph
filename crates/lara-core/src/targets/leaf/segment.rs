@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 
 mod patch;
 
-pub(super) use patch::Patched;
+pub(super) use patch::{Lowered, Patched};
 
 /// Postings a segment is cut to when it is rebuilt.
 const SEGMENT_TARGET: usize = 16;

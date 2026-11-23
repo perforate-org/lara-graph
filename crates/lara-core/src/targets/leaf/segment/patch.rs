@@ -25,21 +25,23 @@ impl Entry {
         let spot = self.spot_of(&code, key)?;
         let total = self.total.checked_add(1)?;
         match spot {
-            Spot::Held { count_at, count } => self.bumped(code, total, (count_at, count)),
+            Spot::Held { count_at, count } => {
+                self.recounted(code, total, (count_at, count.checked_add(1)?))
+            }
             Spot::Before { at, previous, next } => {
                 self.inserted(code, total, key, (at, previous, next))
             }
         }
     }
 
-    /// The patch that rewrites the count at bit `count_at` one higher.
-    fn bumped(
+    /// The patch that rewrites the count at bit `count_at` as `count`, or `None` when it does
+    /// not fit the count width.
+    fn recounted(
         &self,
         mut code: Vec<u8>,
         total: u32,
         (count_at, count): (usize, u32),
     ) -> Option<Patched> {
-        let count = count.checked_add(1)?;
         if count_bits(count) > self.c {
             return None;
         }
@@ -56,7 +58,7 @@ impl Entry {
     /// gap of the posting to `next`'s target, and moves the bits after that gap along.
     fn inserted(
         &self,
-        mut code: Vec<u8>,
+        code: Vec<u8>,
         total: u32,
         key: (u32, u32),
         (at, previous, next): (usize, u32, Option<(u32, usize)>),
@@ -64,24 +66,18 @@ impl Entry {
         if self.n >= SEGMENT_MAX || count_bits(key.1) > self.w {
             return None;
         }
-        let byte = at / 8;
-        let lead = u32::try_from(at % 8).ok()?;
-        let mut out = Writer::with_capacity(self.len() - byte + 8);
-        // The bits of `at`'s byte before it stay as they are.
-        out.fixed(u32::from(*code.get(byte)?), lead);
-        out.rice(key.0 - previous, self.k);
-        out.fixed(1, self.c);
-        out.fixed(key.1, self.w);
-        if let Some((target, gap_end)) = next {
-            out.rice(target - key.0, self.k);
-            copy_bits(&mut out, &code, gap_end..self.bits);
-        }
-        let bits = byte * 8 + out.bits();
+        let rest = next.map_or(self.bits, |(_, gap_end)| gap_end);
+        let (code, bits, byte) = self.spliced(code, at, rest, |out| {
+            out.rice(key.0 - previous, self.k);
+            out.fixed(1, self.c);
+            out.fixed(key.1, self.w);
+            if let Some((target, _)) = next {
+                out.rice(target - key.0, self.k);
+            }
+        })?;
         if bits.div_ceil(8) > self.cap {
             return None;
         }
-        code.truncate(byte);
-        code.extend_from_slice(&out.into_bytes());
         Some(Patched {
             changed: byte..code.len(),
             code,
@@ -92,6 +88,135 @@ impl Entry {
                 ..*self
             },
         })
+    }
+
+    /// Lowers the count of the posting at `key` by one in its own slot. A posting whose count
+    /// reaches zero leaves the segment: the next posting's gap is coded again (or it becomes the
+    /// first), and the bits after it move along. `None` when the segment lacks the posting.
+    pub(in crate::targets::leaf) fn lower_one(
+        &self,
+        read: Read<'_>,
+        key: (u32, u32),
+    ) -> Option<Lowered> {
+        let code = self.padded(read);
+        let held = self.held(&code, key)?;
+        let total = self.total.checked_sub(1)?;
+        if held.count > 1 {
+            let patched = self.recounted(code, total, (held.count_at, held.count - 1))?;
+            return Some(Lowered::Patched(patched));
+        }
+        let Some(next) = held.next else {
+            return match held.previous {
+                // The last posting goes: the code ends where it started.
+                Some(_) => Some(Lowered::Patched(self.dropped(
+                    code,
+                    total,
+                    (held.start, self.bits),
+                    None,
+                )?)),
+                None => Some(Lowered::Emptied),
+            };
+        };
+        let patched = if let Some(previous) = held.previous {
+            let gap = (next.target - previous, self.k);
+            self.dropped(code, total, (held.start, next.gap_end), Some(gap))?
+        } else {
+            // The first posting goes: the next one, without its gap, starts the code.
+            let mut patched = self.dropped(code, total, (0, next.gap_end), None)?;
+            patched.entry.first = (next.target, next.block);
+            patched
+        };
+        Some(Lowered::Patched(patched))
+    }
+
+    /// The patch that removes the bits `at..rest` of a posting with count one, writing `gap` (a
+    /// Rice code of the next posting's new gap) in their place.
+    fn dropped(
+        &self,
+        code: Vec<u8>,
+        total: u32,
+        (at, rest): (usize, usize),
+        gap: Option<(u32, u32)>,
+    ) -> Option<Patched> {
+        let (code, bits, byte) = self.spliced(code, at, rest, |out| {
+            if let Some((value, k)) = gap {
+                out.rice(value, k);
+            }
+        })?;
+        Some(Patched {
+            changed: byte..code.len(),
+            code,
+            entry: Self {
+                total,
+                bits,
+                n: self.n - 1,
+                ..*self
+            },
+        })
+    }
+
+    /// `code` with its bits from `at` on replaced by what `middle` writes, followed by the bits
+    /// from `rest` on, unchanged. Returns the code, its length in bits, and the first byte that
+    /// changed.
+    fn spliced(
+        &self,
+        mut code: Vec<u8>,
+        at: usize,
+        rest: usize,
+        middle: impl FnOnce(&mut Writer),
+    ) -> Option<(Vec<u8>, usize, usize)> {
+        let byte = at / 8;
+        let lead = u32::try_from(at % 8).ok()?;
+        let mut out = Writer::with_capacity(self.len() - byte + 8);
+        // The bits of `at`'s byte before it stay as they are.
+        out.fixed(u32::from(*code.get(byte)?), lead);
+        middle(&mut out);
+        copy_bits(&mut out, &code, rest..self.bits);
+        let bits = byte * 8 + out.bits();
+        code.truncate(byte);
+        code.extend_from_slice(&out.into_bytes());
+        Some((code, bits, byte))
+    }
+
+    /// The posting at `key` in `code`: where it starts, its count, and its neighbours.
+    fn held(&self, code: &[u8], key: (u32, u32)) -> Option<Held> {
+        let mut reader = Reader::new(code);
+        let mut target = self.first.0;
+        let mut previous = None;
+        for i in 0..self.n {
+            let start = reader.position();
+            if i > 0 {
+                target += reader.rice(self.k);
+            }
+            let count_at = reader.position();
+            let count = reader.fixed(self.c);
+            let block = reader.fixed(self.w);
+            match (target, block).cmp(&key) {
+                Ordering::Less => previous = Some(target),
+                Ordering::Greater => return None,
+                Ordering::Equal => {
+                    let next = (i + 1 < self.n).then(|| {
+                        let target = target + reader.rice(self.k);
+                        let gap_end = reader.position();
+                        reader.fixed(self.c);
+                        let block = reader.fixed(self.w);
+                        Next {
+                            target,
+                            block,
+                            gap_end,
+                        }
+                    });
+                    return Some(Held {
+                        start,
+                        count_at,
+                        count,
+                        previous,
+                        next,
+                    });
+                }
+            }
+        }
+        None
     }
 
     /// Where `key` is in `code`: the posting that holds it, or where a new posting for it goes.
@@ -182,6 +307,32 @@ fn copy_bits(out: &mut Writer, code: &[u8], range: Range<usize>) {
         out.fixed(rest.fixed(bits), bits);
         left -= width;
     }
+}
+
+/// A posting found in a segment's code.
+struct Held {
+    /// Where it starts (its gap, or its count for the first posting).
+    start: usize,
+    count_at: usize,
+    count: u32,
+    /// The target of the posting before it.
+    previous: Option<u32>,
+    next: Option<Next>,
+}
+
+/// The posting after a held one.
+struct Next {
+    target: u32,
+    block: u32,
+    /// Where its gap ends: its count starts.
+    gap_end: usize,
+}
+
+/// What lowering one posting's count does to its segment.
+pub(in crate::targets::leaf) enum Lowered {
+    Patched(Patched),
+    /// Its only posting reached zero: the segment would be empty.
+    Emptied,
 }
 
 /// Where a key is in a segment's code.

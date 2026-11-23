@@ -9,6 +9,7 @@
 
 mod commit;
 mod lookup;
+mod merge;
 mod node;
 
 use super::leaf;
@@ -24,7 +25,8 @@ pub(crate) use lookup::extents;
 pub(crate) use lookup::postings;
 pub(crate) use lookup::{Nth, last_block, nth, rank, release};
 #[cfg(test)]
-pub(crate) use lookup::{count_before, select};
+pub(crate) use lookup::{count_before, select, zeros_per_leaf};
+pub(crate) use merge::{Merged, merge_step};
 use node::{
     Child, FANOUT, at, child_of, children, count_at, key_at, node_len, page_at, read_into,
     write_child,
@@ -71,7 +73,7 @@ pub(crate) fn apply_reserved<M: Memory>(
 }
 
 /// Lowers the count of the posting at `key` by one, in place: no page moves and none is
-/// allocated. A count that reaches zero stays until its segment is next rewritten.
+/// allocated. A posting whose count reaches zero leaves its segment, unless it is its leaf's last.
 pub(crate) fn lower<M: Memory>(store: &PageStore<M>, root: Root, key: (u32, u32)) {
     let lowered = nudge(store, (root.page, root.depth), key, -1, leaf::lowered);
     if lowered == InPlace::Unfit {

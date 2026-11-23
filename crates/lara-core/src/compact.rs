@@ -82,6 +82,14 @@ impl Planned {
         &self.moves
     }
 
+    /// Whether the step does nothing: no holes, or none a step can reclaim.
+    pub(crate) const fn is_idle(&self) -> bool {
+        matches!(
+            self.action,
+            Action::Unchanged(_) | Action::Page(_, PageAction::Nothing, _)
+        )
+    }
+
     /// Whether the step leaves the bucket paged.
     pub(crate) const fn stays_paged(&self) -> bool {
         matches!(self.action, Action::Page(..))
