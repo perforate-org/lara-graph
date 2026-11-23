@@ -1,10 +1,13 @@
 //! Reads beyond a whole bucket in position order: either order, windows and chosen positions.
 
-use super::{Error, Graph};
+use super::{Error, Graph, RecordLines};
+use crate::corrupt::corrupt;
+use crate::descriptor::Descriptor;
 use crate::id::{Cursor, Direction, Edge, Label, NodeId, Order, Position};
 use crate::label_bucket::{self, Span, Window};
-use crate::label_bucket_list::LabelBucketKey;
+use crate::label_bucket_list::{self, LabelBucketKey};
 use crate::memory::Memory;
+use crate::stored::Stored;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
@@ -34,6 +37,64 @@ impl<M: Memory> Graph<M> {
                     f,
                 )
             }))
+    }
+
+    /// Calls `f` with `(node, edge)` for every live edge of each node's `(label, direction)`
+    /// bucket, in `nodes` order and `order` within each bucket, until `f` breaks.
+    ///
+    /// The batch holds both `Pages` views and an eight-record line of node records across the
+    /// nodes, so dense ids read one 64-byte line per eight nodes instead of one record per node. All nodes are checked before the first callback, so an unknown node
+    /// leaves the callbacks untouched.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`] for any node at or past [`Graph::node_count`].
+    pub fn visit_neighbors_each<B>(
+        &self,
+        nodes: &[NodeId],
+        label: Label,
+        direction: Direction,
+        order: Order,
+        mut f: impl FnMut(NodeId, Edge) -> ControlFlow<B>,
+    ) -> Result<Option<B>, Error> {
+        for &v in nodes {
+            self.check(v)?;
+        }
+        let view = self.edges.pages();
+        let lists = self.label_bucket_lists.pages();
+        let key = LabelBucketKey { label, direction };
+        // A line only pays off when the ids are dense; a scattered batch would read 64 bytes
+        // for each single record, so it keeps the one-record path. The first and eighth ids are
+        // enough to tell: a false positive still reads the right line, only without a gain.
+        let dense = nodes.len() >= 8
+            && nodes
+                .first()
+                .map(|v| v.index())
+                .zip(nodes.get(7).map(|v| v.index()))
+                .is_some_and(|(first, eighth)| eighth == first + 7);
+        let mut records = dense.then(RecordLines::default);
+        for &v in nodes {
+            let record = records.as_mut().map_or_else(
+                || self.record(v).unwrap_or_else(|_| corrupt("a known node")),
+                |lines| lines.record(self, v),
+            );
+            let Some(list) = record.list else { continue };
+            let Some(stored) = label_bucket_list::lookup_stored(&lists, Some(list), key) else {
+                continue;
+            };
+            let slots = match stored {
+                Stored::Plain(slots) => slots,
+                Stored::Extended(header) => Descriptor::decode(view.read_array(header.offset())),
+            };
+            if let Some(found) =
+                label_bucket::visit(&slots, &view, Span::all(&slots, order), Window::Page, |e| {
+                    f(v, e)
+                })
+            {
+                return Ok(Some(found));
+            }
+        }
+        Ok(None)
     }
 
     /// Calls `f` with each live edge in `cursor`'s window of `v`'s `(label, direction)` bucket, in

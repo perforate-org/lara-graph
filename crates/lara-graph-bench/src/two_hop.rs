@@ -170,3 +170,18 @@ pub fn degree<M: Memory>(g: &Graph<M>, v: NodeId, direction: Direction) -> u32 {
     g.degree(v, LABEL, direction)
         .unwrap_or_else(|err| panic!("degree: {err}"))
 }
+
+/// Visits the `direction` bucket of every node in `nodes` in one batch; returns the edge count.
+///
+/// # Panics
+///
+/// If a node is not in `g`.
+pub fn visit_many<M: Memory>(g: &Graph<M>, nodes: &[NodeId], direction: Direction) -> u64 {
+    let mut seen = 0u64;
+    g.visit_neighbors_each(nodes, LABEL, direction, Order::Ascending, |_, _| {
+        seen += 1;
+        ControlFlow::<()>::Continue(())
+    })
+    .unwrap_or_else(|err| panic!("batch: {err}"));
+    seen
+}

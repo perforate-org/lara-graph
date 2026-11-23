@@ -351,6 +351,99 @@ fn visiting_neighbors_sees_live_edges_in_order_and_stops_on_break() {
 }
 
 #[test]
+fn visiting_many_neighbors_matches_one_by_one_and_stops() {
+    let backing = Backing::default();
+    let mut g = backing.create(4);
+    insert(&mut g, v(0), l(0), v(1));
+    insert(&mut g, v(0), l(0), v(2));
+    insert(&mut g, v(1), l(0), v(2));
+    insert(&mut g, v(2), l(0), v(0));
+    let nodes = [v(0), v(3), v(1), v(2)];
+    let mut batched = Vec::new();
+    let none = g.visit_neighbors_each(
+        &nodes,
+        l(0),
+        Direction::Outgoing,
+        Order::Ascending,
+        |node, e| {
+            batched.push((node.index(), e.position().index(), e.target().index()));
+            ControlFlow::<()>::Continue(())
+        },
+    );
+    assert_eq!(none, Ok(None));
+    let mut one_by_one = Vec::new();
+    for &node in &nodes {
+        let mut out = Vec::new();
+        g.neighbors_directed(node, l(0), Direction::Outgoing, &mut out)
+            .unwrap();
+        for e in out {
+            one_by_one.push((node.index(), e.position().index(), e.target().index()));
+        }
+    }
+    assert_eq!(batched, one_by_one);
+
+    let mut seen = 0;
+    let stopped = g.visit_neighbors_each(
+        &nodes,
+        l(0),
+        Direction::Outgoing,
+        Order::Ascending,
+        |_, _| {
+            seen += 1;
+            if seen == 2 {
+                ControlFlow::Break(seen)
+            } else {
+                ControlFlow::Continue(())
+            }
+        },
+    );
+    assert_eq!(stopped, Ok(Some(2)));
+
+    let mut called = false;
+    assert_eq!(
+        g.visit_neighbors_each(
+            &[v(0), v(9)],
+            l(0),
+            Direction::Outgoing,
+            Order::Ascending,
+            |_, _| {
+                called = true;
+                ControlFlow::<()>::Continue(())
+            },
+        ),
+        Err(Error::UnknownNode(v(9)))
+    );
+    assert!(!called);
+}
+
+#[test]
+fn visiting_many_reads_dense_ids_in_lines() {
+    let backing = Backing::default();
+    let mut g = backing.create(13);
+    for target in 1..=12 {
+        insert(&mut g, v(0), l(0), v(target));
+    }
+    let nodes: Vec<NodeId> = (1..=12).map(v).collect();
+    let mut seen = Vec::new();
+    g.visit_neighbors_each(
+        &nodes,
+        l(0),
+        Direction::Incoming,
+        Order::Ascending,
+        |node, e| {
+            seen.push((node.index(), e.target().index()));
+            ControlFlow::<()>::Continue(())
+        },
+    )
+    .unwrap();
+    assert_eq!(seen.len(), 12);
+    for (at, (node, target)) in seen.into_iter().enumerate() {
+        assert_eq!(node, u32::try_from(at).unwrap() + 1);
+        assert_eq!(target, 0);
+    }
+}
+
+#[test]
 fn appending_never_fills_a_hole_in_any_bucket_form() {
     let backing = Backing::default();
     let mut g = backing.create(3);

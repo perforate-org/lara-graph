@@ -392,6 +392,50 @@ fn record_at(v: NodeId) -> ByteOffset {
     ByteOffset::new(RECORDS_START + u64::from(v.index()) * u64::try_from(RECORD_BYTES).unwrap_or(8))
 }
 
+/// Eight node records: 64 bytes, one cache line on the IC's host as well.
+const RECORDS_PER_LINE: u32 = 8;
+const RECORD_LINE_BYTES: usize = 64;
+
+/// A batch read's line of node records. Local to one call, so no invalidation is needed.
+pub(super) struct RecordLines {
+    base: u32,
+    bytes: [u8; RECORD_LINE_BYTES],
+}
+
+impl Default for RecordLines {
+    fn default() -> Self {
+        Self {
+            base: u32::MAX,
+            bytes: [0; RECORD_LINE_BYTES],
+        }
+    }
+}
+
+impl RecordLines {
+    /// `v`'s record, reading one 64-byte line per eight dense ids.
+    pub(super) fn record<M: Memory>(&mut self, graph: &Graph<M>, v: NodeId) -> Record {
+        let base = v.index() / RECORDS_PER_LINE * RECORDS_PER_LINE;
+        // The last partial line still takes the single-record path: a 64-byte read would run
+        // past the records the memory holds.
+        if graph.count.saturating_sub(base) < RECORDS_PER_LINE {
+            return graph.record(v).unwrap_or_else(|_| corrupt("a known node"));
+        }
+        if base != self.base {
+            self.bytes = graph.region().read_array(record_at(NodeId::new(base)));
+            self.base = base;
+        }
+        let offset = usize::try_from(v.index() - base).unwrap_or_else(|_| corrupt("record offset"))
+            * RECORD_BYTES;
+        Record::decode(line_record(&self.bytes, offset))
+    }
+}
+
+fn line_record(bytes: &[u8; RECORD_LINE_BYTES], offset: usize) -> [u8; RECORD_BYTES] {
+    let (_, rest) = bytes.split_at(offset);
+    let (record, _) = rest.split_at(RECORD_BYTES);
+    record.try_into().unwrap_or_else(|_| corrupt("record line"))
+}
+
 impl From<WriteError> for Error {
     fn from(error: WriteError) -> Self {
         match error {

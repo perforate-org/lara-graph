@@ -128,6 +128,7 @@ pub fn lara_graph::Graph<M>::try_new(lara_graph::Memories<M>) -> core::result::R
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::targets_at(&self, lara_graph::NodeId, lara_graph::Label, lara_graph::Direction, &[lara_graph::Position], &mut alloc::vec::Vec<core::option::Option<lara_graph::NodeId>>) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::Graph<M>::visit_neighbors<B>(&self, lara_graph::NodeId, lara_graph::Label, lara_graph::Direction, lara_graph::Order, impl core::ops::function::FnMut(lara_graph::Edge) -> core::ops::control_flow::ControlFlow<B>) -> core::result::Result<core::option::Option<B>, lara_graph::Error>
+pub fn lara_graph::Graph<M>::visit_neighbors_each<B>(&self, &[lara_graph::NodeId], lara_graph::Label, lara_graph::Direction, lara_graph::Order, impl core::ops::function::FnMut(lara_graph::NodeId, lara_graph::Edge) -> core::ops::control_flow::ControlFlow<B>) -> core::result::Result<core::option::Option<B>, lara_graph::Error>
 pub fn lara_graph::Graph<M>::visit_window(&self, lara_graph::NodeId, lara_graph::Label, lara_graph::Direction, lara_graph::Cursor, impl core::ops::function::FnMut(lara_graph::Edge)) -> core::result::Result<core::option::Option<lara_graph::Cursor>, lara_graph::Error>
 pub struct lara_graph::GrowFailed
 impl lara_graph::GrowFailed

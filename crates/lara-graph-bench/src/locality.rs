@@ -115,3 +115,30 @@ fn visit_inline_1024() -> BenchResult {
 fn visit_run_1024() -> BenchResult {
     per_satellite(|g, s| two_hop::visit_one(g, s, Direction::Outgoing))
 }
+
+/// The same out-bucket visits, batched over the satellite list: one record line per eight nodes.
+#[bench(raw)]
+fn visit_run_1024_batched() -> BenchResult {
+    let mut g = stable_graph();
+    let hub = two_hop::build(&mut g, Layout::Ordered);
+    let satellites = two_hop::satellites(&g, hub);
+    bench_fn(|| black_box(two_hop::visit_many(&g, &satellites, Direction::Outgoing)))
+}
+
+/// The in-bucket visits, batched over the satellite list.
+#[bench(raw)]
+fn visit_inline_1024_batched() -> BenchResult {
+    let mut g = stable_graph();
+    let hub = two_hop::build(&mut g, Layout::Ordered);
+    let satellites = two_hop::satellites(&g, hub);
+    bench_fn(|| black_box(two_hop::visit_many(&g, &satellites, Direction::Incoming)))
+}
+
+/// The out-bucket visits in the scattered layout, where consecutive ids do not share a line.
+#[bench(raw)]
+fn visit_run_1024_batched_scattered() -> BenchResult {
+    let mut g = stable_graph();
+    let hub = two_hop::build(&mut g, Layout::Scattered);
+    let satellites = two_hop::satellites(&g, hub);
+    bench_fn(|| black_box(two_hop::visit_many(&g, &satellites, Direction::Outgoing)))
+}
