@@ -80,8 +80,9 @@ crates/lara-graph-bench/  canbench instruction counts on the IC
 docs/                     design notes and measurements
 ```
 
-The original lara-graph, which ported DGAP's PMA to relocatable spans, and its DGAP port and
-benchmarks are kept in history under the tag `lara-graph-legacy`.
+The original lara-graph, which ported DGAP's PMA to relocatable spans, is kept under the tag
+`lara-graph-legacy` (branch `legacy`), with its DGAP port, benchmarks, paper, experiments and
+design notes.
 
 ## License
 
