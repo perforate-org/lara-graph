@@ -74,10 +74,17 @@ fn out_ref(x: NodeId, label: Label, at: Position) -> EdgeRef {
 
 /// Inserts `from -[label]-> to` and returns the out half's position.
 fn insert<M: Memory>(g: &mut Graph<M>, from: NodeId, label: Label, to: NodeId) -> Position {
-    g.add_edge(from, label, to, Placement::ReuseHoles, &[])
-        .unwrap()
-        .canonical()
-        .position()
+    g.add_edge(
+        EdgeKind::Directed,
+        from,
+        label,
+        to,
+        Placement::ReuseHoles,
+        &[],
+    )
+    .unwrap()
+    .canonical()
+    .position()
 }
 
 /// The report of removing the edge with `halves` and no value.
@@ -111,11 +118,25 @@ fn a_new_graph_is_empty_and_rejects_unknown_nodes() {
     assert_eq!(g.node_count(), 2);
     assert_eq!(g.degree(v(1), l(0), Direction::Outgoing), Ok(0));
     assert_eq!(
-        g.add_edge(v(0), l(0), v(2), Placement::ReuseHoles, &[]),
+        g.add_edge(
+            EdgeKind::Directed,
+            v(0),
+            l(0),
+            v(2),
+            Placement::ReuseHoles,
+            &[]
+        ),
         Err(Error::UnknownNode(v(2)))
     );
     assert_eq!(
-        g.add_undirected_edge(v(5), l(0), v(0), Placement::ReuseHoles, &[]),
+        g.add_edge(
+            EdgeKind::Undirected,
+            v(5),
+            l(0),
+            v(0),
+            Placement::ReuseHoles,
+            &[]
+        ),
         Err(Error::UnknownNode(v(5)))
     );
     assert_eq!(
@@ -131,7 +152,14 @@ fn a_directed_edge_is_stored_at_both_ends() {
     let backing = Backing::default();
     let mut g = backing.create(3);
     let e = g
-        .add_edge(v(0), l(4), v(2), Placement::ReuseHoles, &[])
+        .add_edge(
+            EdgeKind::Directed,
+            v(0),
+            l(4),
+            v(2),
+            Placement::ReuseHoles,
+            &[],
+        )
         .unwrap();
     assert_eq!(
         e.canonical(),
@@ -166,13 +194,34 @@ fn has_edges_sees_every_side_and_looks_past_buckets_of_holes() {
     g.declare_width(l(3), Width::new(2).unwrap()).unwrap();
     assert_eq!(g.has_edges(v(0)), Ok(false));
     let directed = g
-        .add_edge(v(0), l(1), v(1), Placement::ReuseHoles, &[])
+        .add_edge(
+            EdgeKind::Directed,
+            v(0),
+            l(1),
+            v(1),
+            Placement::ReuseHoles,
+            &[],
+        )
         .unwrap();
     let undirected = g
-        .add_undirected_edge(v(2), l(2), v(3), Placement::Append, &[])
+        .add_edge(
+            EdgeKind::Undirected,
+            v(2),
+            l(2),
+            v(3),
+            Placement::Append,
+            &[],
+        )
         .unwrap();
     let valued = g
-        .add_edge(v(4), l(3), v(5), Placement::Append, &[1, 2])
+        .add_edge(
+            EdgeKind::Directed,
+            v(4),
+            l(3),
+            v(5),
+            Placement::Append,
+            &[1, 2],
+        )
         .unwrap();
     for x in 0..6 {
         assert_eq!(g.has_edges(v(x)), Ok(true), "node {x}");
@@ -200,7 +249,10 @@ fn compacting_a_mostly_emptied_hub_shrinks_its_index() {
     let mut edges = Vec::new();
     for _ in 0..6000 {
         let leaf = g.add_node().unwrap();
-        edges.push(g.add_edge(hub, l(0), leaf, Placement::Append, &[]).unwrap());
+        edges.push(
+            g.add_edge(EdgeKind::Directed, hub, l(0), leaf, Placement::Append, &[])
+                .unwrap(),
+        );
     }
     let index_pages = |g: &Graph<_>| {
         let found = g
@@ -241,7 +293,14 @@ fn an_undirected_edges_canonical_half_is_at_the_larger_node_and_a_self_loop_has_
     let backing = Backing::default();
     let mut g = backing.create(3);
     let e = g
-        .add_undirected_edge(v(2), l(0), v(1), Placement::ReuseHoles, &[])
+        .add_edge(
+            EdgeKind::Undirected,
+            v(2),
+            l(0),
+            v(1),
+            Placement::ReuseHoles,
+            &[],
+        )
         .unwrap();
     // The canonical half is at the larger node.
     assert_eq!(
@@ -254,7 +313,14 @@ fn an_undirected_edges_canonical_half_is_at_the_larger_node_and_a_self_loop_has_
     );
     assert_eq!(g.counterpart(e.other()), Ok(Some(e.canonical())));
     let s = g
-        .add_undirected_edge(v(1), l(0), v(1), Placement::ReuseHoles, &[])
+        .add_edge(
+            EdgeKind::Undirected,
+            v(1),
+            l(0),
+            v(1),
+            Placement::ReuseHoles,
+            &[],
+        )
         .unwrap();
     assert_eq!(s.canonical(), s.other());
     assert_eq!(s.canonical().position(), p(1));
@@ -275,10 +341,24 @@ fn a_directed_self_loop_has_an_out_and_an_in_half() {
     let backing = Backing::default();
     let mut g = backing.create(1);
     let first = g
-        .add_edge(v(0), l(0), v(0), Placement::ReuseHoles, &[])
+        .add_edge(
+            EdgeKind::Directed,
+            v(0),
+            l(0),
+            v(0),
+            Placement::ReuseHoles,
+            &[],
+        )
         .unwrap();
     let second = g
-        .add_edge(v(0), l(0), v(0), Placement::ReuseHoles, &[])
+        .add_edge(
+            EdgeKind::Directed,
+            v(0),
+            l(0),
+            v(0),
+            Placement::ReuseHoles,
+            &[],
+        )
         .unwrap();
     assert_eq!(
         second.canonical(),
@@ -299,17 +379,39 @@ fn parallel_edges_pair_by_rank() {
     let mut g = backing.create(3);
     let (a, b) = (v(0), v(1));
     // a→b at Out 0, 2, 3; other traffic interleaves the In side at b.
-    let first = g.add_edge(a, l(0), b, Placement::ReuseHoles, &[]).unwrap();
-    g.add_edge(a, l(0), v(2), Placement::ReuseHoles, &[])
+    let first = g
+        .add_edge(EdgeKind::Directed, a, l(0), b, Placement::ReuseHoles, &[])
         .unwrap();
-    g.add_edge(v(2), l(0), b, Placement::ReuseHoles, &[])
+    g.add_edge(
+        EdgeKind::Directed,
+        a,
+        l(0),
+        v(2),
+        Placement::ReuseHoles,
+        &[],
+    )
+    .unwrap();
+    g.add_edge(
+        EdgeKind::Directed,
+        v(2),
+        l(0),
+        b,
+        Placement::ReuseHoles,
+        &[],
+    )
+    .unwrap();
+    let second = g
+        .add_edge(EdgeKind::Directed, a, l(0), b, Placement::ReuseHoles, &[])
         .unwrap();
-    let second = g.add_edge(a, l(0), b, Placement::ReuseHoles, &[]).unwrap();
-    let third = g.add_edge(a, l(0), b, Placement::ReuseHoles, &[]).unwrap();
+    let third = g
+        .add_edge(EdgeKind::Directed, a, l(0), b, Placement::ReuseHoles, &[])
+        .unwrap();
     assert_eq!(second.other().position(), p(2));
     g.remove_edge(first.canonical()).unwrap();
     // A new a→b must not take hole 0 on either side: it would rank before the survivors.
-    let fourth = g.add_edge(a, l(0), b, Placement::ReuseHoles, &[]).unwrap();
+    let fourth = g
+        .add_edge(EdgeKind::Directed, a, l(0), b, Placement::ReuseHoles, &[])
+        .unwrap();
     assert_eq!(fourth.canonical().position(), p(4));
     assert_eq!(fourth.other().position(), p(4));
     for e in [second, third, fourth] {
@@ -767,12 +869,26 @@ fn appending_never_fills_a_hole_in_any_bucket_form() {
         remove(&mut g, v(0), label, p(total - 2));
         // An edge to another node could safely take the hole; appending must not.
         let appended = g
-            .add_edge(v(0), label, v(2), Placement::Append, &[])
+            .add_edge(
+                EdgeKind::Directed,
+                v(0),
+                label,
+                v(2),
+                Placement::Append,
+                &[],
+            )
             .unwrap();
         assert_eq!(appended.canonical().position(), p(total), "{total} edges");
         // No live edge to node 0 follows the hole, so reusing it is safe.
         let reused = g
-            .add_edge(v(0), label, v(0), Placement::ReuseHoles, &[])
+            .add_edge(
+                EdgeKind::Directed,
+                v(0),
+                label,
+                v(0),
+                Placement::ReuseHoles,
+                &[],
+            )
             .unwrap();
         assert_eq!(reused.canonical().position(), p(total - 2), "{total} edges");
     }
@@ -920,7 +1036,14 @@ fn too_many_buckets_is_an_error_and_changes_nothing() {
     assert!(room(&g, 0, 1));
     // A directed self-loop needs two new buckets at node 0.
     assert_eq!(
-        g.add_edge(v(0), l(label), v(0), Placement::ReuseHoles, &[]),
+        g.add_edge(
+            EdgeKind::Directed,
+            v(0),
+            l(label),
+            v(0),
+            Placement::ReuseHoles,
+            &[]
+        ),
         Err(Error::TooManyLabelBuckets(v(0)))
     );
     // Fill node 1; then an edge 0 → 1 fails on its in half and must not land at 0 either.
@@ -930,7 +1053,14 @@ fn too_many_buckets_is_an_error_and_changes_nothing() {
         other += 1;
     }
     assert_eq!(
-        g.add_edge(v(0), l(label), v(1), Placement::ReuseHoles, &[]),
+        g.add_edge(
+            EdgeKind::Directed,
+            v(0),
+            l(label),
+            v(1),
+            Placement::ReuseHoles,
+            &[]
+        ),
         Err(Error::TooManyLabelBuckets(v(1)))
     );
     assert_eq!(g.degree(v(0), l(label), Direction::Outgoing), Ok(0));
@@ -960,7 +1090,14 @@ fn an_insert_that_runs_out_of_memory_changes_nothing() {
     while capacity - g.edges.minted() > 3 {
         held.push(g.edges.allocate(ByteClass::PAGE).unwrap());
     }
-    let error = g.add_edge(v(0), l(0), v(1), Placement::ReuseHoles, &[]);
+    let error = g.add_edge(
+        EdgeKind::Directed,
+        v(0),
+        l(0),
+        v(1),
+        Placement::ReuseHoles,
+        &[],
+    );
     assert!(matches!(error, Err(Error::OutOfMemory(_))), "{error:?}");
     assert_eq!(
         (
@@ -1061,8 +1198,15 @@ fn the_page_index_deepens_past_one_page_of_entries() {
     for _ in 0..total {
         let before = g.edges.minted();
         // An undirected self-loop: one half, one bucket insert.
-        g.add_undirected_edge(v(0), l(0), v(0), Placement::ReuseHoles, &[])
-            .unwrap();
+        g.add_edge(
+            EdgeKind::Undirected,
+            v(0),
+            l(0),
+            v(0),
+            Placement::ReuseHoles,
+            &[],
+        )
+        .unwrap();
         most = most.max(g.edges.minted() - before);
     }
     let bound = insert::pages_per_half(None);
@@ -1187,7 +1331,9 @@ fn ic_stable_structures_memories_hold_a_graph() {
     let memories = || Memories::from_fn(|role| manager.get(MemoryId::new(role.index())));
     let mut g = Graph::init(memories());
     let (a, b) = (g.add_node().unwrap(), g.add_node().unwrap());
-    let halves = g.add_edge(a, l(1), b, Placement::Append, &[]).unwrap();
+    let halves = g
+        .add_edge(EdgeKind::Directed, a, l(1), b, Placement::Append, &[])
+        .unwrap();
     drop(g);
     let g = Graph::init(memories());
     assert_eq!(g.node_count(), 2);

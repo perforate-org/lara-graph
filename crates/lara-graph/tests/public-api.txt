@@ -89,9 +89,8 @@ pub const fn lara_graph::EdgeRef::node(&self) -> lara_graph::NodeId
 pub const fn lara_graph::EdgeRef::position(&self) -> lara_graph::Position
 pub struct lara_graph::Graph<M: lara_graph::Memory>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
-pub fn lara_graph::Graph<M>::add_edge(&mut self, lara_graph::NodeId, lara_graph::Label, lara_graph::NodeId, lara_graph::Placement, &[u8]) -> core::result::Result<lara_graph::Halves, lara_graph::Error>
+pub fn lara_graph::Graph<M>::add_edge(&mut self, lara_graph::EdgeKind, lara_graph::NodeId, lara_graph::Label, lara_graph::NodeId, lara_graph::Placement, &[u8]) -> core::result::Result<lara_graph::Halves, lara_graph::Error>
 pub fn lara_graph::Graph<M>::add_edges(&mut self, &[lara_graph::NewEdge<'_>]) -> core::result::Result<alloc::vec::Vec<lara_graph::Halves>, lara_graph::Error>
-pub fn lara_graph::Graph<M>::add_undirected_edge(&mut self, lara_graph::NodeId, lara_graph::Label, lara_graph::NodeId, lara_graph::Placement, &[u8]) -> core::result::Result<lara_graph::Halves, lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::add_node(&mut self) -> core::result::Result<lara_graph::NodeId, lara_graph::Error>
 pub fn lara_graph::Graph<M>::degree(&self, lara_graph::NodeId, lara_graph::Label, lara_graph::Direction) -> core::result::Result<u32, lara_graph::Error>

@@ -17,9 +17,16 @@ fn valued_edges(g: &mut Graph<VecMemory>, label: Label, n: u32, width: usize) ->
     (0..n)
         .map(|i| {
             let value = val(u8::try_from(i % 251).unwrap(), width);
-            g.add_edge(v(0), label, v(1), Placement::Append, &value)
-                .unwrap()
-                .canonical()
+            g.add_edge(
+                EdgeKind::Directed,
+                v(0),
+                label,
+                v(1),
+                Placement::Append,
+                &value,
+            )
+            .unwrap()
+            .canonical()
         })
         .collect()
 }
@@ -107,10 +114,24 @@ fn values_have_the_labels_width_and_edges_before_it_read_as_zeros() {
     let backing = Backing::default();
     let mut g = backing.create(2);
     let early = g
-        .add_edge(v(0), l(0), v(1), Placement::ReuseHoles, &[])
+        .add_edge(
+            EdgeKind::Directed,
+            v(0),
+            l(0),
+            v(1),
+            Placement::ReuseHoles,
+            &[],
+        )
         .unwrap();
     assert_eq!(
-        g.add_edge(v(0), l(0), v(1), Placement::ReuseHoles, &[1]),
+        g.add_edge(
+            EdgeKind::Directed,
+            v(0),
+            l(0),
+            v(1),
+            Placement::ReuseHoles,
+            &[1]
+        ),
         Err(Error::WrongValueLength {
             label: l(0),
             expected: 0,
@@ -120,7 +141,14 @@ fn values_have_the_labels_width_and_edges_before_it_read_as_zeros() {
     g.declare_width(l(0), w(2)).unwrap();
     assert_eq!(g.edge_value(early.other()), Ok(Some(vec![0, 0])));
     assert_eq!(
-        g.add_edge(v(0), l(0), v(1), Placement::ReuseHoles, &[]),
+        g.add_edge(
+            EdgeKind::Directed,
+            v(0),
+            l(0),
+            v(1),
+            Placement::ReuseHoles,
+            &[]
+        ),
         Err(Error::WrongValueLength {
             label: l(0),
             expected: 2,
@@ -134,7 +162,14 @@ fn values_have_the_labels_width_and_edges_before_it_read_as_zeros() {
     );
     assert_eq!(g.edge_value(early.other()), Ok(Some(vec![7, 8])));
     let late = g
-        .add_edge(v(0), l(0), v(1), Placement::ReuseHoles, &[9, 9])
+        .add_edge(
+            EdgeKind::Directed,
+            v(0),
+            l(0),
+            v(1),
+            Placement::ReuseHoles,
+            &[9, 9],
+        )
         .unwrap();
     assert_eq!(
         g.remove_edge(late.other()),
@@ -162,7 +197,14 @@ fn an_insert_with_a_value_that_runs_out_of_memory_changes_nothing() {
     while capacity - g.edges.minted() > 3 {
         held.push(g.edges.allocate(ByteClass::PAGE).unwrap());
     }
-    let error = g.add_edge(v(0), l(0), v(1), Placement::Append, &val(1, 4096));
+    let error = g.add_edge(
+        EdgeKind::Directed,
+        v(0),
+        l(0),
+        v(1),
+        Placement::Append,
+        &val(1, 4096),
+    );
     assert!(matches!(error, Err(Error::OutOfMemory(_))), "{error:?}");
     let after = (
         edges(&g, v(0), l(0)),

@@ -5,7 +5,9 @@
 //! of its own (a run bucket). The traversal visits the hub's neighbours, then each neighbour's.
 
 use core::ops::ControlFlow;
-use lara_graph::{Direction, Graph, Label, Memory, NodeId, NodeState, Order, Placement, ReadBatch};
+use lara_graph::{
+    Direction, EdgeKind, Graph, Label, Memory, NodeId, NodeState, Order, Placement, ReadBatch,
+};
 
 /// Satellites around the hub: the first hop.
 pub const SATELLITES: u32 = 1024;
@@ -67,7 +69,7 @@ fn node<M: Memory>(g: &mut Graph<M>) -> NodeId {
 }
 
 fn edge<M: Memory>(g: &mut Graph<M>, from: NodeId, to: NodeId) {
-    g.add_edge(from, LABEL, to, Placement::Append, &[])
+    g.add_edge(EdgeKind::Directed, from, LABEL, to, Placement::Append, &[])
         .unwrap_or_else(|e| panic!("insert: {e}"));
 }
 

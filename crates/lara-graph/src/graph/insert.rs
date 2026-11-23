@@ -271,8 +271,10 @@ impl<M: Memory> Graph<M> {
         Ok(out)
     }
 
-    /// Adds the edge `from -[label]-> to`, placed by `placement` in both buckets, with `value`
-    /// in both halves. Parallel edges keep their relative order either way.
+    /// Adds one edge of `kind`, placed by `placement` in both buckets, with `value` in both
+    /// halves. A directed edge is `from -[label]-> to`; an undirected edge is `from -[label]- to`
+    /// and is normalized by node id. A directed self-loop has two halves; an undirected self-loop
+    /// has one. Parallel edges keep their relative order either way.
     ///
     /// `value` is exactly the label's width ([`Self::declare_width`]) long, or empty for a label
     /// without one.
@@ -285,41 +287,32 @@ impl<M: Memory> Graph<M> {
     /// On error the graph is unchanged.
     pub fn add_edge(
         &mut self,
+        kind: EdgeKind,
         from: NodeId,
         label: Label,
         to: NodeId,
         placement: Placement,
         value: &[u8],
     ) -> Result<Halves, Error> {
-        let out = Half::new(from, (label, Direction::Outgoing), to, placement);
-        let into = Half::new(to, (label, Direction::Incoming), from, placement);
-        let [canonical, other] = self.insert_halves([out, into], value)?;
-        Ok(Halves::new(canonical, other))
-    }
-
-    /// Adds the undirected edge `a -[label]- b`, placed by `placement` in both buckets, with
-    /// `value` at each end. Parallel edges keep their relative order either way.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::add_edge`]. On error the graph is unchanged.
-    pub fn add_undirected_edge(
-        &mut self,
-        a: NodeId,
-        label: Label,
-        b: NodeId,
-        placement: Placement,
-        value: &[u8],
-    ) -> Result<Halves, Error> {
-        let (low, high) = (a.min(b), a.max(b));
-        let at_high = Half::new(high, (label, Direction::Undirected), low, placement);
-        if low == high {
-            let [half] = self.insert_halves([at_high], value)?;
-            return Ok(Halves::new(half, half));
+        match kind {
+            EdgeKind::Directed => {
+                let out = Half::new(from, (label, Direction::Outgoing), to, placement);
+                let into = Half::new(to, (label, Direction::Incoming), from, placement);
+                let [canonical, other] = self.insert_halves([out, into], value)?;
+                Ok(Halves::new(canonical, other))
+            }
+            EdgeKind::Undirected => {
+                let (low, high) = (from.min(to), from.max(to));
+                let at_high = Half::new(high, (label, Direction::Undirected), low, placement);
+                if low == high {
+                    let [half] = self.insert_halves([at_high], value)?;
+                    return Ok(Halves::new(half, half));
+                }
+                let at_low = Half::new(low, (label, Direction::Undirected), high, placement);
+                let [canonical, other] = self.insert_halves([at_high, at_low], value)?;
+                Ok(Halves::new(canonical, other))
+            }
         }
-        let at_low = Half::new(low, (label, Direction::Undirected), high, placement);
-        let [canonical, other] = self.insert_halves([at_high, at_low], value)?;
-        Ok(Halves::new(canonical, other))
     }
 
     /// Inserts every half or none: checks and reserves memory first, then applies them.

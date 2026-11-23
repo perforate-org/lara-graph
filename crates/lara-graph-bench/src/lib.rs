@@ -13,8 +13,8 @@ use core::ops::ControlFlow;
 use ic_stable_structures::DefaultMemoryImpl;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use lara_graph::{
-    Cursor, Direction, EdgeRef, Graph, Halves, Label, Memories, Memory, NewEdge, NodeId, Order,
-    Placement, Position, Progress, VecMemory, Width,
+    Cursor, Direction, EdgeKind, EdgeRef, Graph, Halves, Label, Memories, Memory, NewEdge, NodeId,
+    Order, Placement, Position, Progress, VecMemory, Width,
 };
 
 mod btree;
@@ -51,8 +51,15 @@ fn last(edges: &[Halves]) -> Halves {
 }
 
 fn directed<M: Memory>(g: &mut Graph<M>, from: NodeId, to: NodeId) -> Halves {
-    g.add_edge(from, LABEL, to, Placement::ReuseHoles, &[])
-        .unwrap_or_else(|e| panic!("insert: {e}"))
+    g.add_edge(
+        EdgeKind::Directed,
+        from,
+        LABEL,
+        to,
+        Placement::ReuseHoles,
+        &[],
+    )
+    .unwrap_or_else(|e| panic!("insert: {e}"))
 }
 
 /// A hub with an edge to each of `degree` fresh leaves; returns the hub and the edges.
@@ -270,8 +277,15 @@ fn seed_valued_hub(g: &mut Graph<VecMemory>, degree: u32) -> NodeId {
     let hub = node(g);
     for leaf in nodes(g, degree) {
         let value = u64::from(leaf.index()).to_le_bytes();
-        g.add_edge(hub, LABEL, leaf, Placement::Append, &value)
-            .unwrap_or_else(|e| panic!("insert: {e}"));
+        g.add_edge(
+            EdgeKind::Directed,
+            hub,
+            LABEL,
+            leaf,
+            Placement::Append,
+            &value,
+        )
+        .unwrap_or_else(|e| panic!("insert: {e}"));
     }
     hub
 }
@@ -288,8 +302,15 @@ fn hub_insert_valued_4096() -> BenchResult {
         for &leaf in &leaves {
             let value = u64::from(leaf.index()).to_le_bytes();
             black_box(
-                g.add_edge(hub, LABEL, leaf, Placement::Append, &value)
-                    .unwrap_or_else(|e| panic!("insert: {e}")),
+                g.add_edge(
+                    EdgeKind::Directed,
+                    hub,
+                    LABEL,
+                    leaf,
+                    Placement::Append,
+                    &value,
+                )
+                .unwrap_or_else(|e| panic!("insert: {e}")),
             );
         }
     })
