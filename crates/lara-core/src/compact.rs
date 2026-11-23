@@ -58,29 +58,105 @@ pub(crate) enum Inline {
     Forbidden,
 }
 
-/// One bounded compaction step. On error nothing changed.
-pub(crate) fn step<M: Memory>(
-    d: Descriptor,
-    store: &mut PageStore<M>,
-    inline: Inline,
-) -> Result<Step, WriteError> {
-    if d.live() == d.stored() {
-        return Ok(Step::unchanged(d));
+/// What the next step of a bucket's compaction will do, read but not written: [`Planned::moves`]
+/// tells what moves, and [`apply`] does it.
+pub(crate) struct Planned {
+    action: Action,
+    moves: Vec<Move>,
+}
+
+/// One bounded step's action, with the live edges it packs.
+enum Action {
+    Unchanged(Descriptor),
+    /// A tiny or run bucket, packed into the smallest form that holds its edges.
+    Small(Descriptor, Vec<Edge>),
+    /// A paged bucket with few live edges, packed into a run or tiny bucket.
+    Demote(Paged, Vec<Edge>),
+    /// A paged bucket's page-level action.
+    Page(Paged, PageAction, Vec<Edge>),
+}
+
+impl Planned {
+    /// The moves the step will make, in position order.
+    pub(crate) fn moves(&self) -> &[Move] {
+        &self.moves
     }
-    match d {
-        Descriptor::Tiny(_) | Descriptor::Run(_) => pack_small(d, store, inline),
-        Descriptor::Paged(paged) if paged.live <= DEMOTE_AT => demote(paged, store, inline),
-        Descriptor::Paged(paged) => Ok(page_step(paged, store)),
+
+    /// Whether the step leaves the bucket paged.
+    pub(crate) const fn stays_paged(&self) -> bool {
+        matches!(self.action, Action::Page(..))
     }
 }
 
-/// Packs a tiny or run bucket into the smallest form that holds its live edges.
-fn pack_small<M: Memory>(
-    d: Descriptor,
+/// Plans the next bounded compaction step of `d`.
+pub(crate) fn plan<M: Memory>(d: Descriptor, store: &PageStore<M>) -> Planned {
+    let (action, base) = if d.live() == d.stored() {
+        (Action::Unchanged(d), 0)
+    } else {
+        match d {
+            Descriptor::Tiny(_) | Descriptor::Run(_) => {
+                (Action::Small(d, live_edges(&d, store)), 0)
+            }
+            Descriptor::Paged(paged) if paged.live <= DEMOTE_AT => {
+                (Action::Demote(paged, live_edges(&d, store)), 0)
+            }
+            Descriptor::Paged(paged) => match choose(&paged, store) {
+                PageAction::Merge(first, second) => {
+                    let edges = merged_edges(store, first, second);
+                    let action = PageAction::Merge(first, second);
+                    (Action::Page(paged, action, edges), first.0 * PAGE_SLOTS)
+                }
+                action @ (PageAction::Hollow(_) | PageAction::Nothing) => {
+                    (Action::Page(paged, action, Vec::new()), 0)
+                }
+            },
+        }
+    };
+    let edges = match &action {
+        Action::Unchanged(_) => &[][..],
+        Action::Small(_, edges) | Action::Demote(_, edges) | Action::Page(_, _, edges) => edges,
+    };
+    let moves = moves_to_front(edges, base);
+    Planned { action, moves }
+}
+
+/// Applies a planned step. On error nothing changed.
+pub(crate) fn apply<M: Memory>(
+    planned: Planned,
     store: &mut PageStore<M>,
     inline: Inline,
 ) -> Result<Step, WriteError> {
-    let edges = live_edges(&d, store);
+    let Planned { action, moves } = planned;
+    let (outcome, progress, hollowed) = match action {
+        Action::Unchanged(d) => return Ok(Step::unchanged(d)),
+        Action::Small(d, edges) => (pack_small(d, &edges, store, inline)?, Progress::Done, None),
+        Action::Demote(paged, edges) => {
+            (demote(paged, &edges, store, inline)?, Progress::Done, None)
+        }
+        Action::Page(paged, action, edges) => match page_step(paged, action, &edges, store) {
+            Some(hollowed) => (
+                Outcome::Bucket(Descriptor::Paged(paged)),
+                Progress::Remaining,
+                Some(hollowed),
+            ),
+            None => return Ok(Step::unchanged(Descriptor::Paged(paged))),
+        },
+    };
+    Ok(Step {
+        outcome,
+        moves,
+        progress,
+        hollowed,
+    })
+}
+
+/// Packs a tiny or run bucket's live `edges` into the smallest form that holds them.
+fn pack_small<M: Memory>(
+    d: Descriptor,
+    edges: &[Edge],
+    store: &mut PageStore<M>,
+    inline: Inline,
+) -> Result<Outcome, WriteError> {
     let old_extent = match d {
         Descriptor::Run(run) => Some(run.extent),
         Descriptor::Tiny(_) | Descriptor::Paged(_) => None,
@@ -89,27 +165,22 @@ fn pack_small<M: Memory>(
     // result uses no extent, so the old one is released below.
     let stays_run = edges.len() > TINY_SLOTS || (inline == Inline::Forbidden && !edges.is_empty());
     let reuse = old_extent.filter(|e| stays_run && e.class() == run_class(stored_u32(edges.len())));
-    let outcome = rebuild(&edges, reuse, store, inline)?;
+    let outcome = rebuild(edges, reuse, store, inline)?;
     if let Some(old) = old_extent.filter(|old| Some(*old) != reuse) {
         store.release(old);
     }
-    Ok(Step {
-        outcome,
-        moves: moves_to_front(&edges, 0),
-        progress: Progress::Done,
-        hollowed: None,
-    })
+    Ok(outcome)
 }
 
-/// Packs a paged bucket with few live edges into a run or tiny bucket, releasing its pages.
+/// Packs a paged bucket's few live `edges` into a run or tiny bucket, releasing its pages.
 fn demote<M: Memory>(
     paged: Paged,
+    edges: &[Edge],
     store: &mut PageStore<M>,
     inline: Inline,
-) -> Result<Step, WriteError> {
-    let edges = live_edges(&Descriptor::Paged(paged), store);
+) -> Result<Outcome, WriteError> {
     // Allocate first: if that fails, the paged bucket is untouched.
-    let outcome = rebuild(&edges, None, store, inline)?;
+    let outcome = rebuild(edges, None, store, inline)?;
     let view = store.pages();
     let data: Vec<PageId> = paged::leaves(&view, &paged)
         .into_iter()
@@ -120,15 +191,11 @@ fn demote<M: Memory>(
         store.release(Extent::whole(page));
     }
     store.release(paged.index);
-    Ok(Step {
-        outcome,
-        moves: moves_to_front(&edges, 0),
-        progress: Progress::Done,
-        hollowed: None,
-    })
+    Ok(outcome)
 }
 
 /// What one page-level step of a paged bucket does.
+#[derive(Clone, Copy)]
 enum PageAction {
     /// Release this dead page (not the last) and leave its entry hollow.
     Hollow(u32),
@@ -158,42 +225,24 @@ fn choose<M: Memory>(paged: &Paged, store: &PageStore<M>) -> PageAction {
     PageAction::Nothing
 }
 
-/// The moves the next [`step`] of a large paged bucket will report, without changing anything;
-/// empty for every other bucket. Lets the caller plan what the moves cost before the step.
-pub(crate) fn preview<M: Memory>(d: Descriptor, store: &PageStore<M>) -> Vec<Move> {
-    let Descriptor::Paged(paged) = d else {
-        return Vec::new();
-    };
-    if d.live() == d.stored() || paged.live <= DEMOTE_AT {
-        return Vec::new();
-    }
-    match choose(&paged, store) {
-        PageAction::Merge(first, second) => {
-            let edges = merged_edges(store, first, second);
-            moves_to_front(&edges, first.0 * PAGE_SLOTS)
-        }
-        PageAction::Hollow(_) | PageAction::Nothing => Vec::new(),
-    }
-}
-
-/// One page-level action, or none when nothing can be reclaimed this way.
-fn page_step<M: Memory>(paged: Paged, store: &mut PageStore<M>) -> Step {
-    let step = |moves, hollowed| Step {
-        outcome: Outcome::Bucket(Descriptor::Paged(paged)),
-        moves,
-        progress: Progress::Remaining,
-        hollowed: Some(hollowed),
-    };
-    match choose(&paged, store) {
+/// Applies a page-level action; returns the data page it released (its entry left hollow), or
+/// `None` when there was nothing to do.
+fn page_step<M: Memory>(
+    paged: Paged,
+    action: PageAction,
+    edges: &[Edge],
+    store: &mut PageStore<M>,
+) -> Option<u32> {
+    match action {
         PageAction::Hollow(number) => {
             paged::hollow(store, &paged, number);
-            step(Vec::new(), number)
+            Some(number)
         }
         PageAction::Merge(first, second) => {
-            let moves = merge(store, &paged, first, second);
-            step(moves, second.0)
+            merge(store, &paged, (first, second), edges);
+            Some(second.0)
         }
-        PageAction::Nothing => Step::unchanged(Descriptor::Paged(paged)),
+        PageAction::Nothing => None,
     }
 }
 
@@ -209,16 +258,14 @@ fn merged_edges<M: Memory>(
         .collect()
 }
 
-/// Packs data page `second` into data page `first` (their live edges fit one page), then
+/// Packs data page `second` into data page `first` (their live `edges` fit one page), then
 /// releases `second` and leaves its entry hollow. Pages between them are hollow, so order holds.
 fn merge<M: Memory>(
     store: &mut PageStore<M>,
     paged: &Paged,
-    first: (u32, Leaf),
-    second: (u32, Leaf),
-) -> Vec<Move> {
-    let edges = merged_edges(store, first, second);
-    let base = first.0 * PAGE_SLOTS;
+    (first, second): ((u32, Leaf), (u32, Leaf)),
+    edges: &[Edge],
+) {
     let mut bytes: Vec<u8> = edges
         .iter()
         .flat_map(|e| Slot::Live(e.target()).encode())
@@ -230,7 +277,6 @@ fn merge<M: Memory>(
     let holes = (narrow(PAGE_SLOTS) - live, live.min(paged::NO_HOLE));
     paged::set_holes(store, paged, first.0, holes);
     paged::hollow(store, paged, second.0);
-    moves_to_front(&edges, base)
 }
 
 /// The live edges of data page `number`, with their bucket positions.

@@ -67,7 +67,7 @@ fn read_range<M: Memory>(
             f(p, if p == at { target } else { None });
         }
     };
-    scan(d, view, span, PAGE_SLOTS, |first, bytes| {
+    scan(d, view, span, (PAGE_SLOTS, PAGE_SLOTS), |first, bytes| {
         for (at, slot) in (first..).zip(Slot::decode_all(bytes)) {
             let target = match slot {
                 Slot::Live(target) => Some(target),

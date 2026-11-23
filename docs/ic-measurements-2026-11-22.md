@@ -229,3 +229,26 @@ Changes:
 Insert costs ~4.9 K per half; ic-stable-lara's one-sided steady state is ~3.6-4.5 K. Removal with
 compaction and detach remain ~7 % above their cost before values. Compaction's own buffers (live
 edges, packed bytes, moves) are the next allocations to remove.
+
+## Sixth round (2026-11-23): descending walks, one compaction plan, short first windows
+
+Changes:
+- **Descending scans walk the page index backwards.** Before, they collected the whole leaf
+  list and reversed it. The walk goes either way: it reads a window of entries from the near end,
+  and visits a node's entries in the scan's order.
+- **A compaction step is planned once.** Before, `preview` read the pages and listed the moves
+  to plan the index changes. `step` then read the pages again and listed them again, and
+  `verify` checked that the two lists matched. Now `compact::plan` reads once,
+  `compact::apply` writes what the plan says, and no check is needed.
+- **Searches read 32 slots first, then 128 at a time.** A detaching vertex's next edge, a pair's
+  partner or a hole is usually near where the search starts.
+  - 16 slots first made a block scan for a counterpart take two reads (+2 %).
+
+| Scenario | Before | Now |
+| --- | ---: | ---: |
+| All 65536 in descending windows of 256 positions | 5.13 M | 2.93 M (−43 %) |
+| Compaction after removing half, 4096 / 65536 | 4.08 M / 127 M | 3.67 M / 114 M (−10 %) |
+| Detach a hub, 1024 / 4096 / 65536 | 10.6 M / 54.6 M / 980 M | 9.48 M / 50.3 M / 911 M (−7 to −11 %) |
+| Refill with parallel edges, 65536 | 1.12 B | 1.04 B (−7 %) |
+
+No other scenario moved by 2 % or more.

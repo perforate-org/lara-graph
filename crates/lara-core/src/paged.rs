@@ -15,12 +15,13 @@
 
 use crate::corrupt::corrupt;
 use crate::descriptor::{PAGE_SLOTS, Paged};
+use crate::id::Order;
 use crate::memory::{Memory, WriteError};
 use crate::page_store::{ByteClass, Extent, PageId, PageStore, Pages};
 use crate::txn::SpanTxn;
 use crate::units::ByteOffset;
 use alloc::vec::Vec;
-use core::ops::ControlFlow;
+use core::ops::{ControlFlow, Range};
 
 mod growth;
 
@@ -157,43 +158,88 @@ enum Descend {
 /// Entries read at a time: a walk that stops early reads little of a large node.
 const WALK_ENTRIES: u64 = 64;
 
-/// Visits the entries under `node` whose subtrees hold data pages numbered `from` or later, in
-/// order, parents before their children, as `(level, first data page covered, entry)`, until
+/// Which data pages a walk covers, and in which order.
+#[derive(Clone)]
+struct Reach {
+    pages: Range<u64>,
+    order: Order,
+}
+
+impl Reach {
+    /// Every data page from `from` on, in order.
+    const fn from(from: u64) -> Self {
+        Self {
+            pages: from..u64::MAX,
+            order: Order::Ascending,
+        }
+    }
+}
+
+/// Visits the entries under `node` whose subtrees hold data pages in `reach`, in its order,
+/// parents before their children, as `(level, first data page covered, entry)`, until
 /// `on_entry` breaks; it says for each node entry whether to go below it. Level-1 entries are
-/// data pages. Reads each node from its first such entry, a window at a time.
+/// data pages. Reads each node from the first such entry in the walk's order, a window at a
+/// time.
 fn walk<M: Memory, B>(
     view: &Pages<'_, M>,
     node: Node,
     total: u32,
-    from: u64,
+    reach: &Reach,
     on_entry: &mut impl FnMut(u32, u64, Leaf) -> ControlFlow<B, Descend>,
 ) -> ControlFlow<B> {
     let covered = span(node.level);
     let entries = (u64::from(total) - node.first)
         .div_ceil(covered)
         .min(u64::from(FANOUT));
-    let mut start = from.saturating_sub(node.first) / covered;
-    while start < entries {
-        let end = (start + WALK_ENTRIES).min(entries);
-        let len = usize::try_from((end - start) * u64::from(ENTRY_BYTES))
+    let low = reach.pages.start.saturating_sub(node.first) / covered;
+    let high = reach
+        .pages
+        .end
+        .saturating_sub(node.first)
+        .div_ceil(covered)
+        .min(entries);
+    let mut window = next_window(low..high, reach.order, None);
+    while let Some(range) = window {
+        let len = usize::try_from((range.end - range.start) * u64::from(ENTRY_BYTES))
             .unwrap_or_else(|_| corrupt("index"));
-        let bytes = view.read(entry_at(node.offset, start), len);
-        for (i, &raw) in (start..).zip(bytes.as_chunks::<ENTRY>().0) {
+        let bytes = view.read(entry_at(node.offset, range.start), len);
+        let raws = bytes.as_chunks::<ENTRY>().0;
+        for step in 0..raws.len() {
+            let k = match reach.order {
+                Order::Ascending => step,
+                Order::Descending => raws.len() - 1 - step,
+            };
+            let Some(&raw) = raws.get(k) else { break };
             let entry = decode(raw);
-            let first = node.first + i * covered;
-            let descend = on_entry(node.level, first, entry)?;
-            if node.level > 1 && descend == Descend::Into {
+            let first = node.first + (range.start + u64::try_from(k).unwrap_or(u64::MAX)) * covered;
+            if on_entry(node.level, first, entry)? == Descend::Into && node.level > 1 {
                 let child = Node {
                     offset: entry.present().offset(),
                     level: node.level - 1,
                     first,
                 };
-                walk(view, child, total, from, on_entry)?;
+                walk(view, child, total, reach, on_entry)?;
             }
         }
-        start = end;
+        window = next_window(low..high, reach.order, Some(range));
     }
     ControlFlow::Continue(())
+}
+
+/// The entries a walk over `entries` reads after `last`, in `order`: at most [`WALK_ENTRIES`],
+/// from the near end.
+fn next_window(entries: Range<u64>, order: Order, last: Option<Range<u64>>) -> Option<Range<u64>> {
+    let window = match order {
+        Order::Ascending => {
+            let start = last.map_or(entries.start, |l| l.end);
+            start..(start + WALK_ENTRIES).min(entries.end)
+        }
+        Order::Descending => {
+            let end = last.map_or(entries.end, |l| l.start);
+            end.saturating_sub(WALK_ENTRIES).max(entries.start)..end
+        }
+    };
+    (!window.is_empty()).then_some(window)
 }
 
 /// Visits every index entry, as `(level, entry)`.
@@ -202,7 +248,7 @@ fn every_entry<M: Memory>(view: &Pages<'_, M>, paged: &Paged, mut f: impl FnMut(
         view,
         Node::top(paged),
         data_pages(paged.stored),
-        0,
+        &Reach::from(0),
         &mut |level, _, entry| {
             f(level, entry);
             ControlFlow::Continue(Descend::Into)
@@ -210,19 +256,23 @@ fn every_entry<M: Memory>(view: &Pages<'_, M>, paged: &Paged, mut f: impl FnMut(
     );
 }
 
-/// Calls `f` with each data page numbered `from` or later, as `(number, leaf)`, until it
-/// breaks. Reads only the index entries from there on.
+/// Calls `f` with each data page numbered in `numbers`, as `(number, leaf)`, in `order`, until
+/// it breaks. Reads only the index entries those pages need.
 pub(crate) fn visit_leaves<M: Memory, B>(
     view: &Pages<'_, M>,
     paged: &Paged,
-    from: u32,
+    (numbers, order): (Range<u32>, Order),
     mut f: impl FnMut(u32, Leaf) -> ControlFlow<B>,
 ) -> ControlFlow<B> {
+    let reach = Reach {
+        pages: u64::from(numbers.start)..u64::from(numbers.end),
+        order,
+    };
     walk(
         view,
         Node::top(paged),
         data_pages(paged.stored),
-        u64::from(from),
+        &reach,
         &mut |level, first, entry| {
             if level == 1 {
                 f(page_number(first), entry)?;
@@ -337,7 +387,7 @@ pub(crate) fn first_fillable<M: Memory>(
         view,
         Node::top(paged),
         data_pages(paged.stored),
-        u64::from(from),
+        &Reach::from(u64::from(from)),
         &mut |level, first, entry| match (fillable(level, entry), level) {
             (false, _) => ControlFlow::Continue(Descend::Past),
             (true, 1) => ControlFlow::Break((page_number(first), entry)),
@@ -471,20 +521,26 @@ pub(crate) fn start<M: Memory>(
 pub(crate) fn check_hole_counts<M: Memory>(view: &Pages<'_, M>, paged: &Paged) {
     fn count<M: Memory>(view: &Pages<'_, M>, node: Node, total: u32) -> u16 {
         let mut holed = 0u16;
-        let _: ControlFlow<()> = walk(view, node, total, node.first, &mut |level, first, entry| {
-            if level == node.level {
-                if level > 1 {
-                    let child = Node {
-                        offset: entry.present().offset(),
-                        level: level - 1,
-                        first,
-                    };
-                    assert_eq!(count(view, child, total), entry.tombstones, "level {level}");
+        let _: ControlFlow<()> = walk(
+            view,
+            node,
+            total,
+            &Reach::from(node.first),
+            &mut |level, first, entry| {
+                if level == node.level {
+                    if level > 1 {
+                        let child = Node {
+                            offset: entry.present().offset(),
+                            level: level - 1,
+                            first,
+                        };
+                        assert_eq!(count(view, child, total), entry.tombstones, "level {level}");
+                    }
+                    holed += u16::from(fillable(level, entry));
                 }
-                holed += u16::from(fillable(level, entry));
-            }
-            ControlFlow::Continue(Descend::Past)
-        });
+                ControlFlow::Continue(Descend::Past)
+            },
+        );
         holed
     }
     count(view, Node::top(paged), data_pages(paged.stored));

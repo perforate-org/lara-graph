@@ -15,15 +15,16 @@ use core::ops::ControlFlow;
 pub(crate) enum Window {
     /// A whole run or data page: for scans that read everything.
     Page,
-    /// 128 slots: for searches that usually stop early.
+    /// 32 slots, then 128 at a time: for searches that usually stop early, often at once.
     Short,
 }
 
 impl Window {
-    const fn slots(self) -> u32 {
+    /// Slots of the first read, and of each one after it.
+    const fn slots(self) -> (u32, u32) {
         match self {
-            Self::Page => PAGE_SLOTS,
-            Self::Short => 128,
+            Self::Page => (PAGE_SLOTS, PAGE_SLOTS),
+            Self::Short => (32, 128),
         }
     }
 }
@@ -105,7 +106,7 @@ pub(crate) fn read<M: Memory>(d: &Descriptor, view: &Pages<'_, M>, out: &mut Vec
         d,
         view,
         Span::all(d, Order::Ascending),
-        PAGE_SLOTS,
+        Window::Page.slots(),
         |first, bytes| {
             for (at, slot) in (first..).zip(Slot::decode_all(bytes)) {
                 if let Slot::Live(target) = slot {
@@ -152,18 +153,24 @@ pub(crate) fn find_in<M: Memory>(
 }
 
 /// Feeds the bucket's stored slots in `span`, as bytes with the position of the first, to
-/// `visit` until it breaks: the tiny slots, or reads of at most `window` slots of the run and of
-/// each data page that is not all tombstones, in the span's order.
+/// `visit` until it breaks: the tiny slots, or reads of the run and of each data page that is
+/// not all tombstones, in the span's order, `window` slots at a time (the first read, then each
+/// one after it).
 pub(super) fn scan<M: Memory, T>(
     d: &Descriptor,
     view: &Pages<'_, M>,
     span: Span,
-    window: u32,
+    window: (u32, u32),
     mut visit: impl FnMut(u32, &[u8]) -> ControlFlow<T>,
 ) -> Option<T> {
     // One buffer serves every read: sized by the first, never zeroed again.
     let mut buf = Vec::new();
-    let reads = Reads { view, span, window };
+    let reads = Reads {
+        view,
+        span,
+        window: core::cell::Cell::new(window.0),
+        then: window.1,
+    };
     let flow = match d {
         Descriptor::Tiny(tiny) => scan_tiny(tiny, span, &mut visit),
         Descriptor::Run(run) => reads.span(
@@ -202,7 +209,10 @@ fn scan_tiny<T>(
 struct Reads<'v, 'm, M: Memory> {
     view: &'v Pages<'m, M>,
     span: Span,
-    window: u32,
+    /// Slots of the next read.
+    window: core::cell::Cell<u32>,
+    /// Slots of each read after the first.
+    then: u32,
 }
 
 impl<M: Memory> Reads<'_, '_, M> {
@@ -214,7 +224,7 @@ impl<M: Memory> Reads<'_, '_, M> {
         buf: &mut Vec<u8>,
         visit: &mut impl FnMut(u32, &[u8]) -> ControlFlow<T>,
     ) -> ControlFlow<T> {
-        let mut page = |number: u32, leaf: Leaf| {
+        let page = |number: u32, leaf: Leaf| {
             let first = number * PAGE_SLOTS;
             let count = (paged.stored - first).min(PAGE_SLOTS);
             match leaf.page.filter(|_| u32::from(leaf.tombstones) < count) {
@@ -223,25 +233,7 @@ impl<M: Memory> Reads<'_, '_, M> {
             }
         };
         let pages_in = self.span.low / PAGE_SLOTS..self.span.high.div_ceil(PAGE_SLOTS);
-        match self.span.order {
-            Order::Ascending => paged::visit_leaves(self.view, paged, pages_in.start, |n, leaf| {
-                if pages_in.contains(&n) {
-                    page(n, leaf)
-                } else {
-                    ControlFlow::Continue(())
-                }
-            }),
-            Order::Descending => {
-                let leaves = paged::leaves(self.view, paged);
-                (0u32..)
-                    .zip(leaves)
-                    .filter(|(n, _)| pages_in.contains(n))
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .try_for_each(|(n, leaf)| page(n, leaf))
-            }
-        }
+        paged::visit_leaves(self.view, paged, (pages_in, self.span.order), page)
     }
 
     /// Feeds the part of the span among `count` slots at `at` (the first of them at position
@@ -257,7 +249,7 @@ impl<M: Memory> Reads<'_, '_, M> {
         let mut lo = self.span.low.saturating_sub(first).min(count);
         let mut hi = self.span.high.saturating_sub(first).min(count);
         while lo < hi {
-            let n = (hi - lo).min(self.window);
+            let n = (hi - lo).min(self.window.replace(self.then));
             let start = match self.span.order {
                 Order::Ascending => {
                     lo += n;

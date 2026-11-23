@@ -28,7 +28,8 @@ impl<M: Memory> Graph<M> {
             return Ok(Step::new(Vec::new(), Progress::Done));
         };
         // Plan everything that allocates before the step changes anything.
-        let (planned, plan) = self.plan_index(&found.bucket)?;
+        let planned = compact::plan(found.bucket.slots, &self.edges);
+        let plan = self.plan_index(&found.bucket, &planned)?;
         let inline = match found.bucket.values {
             Some(values) => {
                 // Moved values may land in value pages not yet allocated.
@@ -37,8 +38,7 @@ impl<M: Memory> Graph<M> {
             }
             None => Inline::Allowed,
         };
-        let step = compact::step(found.bucket.slots, &mut self.edges, inline)?;
-        verify(&found.bucket, &step, &planned);
+        let step = compact::apply(planned, &mut self.edges, inline)?;
         let old_end = found.bucket.slots.stored();
         let values = found
             .bucket
@@ -87,21 +87,24 @@ impl<M: Memory> Graph<M> {
         }
     }
 
-    /// The index changes the next step's moves make, and their plan with its pages reserved.
-    fn plan_index(&mut self, bucket: &Bucket) -> Result<(Vec<Change>, Option<Plan>), Error> {
-        if indexed(bucket).is_none() {
-            return Ok((Vec::new(), None));
+    /// The plan of the index changes a step's moves make in a bucket that stays paged, with its
+    /// pages reserved.
+    fn plan_index(
+        &mut self,
+        bucket: &Bucket,
+        step: &compact::Planned,
+    ) -> Result<Option<Plan>, Error> {
+        if indexed(bucket).is_none() || !step.stays_paged() || step.moves().is_empty() {
+            return Ok(None);
         }
-        let planned: Vec<Change> = compact::preview(bucket.slots, &self.edges)
+        let changes: Vec<Change> = step
+            .moves()
             .iter()
             .flat_map(|m| moved(m.target(), (m.from(), m.to())))
             .collect();
-        if planned.is_empty() {
-            return Ok((planned, None));
-        }
-        let plan = targets::plan(&self.edges.pages(), bucket.index.tree(), &planned);
+        let plan = targets::plan(&self.edges.pages(), bucket.index.tree(), &changes);
         self.edges.reserve(plan.pages())?;
-        Ok((planned, Some(plan)))
+        Ok(Some(plan))
     }
 
     /// Moves the values of moved edges, and releases the value pages of positions that hold no
@@ -124,22 +127,5 @@ impl<M: Memory> Graph<M> {
             }
         }
         Values { plane, ..cells }
-    }
-}
-
-/// Checks that a step which keeps an indexed bucket paged moved exactly what it previewed, so
-/// that the planned index changes are the right ones.
-fn verify(bucket: &Bucket, step: &compact::Step, planned: &[Change]) {
-    let stays_paged = matches!(step.outcome, Outcome::Bucket(Descriptor::Paged(_)));
-    if indexed(bucket).is_none() || !stays_paged {
-        return;
-    }
-    let expected: Vec<Change> = step
-        .moves
-        .iter()
-        .flat_map(|m| moved(m.target(), (m.from(), m.to())))
-        .collect();
-    if expected != planned {
-        corrupt("compaction moved other edges than it previewed");
     }
 }

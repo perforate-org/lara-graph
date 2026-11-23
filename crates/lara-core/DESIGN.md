@@ -186,6 +186,10 @@ the rank pairing of parallel edges survive without coordinating forward and reve
 Hollow entries let a page go without renumbering any later position. The last page is never
 hollowed or merged: inserts reuse its holes and append after it.
 
+A step is planned, then applied (`compact::plan`, `compact::apply`). The plan reads the pages
+once and lists the moves. The target index's changes are planned from those moves, with their
+pages reserved, before anything is written.
+
 ## Bucket lists
 
 A vertex's buckets are listed in the list page store: 19-byte entries (label, side and
@@ -292,9 +296,5 @@ postings are usually reached in one descent, by walking the leaf where they star
 - Reclaiming zero-count postings and index pages of hubs whose edges were mostly removed,
   short of demotion.
 - Detaching many vertices at once with one pass over each shared hub.
-- Recovering the ~7% values added to removal with compaction and to detach: compaction still
-  allocates its buffers (`docs/ic-measurements-2026-11-22.md`).
-- Descending scans of a paged bucket read its whole leaf list; a reverse index walk would read
-  only the pages wanted.
 - Settling the constants (descriptor size, inline slots, page threshold) by measuring on the IC
   with canbench (`crates/lara-core-bench`).
