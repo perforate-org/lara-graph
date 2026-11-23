@@ -453,6 +453,60 @@ fn visiting_many_reads_dense_ids_in_lines() {
 }
 
 #[test]
+fn remove_edges_matches_one_by_one() {
+    let mut batch_graph = Backing::default().create(6);
+    let mut loop_graph = Backing::default().create(6);
+    for g in [&mut batch_graph, &mut loop_graph] {
+        insert(g, v(0), l(0), v(1));
+        insert(g, v(0), l(0), v(1));
+        insert(g, v(0), l(0), v(2));
+        insert(g, v(0), l(0), v(3));
+        insert(g, v(0), l(1), v(4));
+    }
+    let halves = [
+        out_ref(v(0), l(0), p(0)),
+        out_ref(v(0), l(0), p(2)),
+        out_ref(v(0), l(0), p(1)),
+        out_ref(v(0), l(1), p(0)),
+    ];
+    let batch = batch_graph.remove_edges(&halves).unwrap();
+    let one_by_one: Vec<Removal> = halves
+        .iter()
+        .map(|&half| loop_graph.remove_edge(half).unwrap())
+        .collect();
+    assert_eq!(batch, one_by_one);
+    assert_eq!(batch_graph.degree(v(0), l(0), Direction::Outgoing), Ok(1));
+    assert_eq!(batch_graph.degree(v(0), l(1), Direction::Outgoing), Ok(0));
+    check(&batch_graph);
+}
+
+#[test]
+fn remove_edges_checks_all_nodes_before_writing() {
+    let backing = Backing::default();
+    let mut g = backing.create(4);
+    insert(&mut g, v(0), l(0), v(1));
+    insert(&mut g, v(0), l(0), v(2));
+    let halves = [out_ref(v(0), l(0), p(0)), out_ref(v(9), l(0), p(0))];
+    assert_eq!(g.remove_edges(&halves), Err(Error::UnknownNode(v(9))));
+    assert_eq!(g.degree(v(0), l(0), Direction::Outgoing), Ok(2));
+    assert_eq!(g.degree(v(1), l(0), Direction::Incoming), Ok(1));
+    check(&g);
+}
+
+#[test]
+fn remove_edges_reports_an_already_removed_edge_as_absent() {
+    let backing = Backing::default();
+    let mut g = backing.create(3);
+    insert(&mut g, v(0), l(0), v(1));
+    let half = out_ref(v(0), l(0), p(0));
+    let first = g.remove_edges(&[half]).unwrap();
+    let second = g.remove_edges(&[half]).unwrap();
+    assert!(matches!(first.as_slice(), [Removal::Removed(_)]));
+    assert_eq!(second, [Removal::Absent]);
+    check(&g);
+}
+
+#[test]
 fn add_edges_inserts_each_directed_edge() {
     let backing = Backing::default();
     let mut g = backing.create(5);

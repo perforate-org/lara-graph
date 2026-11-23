@@ -116,6 +116,36 @@ fn hub_insert_4096_batched_stable() -> BenchResult {
     grow_hub_batched(stable_graph(), 4096)
 }
 
+fn remove_hub_edges<M: Memory>(mut g: Graph<M>, degree: u32) -> (Graph<M>, Vec<EdgeRef>) {
+    let (_, edges) = seed_hub(&mut g, degree);
+    let halves = edges.iter().map(Halves::canonical).collect();
+    (g, halves)
+}
+
+#[bench(raw)]
+fn hub_remove_edges_4096_batched_stable() -> BenchResult {
+    let (mut g, halves) = remove_hub_edges(stable_graph(), 4096);
+    bench_fn(|| {
+        black_box(
+            g.remove_edges(&halves)
+                .unwrap_or_else(|e| panic!("remove batch: {e}")),
+        )
+    })
+}
+
+#[bench(raw)]
+fn hub_remove_edges_4096_loop_stable() -> BenchResult {
+    let (mut g, halves) = remove_hub_edges(stable_graph(), 4096);
+    bench_fn(|| {
+        for &half in &halves {
+            black_box(
+                g.remove_edge(half)
+                    .unwrap_or_else(|e| panic!("remove: {e}")),
+            );
+        }
+    })
+}
+
 /// Parallel edges to a few targets: every insert also lands in a target's growing in bucket.
 #[bench(raw)]
 fn hub_insert_parallel_4096() -> BenchResult {

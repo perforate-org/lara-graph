@@ -104,6 +104,7 @@ pub fn lara_graph::Graph<M>::compact(&mut self, lara_graph::NodeId, lara_graph::
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::counterpart(&self, lara_graph::EdgeRef) -> core::result::Result<core::option::Option<lara_graph::EdgeRef>, lara_graph::Error>
 pub fn lara_graph::Graph<M>::remove_edge(&mut self, lara_graph::EdgeRef) -> core::result::Result<lara_graph::Removal, lara_graph::Error>
+pub fn lara_graph::Graph<M>::remove_edges(&mut self, &[lara_graph::EdgeRef]) -> core::result::Result<alloc::vec::Vec<lara_graph::Removal>, lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::declare_width(&mut self, lara_graph::Label, lara_graph::Width) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::Graph<M>::width(&self, lara_graph::Label) -> core::option::Option<lara_graph::Width>

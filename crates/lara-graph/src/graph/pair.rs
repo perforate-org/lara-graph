@@ -32,9 +32,80 @@ impl<M: Memory> Graph<M> {
     ///
     /// [`Error::UnknownNode`]. A removal takes no memory.
     pub fn remove_edge(&mut self, half: EdgeRef) -> Result<Removal, Error> {
-        let Some(Pair { own, other, theirs }) = self.pair(half)? else {
+        let Some(pair) = self.pair(half)? else {
             return Ok(Removal::Absent);
         };
+        Ok(self.take_removal(half, pair).0)
+    }
+
+    /// Removes every edge identified by `halves`, in order. Each edge is all-or-none, but the
+    /// batch is not atomic: an error leaves the edges before it removed. A half whose edge is
+    /// already gone yields [`Removal::Absent`].
+    ///
+    /// Consecutive halves in the same bucket reuse its `Found`, and parallel edges reuse the
+    /// opposite bucket.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`] for any half at or past [`Graph::node_count`].
+    pub fn remove_edges(&mut self, halves: &[EdgeRef]) -> Result<Vec<Removal>, Error> {
+        for half in halves {
+            self.check(half.node())?;
+        }
+        let mut out = Vec::with_capacity(halves.len());
+        let mut own_cache: Option<(NodeId, LabelBucketKey, Found)> = None;
+        let mut theirs_cache: Option<(NodeId, LabelBucketKey, Found)> = None;
+        for &half in halves {
+            let node = half.node();
+            let key = key_of(half);
+            let own = match own_cache {
+                Some((last_node, last_key, found)) if last_node == node && last_key == key => {
+                    Some(found)
+                }
+                _ => self.find_label_bucket(node, key)?,
+            };
+            let Some(own) = own else {
+                out.push(Removal::Absent);
+                own_cache = None;
+                continue;
+            };
+            let other = {
+                let view = self.edges.pages();
+                label_bucket::get(&own.bucket.slots, half.position(), &view)
+            };
+            let Some(other) = other else {
+                out.push(Removal::Absent);
+                own_cache = Some((node, key, own));
+                continue;
+            };
+            let their_key = LabelBucketKey {
+                label: half.label(),
+                direction: opposite(half.direction()),
+            };
+            let theirs = match theirs_cache {
+                Some((last_node, last_key, found))
+                    if last_node == other && last_key == their_key =>
+                {
+                    found
+                }
+                _ => self.present(other, their_key),
+            };
+            let pair = self.pair_with_theirs(half, own, other, their_key, theirs);
+            let (removal, own_after, theirs_after) = self.take_removal(half, pair);
+            own_cache = Some((node, key, own_after));
+            theirs_cache = theirs_after.map(|found| (other, their_key, found));
+            out.push(removal);
+        }
+        Ok(out)
+    }
+
+    /// Applies one found pair and returns the removal plus the updated own and opposite
+    /// buckets, so a batch can carry them to the next edge.
+    fn take_removal(
+        &mut self,
+        half: EdgeRef,
+        Pair { own, other, theirs }: Pair,
+    ) -> (Removal, Found, Option<Found>) {
         let halves = order(half, other);
         // Only a label with a width has a value to report.
         let value = if self.widths.get(half.label()).is_some() {
@@ -47,11 +118,25 @@ impl<M: Memory> Graph<M> {
         } else {
             Vec::new()
         };
-        self.tombstone(own, half.position());
-        if other != half {
-            self.tombstone(theirs, other.position());
-        }
-        Ok(Removal::Removed(RemovedEdge::new(halves, value)))
+        let own_bucket = self.tombstone(own, half.position());
+        let own_after = Found {
+            entry: own.entry,
+            bucket: own_bucket,
+        };
+        let theirs_after = if other == half {
+            None
+        } else {
+            let bucket = self.tombstone(theirs, other.position());
+            Some(Found {
+                entry: theirs.entry,
+                bucket,
+            })
+        };
+        (
+            Removal::Removed(RemovedEdge::new(halves, value)),
+            own_after,
+            theirs_after,
+        )
     }
 
     /// Both halves of the edge `half` belongs to, with their buckets; `None` when `half` is not
