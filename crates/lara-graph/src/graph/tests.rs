@@ -677,6 +677,21 @@ fn add_edges_caches_an_undirected_hub() {
 }
 
 #[test]
+fn add_edges_invalidates_a_target_that_gains_a_bucket() {
+    let backing = Backing::default();
+    let mut g = backing.create(3);
+    let specs = [
+        NewEdge::directed(v(0), l(0), v(1), Placement::ReuseHoles, &[]),
+        NewEdge::directed(v(2), l(1), v(1), Placement::ReuseHoles, &[]),
+        NewEdge::directed(v(0), l(0), v(1), Placement::ReuseHoles, &[]),
+    ];
+    let halves = g.add_edges(&specs).unwrap();
+    assert_eq!(halves.len(), 3);
+    assert_eq!(g.degree(v(1), l(0), Direction::Incoming).unwrap(), 2);
+    assert_eq!(g.degree(v(1), l(1), Direction::Incoming).unwrap(), 1);
+}
+
+#[test]
 fn add_edges_checks_all_endpoints_before_writing() {
     let backing = Backing::default();
     let mut g = backing.create(2);

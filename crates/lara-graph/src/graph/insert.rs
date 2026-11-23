@@ -273,6 +273,9 @@ impl<M: Memory> Graph<M> {
                 out.push(Halves::new(half, half));
                 if let Some(place) = updated.first().and_then(|place| *place) {
                     cache_place(&mut high_cache, high, key, Some(place));
+                } else {
+                    forget_cache_node(&mut high_cache, high);
+                    forget_cache_node(&mut low_cache, low);
                 }
                 continue;
             }
@@ -286,6 +289,14 @@ impl<M: Memory> Graph<M> {
                 self.insert_halves_two([at_high, at_low], edge.value, [cache_high, cache_low])?;
             let [canonical, other] = halves;
             out.push(Halves::new(canonical, other));
+            if updated.first().and_then(|place| *place).is_none() {
+                forget_cache_node(&mut high_cache, high);
+                forget_cache_node(&mut low_cache, high);
+            }
+            if updated.get(1).and_then(|place| *place).is_none() {
+                forget_cache_node(&mut high_cache, low);
+                forget_cache_node(&mut low_cache, low);
+            }
             if let Some(place) = updated.first().and_then(|place| *place) {
                 cache_place(&mut high_cache, high, key, Some(place));
             }
@@ -385,6 +396,11 @@ impl<M: Memory> Graph<M> {
                 from_cache = None;
                 to_cache = [None; TARGET_CACHE];
             } else {
+                for (half, place) in [from, to].iter().zip(updated) {
+                    if place.is_none() {
+                        forget_cache_node(&mut to_cache, half.node);
+                    }
+                }
                 from_cache = updated
                     .first()
                     .and_then(|place| *place)
@@ -894,6 +910,17 @@ fn cache_place<const N: usize>(
         .find(|entry| entry.as_ref().is_some_and(matches))
     {
         *slot = None;
+    }
+}
+
+fn forget_cache_node<const N: usize>(
+    cache: &mut [Option<(NodeId, LabelBucketKey, Place)>; N],
+    node: NodeId,
+) {
+    for entry in cache.iter_mut() {
+        if entry.as_ref().is_some_and(|(n, _, _)| *n == node) {
+            *entry = None;
+        }
     }
 }
 
