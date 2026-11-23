@@ -4,6 +4,8 @@
 //! compared. Every edge here is stored at both ends, as Gleaph needs; ic-stable-lara's
 //! single-label hub benches store one side only.
 
+extern crate alloc;
+
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use core::num::NonZeroU32;
@@ -15,6 +17,7 @@ use lara_graph::{
     Position, Progress, VecMemory, Width,
 };
 
+mod btree;
 mod locality;
 pub mod two_hop;
 
