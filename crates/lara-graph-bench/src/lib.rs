@@ -11,8 +11,8 @@ use core::ops::ControlFlow;
 use ic_stable_structures::DefaultMemoryImpl;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use lara_graph::{
-    Cursor, Direction, EdgeRef, Graph, Halves, Label, Memories, Memory, NodeId, NodeSet, Order,
-    Placement, Position, Progress, VecMemory, Width,
+    Cursor, Direction, EdgeRef, Graph, Halves, Label, Memories, Memory, NodeId, Order, Placement,
+    Position, Progress, VecMemory, Width,
 };
 
 mod locality;
@@ -425,6 +425,38 @@ fn counterpart_from_hub_tail_4096() -> BenchResult {
     bench_fn(|| black_box(g.counterpart(last.canonical())))
 }
 
+/// A hub of 65536 edges to 64 targets in turn: each target's 1024 parallel edges spread over
+/// every block of the hub's bucket, 512 postings in its index. Returns the last edge.
+fn parallel_hub() -> (Graph<VecMemory>, Halves) {
+    let mut g = heap_graph();
+    let hub = node(&mut g);
+    let targets = nodes(&mut g, 64);
+    let edges: Vec<Halves> = targets
+        .iter()
+        .cycle()
+        .take(65536)
+        .map(|&t| directed(&mut g, hub, t))
+        .collect();
+    let last = last(&edges);
+    (g, last)
+}
+
+/// Pairs the hub's last edge from its out half: the rank of the edge among the hub's edges to
+/// that target, through 512 postings of the hub's index.
+#[bench(raw)]
+fn counterpart_parallel_from_hub_65536() -> BenchResult {
+    let (g, last) = parallel_hub();
+    bench_fn(|| black_box(g.counterpart(last.canonical())))
+}
+
+/// Pairs the hub's last edge from the target's side: the 1024th edge to that target among the
+/// hub's, through 512 postings of the hub's index.
+#[bench(raw)]
+fn counterpart_parallel_from_target_65536() -> BenchResult {
+    let (g, last) = parallel_hub();
+    bench_fn(|| black_box(g.counterpart(last.other())))
+}
+
 fn budget(n: u32) -> NonZeroU32 {
     NonZeroU32::new(n).unwrap_or(NonZeroU32::MIN)
 }
@@ -521,7 +553,10 @@ fn detach_many(n: u32, how: Detaching) -> BenchResult {
             g.detach(d).unwrap_or_else(|e| panic!("detach: {e}"));
         }
         if how == Detaching::Swept {
-            sweep_all(&mut g, hub, &NodeSet::new(gone.iter().copied()));
+            let detaching = g
+                .detaching_set(gone.iter().copied())
+                .unwrap_or_else(|e| panic!("detaching set: {e}"));
+            sweep_all(&mut g, hub, &detaching);
         }
         for &d in &gone {
             detach_rest(&mut g, d);
@@ -530,7 +565,7 @@ fn detach_many(n: u32, how: Detaching) -> BenchResult {
 }
 
 /// Sweeps the hub's in-bucket of edges from `detaching`, to its end.
-fn sweep_all(g: &mut Graph<VecMemory>, hub: NodeId, detaching: &NodeSet) {
+fn sweep_all(g: &mut Graph<VecMemory>, hub: NodeId, detaching: &lara_graph::DetachingSet) {
     let mut from = Some(Position::new(0));
     while let Some(at) = from {
         let sweep = g

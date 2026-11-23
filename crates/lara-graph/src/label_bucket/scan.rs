@@ -220,13 +220,13 @@ fn scan_tiny<T>(
     span: Span,
     visit: &mut impl FnMut(u32, &[u8]) -> ControlFlow<T>,
 ) -> ControlFlow<T> {
+    // Slot by slot into fixed chunks, not through an iterator chain over bytes (slow on the IC).
     let mut bytes = [0u8; TINY_SLOTS * 4];
-    let encoded = tiny.slots().iter().flat_map(|s| s.encode());
-    let len = bytes
-        .iter_mut()
-        .zip(encoded)
-        .map(|(dst, src)| *dst = src)
-        .count();
+    let slots = tiny.slots();
+    for (dst, slot) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(slots) {
+        *dst = slot.encode();
+    }
+    let len = slots.len() * 4;
     let low = byte_len(span.low).min(len);
     let high = byte_len(span.high).clamp(low, len);
     visit(span.low, bytes.get(low..high).unwrap_or(&[]))

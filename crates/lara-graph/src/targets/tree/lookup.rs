@@ -1,9 +1,9 @@
 //! Reading the tree: rank and selection by count, and walking it whole.
 
 use super::Root;
-use super::node::{child_of, children, counts, node_len, page_at, read_into};
+use super::node::{child_of, children, count_at, counts, node_len, page_at, read_into};
 use crate::memory::Memory;
-use crate::page_store::{Extent, PageStore, Pages};
+use crate::page_store::{Extent, PageId, PageStore, Pages};
 use crate::targets::{Posting, leaf};
 #[cfg(test)]
 use alloc::vec::Vec;
@@ -62,11 +62,12 @@ pub(crate) enum Nth {
 }
 
 /// The `k`-th unit of count among `target`'s postings. Usually one descent: the walk of the leaf
-/// where they start; a target whose postings run on into the next leaf is counted from the root.
+/// where they start, or, for a target with many postings there, the leaf's segment totals; a
+/// target whose postings run on into the next leaf is counted from the root.
 pub(crate) fn nth<M: Memory>(view: &Pages<'_, M>, root: Root, target: u32, k: u32) -> Nth {
     let mut left = k;
     let mut found = None;
-    let complete = walk_target(view, root, target, |p| {
+    let walked = walk_target(view, root, target, |p| {
         found = if p.target != target {
             Some(Nth::Past(k - left))
         } else if left < p.count {
@@ -77,42 +78,63 @@ pub(crate) fn nth<M: Memory>(view: &Pages<'_, M>, root: Root, target: u32, k: u3
         };
         found.is_some()
     });
-    match (found, complete) {
-        (Some(nth), _) => nth,
-        (None, true) => Nth::Past(k - left),
-        (None, false) => {
-            let first = count_before(view, root, (target, 0));
-            match select(view, root, first + k) {
-                Some((p, within)) if p.target == target => Nth::At(p, within),
-                Some(_) | None => Nth::Past(count_before(view, root, (target, u32::MAX)) - first),
+    let local = match (found, walked) {
+        (Some(nth), _) => Some(nth),
+        (None, Walked::Whole) => Some(Nth::Past(k - left)),
+        (None, Walked::RanOff) => None,
+        (None, Walked::Long(leaf)) => {
+            let read = |offset, buf: &mut [u8]| read_into(view, leaf.page, offset, buf);
+            let first = leaf::count_before(&read, (target, 0), leaf.total);
+            let past =
+                || Nth::Past(leaf::count_before(&read, (target, u32::MAX), leaf.total) - first);
+            match leaf::select(&read, first + k, leaf.total) {
+                Some((p, within)) if p.target == target => Some(Nth::At(p, within)),
+                Some(_) => Some(past()),
+                None => (leaf.after == After::End).then(past),
             }
         }
-    }
+    };
+    local.unwrap_or_else(|| {
+        let first = count_before(view, root, (target, 0));
+        match select(view, root, first + k) {
+            Some((p, within)) if p.target == target => Nth::At(p, within),
+            Some(_) | None => Nth::Past(count_before(view, root, (target, u32::MAX)) - first),
+        }
+    })
 }
 
 /// The units of count among `target`'s postings in blocks before `block`. Usually one descent, as
 /// for [`nth`].
 pub(crate) fn rank<M: Memory>(view: &Pages<'_, M>, root: Root, target: u32, block: u32) -> u32 {
     let mut sum = 0;
-    let complete = walk_target(view, root, target, |p| {
+    let walked = walk_target(view, root, target, |p| {
         let done = (p.target, p.block) >= (target, block);
         if !done {
             sum += p.count;
         }
         done
     });
-    if complete {
-        sum
-    } else {
+    let local = match walked {
+        Walked::Whole => Some(sum),
+        Walked::RanOff => None,
+        Walked::Long(leaf) => {
+            let read = |offset, buf: &mut [u8]| read_into(view, leaf.page, offset, buf);
+            let before = leaf::count_before(&read, (target, block), leaf.total);
+            // All of a leaf before the key, unless it is the last: the key may lie further on.
+            (leaf.after == After::End || leaf.total != Some(before))
+                .then(|| before - leaf::count_before(&read, (target, 0), leaf.total))
+        }
+    };
+    local.unwrap_or_else(|| {
         count_before(view, root, (target, block)) - count_before(view, root, (target, 0))
-    }
+    })
 }
 
 /// The last block where `target` has a unit of count, if any. Usually one descent, as for
 /// [`nth`].
 pub(crate) fn last_block<M: Memory>(view: &Pages<'_, M>, root: Root, target: u32) -> Option<u32> {
     let mut last = None;
-    let complete = walk_target(view, root, target, |p| {
+    let walked = walk_target(view, root, target, |p| {
         if p.target != target {
             return true;
         }
@@ -121,35 +143,99 @@ pub(crate) fn last_block<M: Memory>(view: &Pages<'_, M>, root: Root, target: u32
         }
         false
     });
-    if complete {
-        return last;
-    }
-    let end = count_before(view, root, (target, u32::MAX));
-    if end == count_before(view, root, (target, 0)) {
-        return None;
-    }
-    select(view, root, end - 1).map(|(p, _)| p.block)
+    let local = match walked {
+        Walked::Whole => Some(last),
+        Walked::RanOff => None,
+        Walked::Long(leaf) => {
+            let read = |offset, buf: &mut [u8]| read_into(view, leaf.page, offset, buf);
+            let end = leaf::count_before(&read, (target, u32::MAX), leaf.total);
+            // All of a leaf before the target's end, unless it is the last: it may go on.
+            (leaf.after == After::End || leaf.total != Some(end)).then(|| {
+                (end > leaf::count_before(&read, (target, 0), leaf.total))
+                    .then(|| leaf::select(&read, end - 1, leaf.total).map(|(p, _)| p.block))
+                    .flatten()
+            })
+        }
+    };
+    local.unwrap_or_else(|| {
+        let end = count_before(view, root, (target, u32::MAX));
+        if end == count_before(view, root, (target, 0)) {
+            return None;
+        }
+        select(view, root, end - 1).map(|(p, _)| p.block)
+    })
+}
+
+/// Postings a walk decodes before it turns to the leaf's segment totals: a full segment's worth.
+/// A target with many postings in a leaf is then found in a few segment reads rather than posting
+/// by posting, which cost about 250K instructions to pair an edge of a hub with 64 targets in turn
+/// (`counterpart_parallel_*`).
+const WALK_POSTINGS: u32 = 48;
+
+/// The leaf where a target's postings start.
+struct InLeaf {
+    page: PageId,
+    /// Its total, when its parent lists it (not for a root leaf).
+    total: Option<u32>,
+    after: After,
+}
+
+/// What follows a leaf in the tree.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum After {
+    /// Nothing: it is the last leaf, so a target's postings end in it.
+    End,
+    /// More leaves, where a target's postings may go on.
+    MoreLeaves,
+}
+
+/// How far a walk of a target's postings got.
+enum Walked {
+    /// `f` stopped it, or the leaf ended and is the last: it saw all it needed.
+    Whole,
+    /// The leaf ended and is not the last: the postings may go on in the next.
+    RanOff,
+    /// It passed [`WALK_POSTINGS`] postings first: the leaf's totals answer faster.
+    Long(InLeaf),
 }
 
 /// Calls `f` with the postings from `target`'s first on, in the leaf where they start, until it
-/// returns true. Whether that walk saw all it needed: `f` stopped it, or the leaf is the last.
+/// returns true or [`WALK_POSTINGS`] have gone by.
 fn walk_target<M: Memory>(
     view: &Pages<'_, M>,
     root: Root,
     target: u32,
-    f: impl FnMut(Posting) -> bool,
-) -> bool {
+    mut f: impl FnMut(Posting) -> bool,
+) -> Walked {
     let key = (target, 0);
     let mut page = root.page;
     let mut last = true;
+    // The leaf's place in its parent, to read its total only if the walk turns to the totals.
+    let mut parent = None;
     for _ in 0..root.depth {
         let n = node_len(view, page);
         let i = child_of(view, page, n, key);
         last &= i + 1 == n;
+        parent = Some((page, i));
         page = page_at(view, page, i);
     }
     let read = |offset, buf: &mut [u8]| read_into(view, page, offset, buf);
-    leaf::walk_from(&read, key, f) || last
+    let mut seen = 0;
+    let mut long = false;
+    let stopped = leaf::walk_from(&read, key, |p| {
+        seen += 1;
+        long = seen > WALK_POSTINGS;
+        long || f(p)
+    });
+    match (long, stopped || last) {
+        (true, _) => Walked::Long(InLeaf {
+            page,
+            total: parent.map(|(node, i)| count_at(view, node, i)),
+            after: if last { After::End } else { After::MoreLeaves },
+        }),
+        (false, true) => Walked::Whole,
+        (false, false) => Walked::RanOff,
+    }
 }
 
 /// Releases every page of the tree.

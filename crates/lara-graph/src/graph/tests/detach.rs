@@ -199,21 +199,15 @@ fn sweeping_a_shared_bucket_removes_the_detaching_nodes_edges() {
     g.add_edge(hub, l(0), sources[3], Placement::Append, &[9, 9])
         .unwrap();
     let gone: Vec<NodeId> = sources.iter().copied().step_by(4).collect();
-    let detaching = NodeSet::new(gone.iter().copied());
     let live = *sources.get(1).unwrap();
-    let with_live = NodeSet::new(gone.iter().copied().chain([live]));
     for &d in &gone {
         g.detach(d).unwrap();
     }
     assert_eq!(
-        g.sweep(
-            hub,
-            (l(0), Direction::Incoming),
-            (p(0), budget(100)),
-            &with_live
-        ),
+        g.detaching_set(gone.iter().copied().chain([live])),
         Err(Error::NotDetaching(live))
     );
+    let detaching = g.detaching_set(gone.iter().copied()).unwrap();
     let mut removed = Vec::new();
     let mut from = Some(p(0));
     while let Some(at) = from {

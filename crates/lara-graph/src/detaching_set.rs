@@ -1,21 +1,26 @@
-//! Sets of nodes that a scan asks about at every slot it reads.
+//! Sets of detaching nodes, checked once when built, that a sweep asks about at every slot it
+//! reads.
 
 use crate::id::NodeId;
 use alloc::vec::Vec;
 
-/// A set of nodes, built once and asked about cheaply: a bit per id when the ids are close
-/// together, else a sorted list. [`crate::Graph::sweep`] asks it about every slot it reads.
+/// Nodes known not to be live, built by [`crate::Graph::detaching_set`] and asked about cheaply:
+/// a bit per id when the ids are close together, else a sorted list. [`crate::Graph::sweep`]
+/// asks it about every slot it reads.
+///
+/// A node's state only moves from live to detaching to deleted, so the check made when the set
+/// was built holds for as long as the set lives, and a sweep need not repeat it. Repeating it on
+/// every call made a sweep's cost grow with the set rather than with its budget.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NodeSet {
+pub struct DetachingSet {
     sorted: Vec<NodeId>,
     /// One bit per id from the smallest member on, when that takes 64 bits per member or fewer.
     bits: Option<(u32, Vec<u64>)>,
 }
 
-impl NodeSet {
-    /// The set of `nodes`.
-    #[must_use]
-    pub fn new(nodes: impl IntoIterator<Item = NodeId>) -> Self {
+impl DetachingSet {
+    /// The set of `nodes`, which the caller has checked are not live.
+    pub(crate) fn new(nodes: impl IntoIterator<Item = NodeId>) -> Self {
         let mut sorted: Vec<NodeId> = nodes.into_iter().collect();
         sorted.sort_unstable();
         sorted.dedup();
@@ -65,8 +70,8 @@ mod tests {
 
     #[test]
     fn dense_and_sparse_sets_answer_alike() {
-        let dense = NodeSet::new((100..300).step_by(3).map(NodeId::new));
-        let sparse = NodeSet::new([5, 1_000_000, 70, 5].map(NodeId::new));
+        let dense = DetachingSet::new((100..300).step_by(3).map(NodeId::new));
+        let sparse = DetachingSet::new([5, 1_000_000, 70, 5].map(NodeId::new));
         assert!(dense.bits.is_some() && sparse.bits.is_none());
         for i in 0..400 {
             assert_eq!(
@@ -77,6 +82,6 @@ mod tests {
         let members: Vec<u32> = sparse.iter().map(NodeId::index).collect();
         assert_eq!(members, [5, 70, 1_000_000]);
         assert!(sparse.contains(NodeId::new(70)) && !sparse.contains(NodeId::new(71)));
-        assert!(!NodeSet::new([]).contains(NodeId::new(0)));
+        assert!(!DetachingSet::new([]).contains(NodeId::new(0)));
     }
 }

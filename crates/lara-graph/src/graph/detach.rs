@@ -4,6 +4,7 @@ use super::index::indexed;
 use super::pair::{Found, opposite, order};
 use super::{Detachment, Error, Graph, Step, Sweep};
 use crate::corrupt::corrupt;
+use crate::detaching_set::DetachingSet;
 use crate::id::{
     Direction, EdgeRef, Label, NodeId, NodeState, Order, Position, Progress, RemovedEdge,
 };
@@ -11,7 +12,6 @@ use crate::label_bucket::{self, Span, Window};
 use crate::label_bucket_list::{self, LabelBucketKey};
 use crate::memory::Memory;
 use crate::node::Record;
-use crate::node_set::NodeSet;
 use crate::stored::{Index, LabelBucket};
 use alloc::vec::Vec;
 use core::num::NonZeroU32;
@@ -63,17 +63,26 @@ impl<M: Memory> Graph<M> {
         // Parallel edges to one neighbour follow each other there; any other bucket is scanned
         // from its start, or reached through its target index.
         let mut hint: Option<((NodeId, LabelBucketKey), Position)> = None;
+        // `v`'s bucket as the last removal published it: it stays `v`'s first, at the same list
+        // entry, until compaction drops it, and the other half is never in it. Reading it again
+        // for each edge cost about 5 % of detaching a hub.
+        let mut drained: Option<(Found, LabelBucketKey)> = None;
         for _ in 0..budget.get() {
-            let list = self.label_bucket_list(v)?;
-            let Some((entry, key, stored)) =
-                list.map(|list| label_bucket_list::first(&self.label_bucket_lists.pages(), list))
-            else {
-                break;
+            let (found, key) = if let Some(carried) = drained.take() {
+                carried
+            } else {
+                let list = self.label_bucket_list(v)?;
+                let Some((entry, key, stored)) = list
+                    .map(|list| label_bucket_list::first(&self.label_bucket_lists.pages(), list))
+                else {
+                    break;
+                };
+                let found = self.draining(Found {
+                    entry,
+                    bucket: LabelBucket::resolve(&self.edges.pages(), stored),
+                });
+                (found, key)
             };
-            let found = self.draining(Found {
-                entry,
-                bucket: LabelBucket::resolve(&self.edges.pages(), stored),
-            });
             let from = start_in(cursor, &key);
             let first =
                 label_bucket::find(&found.bucket.slots, &self.edges.pages(), from, |_| true);
@@ -90,7 +99,9 @@ impl<M: Memory> Graph<M> {
             let (theirs, other) = self.first_half_from(v, half, (edge.target(), from));
             // Now a hole, so the next scan there starts at it.
             hint = Some((theirs_key, other.position()));
-            removed.push(self.take_pair((found, half), (theirs, other)));
+            let (edge, found) = self.take_pair((found, half), (theirs, other));
+            removed.push(edge);
+            drained = Some((found, key));
         }
         let progress = if self.label_bucket_list(v)?.is_none() {
             self.write_record(
@@ -107,6 +118,25 @@ impl<M: Memory> Graph<M> {
         Ok(Step::new(removed, progress))
     }
 
+    /// The set of `nodes` for [`Self::sweep`], each checked once to be detaching or deleted. A
+    /// deleted one is fine: it has no edges left.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`], or [`Error::NotDetaching`] for a node that is live.
+    pub fn detaching_set(
+        &self,
+        nodes: impl IntoIterator<Item = NodeId>,
+    ) -> Result<DetachingSet, Error> {
+        let set = DetachingSet::new(nodes);
+        for d in set.iter() {
+            if self.record(d)?.state == NodeState::Live {
+                return Err(Error::NotDetaching(d));
+            }
+        }
+        Ok(set)
+    }
+
     /// Removes the edges of `v`'s `(label, direction)` bucket whose other ends are in `detaching`,
     /// both halves of each, looking at up to `budget` positions from `from`. One pass over a
     /// bucket that many detaching nodes share (a hub's, say) removes their edges to it for less
@@ -117,22 +147,19 @@ impl<M: Memory> Graph<M> {
     /// Call again from [`Sweep::next`] until it is `None`. A self-loop at `v` is left to `v`'s own
     /// detach.
     ///
+    /// The cost of a call follows `budget`, not the size of `detaching`: its members were checked
+    /// when [`Self::detaching_set`] built it.
+    ///
     /// # Errors
     ///
-    /// [`Error::UnknownNode`], or [`Error::NotDetaching`] for a node in `detaching` that is
-    /// live; then nothing changed. A deleted one is fine: it has no edges left.
+    /// [`Error::UnknownNode`] for `v`.
     pub fn sweep(
         &mut self,
         v: NodeId,
         (label, direction): (Label, Direction),
         (from, budget): (Position, NonZeroU32),
-        detaching: &NodeSet,
+        detaching: &DetachingSet,
     ) -> Result<Sweep, Error> {
-        for d in detaching.iter() {
-            if self.record(d)?.state == NodeState::Live {
-                return Err(Error::NotDetaching(d));
-            }
-        }
         let key = LabelBucketKey { label, direction };
         let Some(found) = self.find_label_bucket(v, key)? else {
             return Ok(Sweep::new(Vec::new(), None));
@@ -159,19 +186,19 @@ impl<M: Memory> Graph<M> {
             let found = self.present(v, key);
             let half = EdgeRef::new(v, label, direction, edge.position());
             let (theirs, other) = self.first_half_from(v, half, (edge.target(), Position::new(0)));
-            removed.push(self.take_pair((found, half), (theirs, other)));
+            removed.push(self.take_pair((found, half), (theirs, other)).0);
         }
         let next = (high < stored).then(|| Position::new(high));
         Ok(Sweep::new(removed, next))
     }
 
     /// Removes both halves of an edge, `half` in `found` and `other` in `theirs`, and reports it
-    /// with its value.
+    /// with its value, and with `half`'s bucket as published.
     fn take_pair(
         &mut self,
         (found, half): (Found, EdgeRef),
         (theirs, other): (Found, EdgeRef),
-    ) -> RemovedEdge {
+    ) -> (RemovedEdge, Found) {
         let halves = order(half, other);
         let canonical = if halves.canonical() == half {
             found
@@ -179,11 +206,11 @@ impl<M: Memory> Graph<M> {
             theirs
         };
         let value = self.read_value(&canonical, half.label(), halves.canonical().position());
-        self.tombstone(found, half.position());
+        let bucket = self.tombstone(found, half.position());
         if other != half {
             self.tombstone(theirs, other.position());
         }
-        RemovedEdge::new(halves, value)
+        (RemovedEdge::new(halves, value), Found { bucket, ..found })
     }
 
     /// A detaching node's bucket without its target index: all its edges are going, so
@@ -194,7 +221,7 @@ impl<M: Memory> Graph<M> {
             return found;
         };
         let bucket = self.drop_index(found.bucket, Index::Dropped);
-        self.publish(found.entry, bucket);
+        let bucket = self.publish(found.entry, bucket);
         Found { bucket, ..found }
     }
 

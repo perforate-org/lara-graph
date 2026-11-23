@@ -277,7 +277,9 @@ impl<M: Memory> Graph<M> {
         bucket: LabelBucket,
     ) {
         match slot {
-            Ok(entry) => self.publish(entry, bucket),
+            Ok(entry) => {
+                self.publish(entry, bucket);
+            }
             Err(gap) => {
                 let bucket = self.settle(bucket);
                 bucket.write_header(&self.edges);

@@ -237,17 +237,22 @@ pub(crate) fn get<M: Memory>(d: &Descriptor, at: Position, view: &Pages<'_, M>) 
     if at.index() >= d.stored() {
         return None;
     }
-    let slot = match d {
-        Descriptor::Tiny(tiny) => *tiny.slots().get(usize::try_from(at.index()).ok()?)?,
-        Descriptor::Run(run) => {
-            Slot::decode(view.read_array(slot_offset(run.extent.offset(), at.index())))
-        }
+    match d {
+        Descriptor::Tiny(tiny) => match *tiny.slots().get(usize::try_from(at.index()).ok()?)? {
+            Slot::Live(target) => Some(target),
+            Slot::Tombstone => None,
+        },
+        Descriptor::Run(run) => target_at(view, slot_offset(run.extent.offset(), at.index())),
         Descriptor::Paged(paged) => {
             let page = paged::data_page(view, paged, at.index() / PAGE_SLOTS).page?;
-            Slot::decode(view.read_array(slot_offset(page.offset(), at.index() % PAGE_SLOTS)))
+            target_at(view, slot_offset(page.offset(), at.index() % PAGE_SLOTS))
         }
-    };
-    match slot {
+    }
+}
+
+/// The live target in the stored slot at `at`, if any.
+pub(crate) fn target_at<M: Memory>(view: &Pages<'_, M>, at: ByteOffset) -> Option<NodeId> {
+    match Slot::decode(view.read_array(at)) {
         Slot::Live(target) => Some(target),
         Slot::Tombstone => None,
     }
@@ -264,13 +269,22 @@ pub(crate) fn without_tiny<M: Memory>(
     };
     let stored = stored_u32(tiny.slots().len());
     let extent = store.allocate(run_class(stored.max(1)))?;
-    let bytes: Vec<u8> = tiny.slots().iter().flat_map(|s| s.encode()).collect();
-    store.write(extent.offset(), &bytes);
+    store.write(extent.offset(), &tiny_bytes(tiny.slots()));
     Ok(Descriptor::Run(Run {
         extent,
         stored: narrow(stored),
         live: narrow(d.live()),
     }))
+}
+
+/// A tiny bucket's slots as stored bytes, slot by slot rather than through an iterator chain
+/// over bytes, which compiles to slow code on the IC.
+fn tiny_bytes(slots: &[Slot]) -> Vec<u8> {
+    let mut bytes = alloc::vec![0u8; slots.len() * 4];
+    for (dst, slot) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(slots) {
+        *dst = slot.encode();
+    }
+    bytes
 }
 
 // --- runs --------------------------------------------------------------------------------------
@@ -282,12 +296,15 @@ fn tiny_to_run<M: Memory>(
 ) -> Result<(Descriptor, Position), WriteError> {
     let stored = TINY_SLOTS + 1;
     let extent = store.allocate(run_class(stored_u32(stored)))?;
-    let bytes: Vec<u8> = tiny
-        .slots()
-        .iter()
-        .chain([&edge])
-        .flat_map(|s| s.encode())
-        .collect();
+    let mut bytes = [0u8; (TINY_SLOTS + 1) * 4];
+    for (dst, slot) in bytes
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(tiny.slots().iter().chain([&edge]))
+    {
+        *dst = slot.encode();
+    }
     store.write(extent.offset(), &bytes);
     let live = Descriptor::Tiny(tiny).live() + 1;
     let run = Run {

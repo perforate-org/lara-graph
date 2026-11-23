@@ -1,11 +1,12 @@
 //! Reading chosen positions of a bucket.
 
 use super::scan::{Span, scan};
-use super::stored_u32;
+use super::{slot_offset, stored_u32};
 use crate::descriptor::{Descriptor, PAGE_SLOTS, Slot};
 use crate::id::{NodeId, Order, Position};
 use crate::memory::Memory;
 use crate::page_store::Pages;
+use crate::paged;
 use core::ops::ControlFlow;
 
 /// The targets at `positions` (ascending, distinct), `None` for a hole or a position past the
@@ -45,8 +46,19 @@ fn read_group<M: Memory>(
     let low = group.first().map_or(0, |p| p.index());
     let high = group.last().map_or(low, |p| p.index() + 1).min(d.stored());
     if high.saturating_sub(low) > SPARSE * stored_u32(group.len()) {
-        for &p in group {
-            f(p, super::get(d, p, view));
+        // A paged bucket's data page is looked up once for the group, not once per position.
+        if let Descriptor::Paged(paged) = d {
+            let page = paged::data_page(view, paged, low / PAGE_SLOTS).page;
+            for &p in group {
+                let at = page
+                    .filter(|_| p.index() < d.stored())
+                    .map(|page| slot_offset(page.offset(), p.index() % PAGE_SLOTS));
+                f(p, at.and_then(|at| super::target_at(view, at)));
+            }
+        } else {
+            for &p in group {
+                f(p, super::get(d, p, view));
+            }
         }
     } else {
         read_range(d, view, (group, Span::new(low, high, Order::Ascending)), f);

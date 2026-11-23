@@ -172,13 +172,16 @@ else is persisted, so compaction or reopening between steps cannot invalidate a 
 is whole or gone at each step boundary, so reads need no filter for half-removed edges.
 
 **Many nodes at once.** `Graph::sweep(v, (label, direction), (from, budget), &detaching)` removes
-the edges of one shared bucket (a hub's, say) whose other ends are in a `NodeSet` of detaching
+the edges of one shared bucket (a hub's, say) whose other ends are in a `DetachingSet` of detaching
 nodes.
 - It reads the positions `from..from + budget` in one pass, then removes what it found, both
   halves of each. The other half is the first live entry to `v` in the detaching node's bucket.
 - It returns the edges and where to go on. The detaching nodes' own `detach_step`s then find
   those edges gone.
-- `NodeSet` is built once: a bit per id when the ids are close together, else a sorted list.
+- `DetachingSet` is built once by `Graph::detaching_set`, which checks each member is not live:
+  a node never becomes live again, so the check holds for the set's lifetime and a sweep's cost
+  follows its budget, not the set's size. It keeps a bit per id when the ids are close together,
+  else a sorted list.
 - Against `detach_step` one node at a time, which pairs each edge through the hub's target
   index, detaching 1024 / 4096 / 16384 of a 65536-edge hub's neighbours costs 11 / 23 / 23 % less.
   The rest is fixed per edge: the hub's index change and each node's label bucket list going away.

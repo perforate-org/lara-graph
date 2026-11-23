@@ -95,6 +95,16 @@ fn check_target(
     }
     assert_eq!(nth(view, root, target, seen), Nth::Past(seen));
     assert_eq!(rank(view, root, target, u32::MAX), seen);
+    let last = model
+        .range((target, 0)..=(target, u32::MAX))
+        .rev()
+        .find(|(_, count)| **count > 0)
+        .map(|(&(_, block), _)| block);
+    assert_eq!(
+        last_block(view, root, target),
+        last,
+        "last block of {target}"
+    );
 }
 
 /// The deepest root seen, to show the test reaches several levels.
@@ -241,8 +251,14 @@ fn nth_and_rank_follow_targets_across_leaves() {
     let mut model: BTreeMap<(u32, u32), u32> = BTreeMap::new();
     let mut rng = Rng(0x1405_7B7E_F767_814F);
     let mut changes: Vec<Change> = (0..2000).map(|_| add_some(&mut model, &mut rng)).collect();
-    for target in [7, 2_500_000, 4_999_999] {
-        for block in 0..1500 {
+    // Many postings that run past one leaf, and (1_000_000) more than a walk decodes, in one.
+    for (target, blocks) in [
+        (7, 1500),
+        (1_000_000, 100),
+        (2_500_000, 1500),
+        (4_999_999, 1500),
+    ] {
+        for block in 0..blocks {
             let delta = 1 + u32::try_from(rng.below(3)).unwrap();
             *model.entry((target, block)).or_default() += delta;
             changes.push(Change {
@@ -254,7 +270,7 @@ fn nth_and_rank_follow_targets_across_leaves() {
     let root = commit_planned(&mut store, None, &changes).unwrap();
     assert!(root.depth >= 2, "depth {}", root.depth);
     let view = store.pages();
-    for target in [0, 7, 8, 2_500_000, 4_999_999, u32::MAX] {
+    for target in [0, 7, 8, 1_000_000, 2_500_000, 4_999_999, u32::MAX] {
         check_target(&view, root, &model, target);
     }
     // The zero count single decrements leave is skipped.

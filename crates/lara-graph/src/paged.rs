@@ -171,6 +171,9 @@ enum Descend {
 
 /// Entries read at a time: a walk that stops early reads little of a large node.
 const WALK_ENTRIES: u64 = 64;
+/// Bytes of the largest window a walk reads.
+const WALK_BYTES: usize = 64 * ENTRY;
+const _: () = assert!(WALK_ENTRIES == 64 && ENTRY_BYTES == 8 && WALK_BYTES == 512);
 
 /// Which data pages a walk covers, and in which order.
 #[derive(Clone)]
@@ -213,10 +216,16 @@ fn walk<M: Memory, B>(
         .div_ceil(covered)
         .min(entries);
     let mut window = next_window(low..high, reach.order, None);
+    // One stack buffer for the node's windows: a heap one per window cost about 250 instructions
+    // a read on the IC.
+    let mut buf = [0u8; WALK_BYTES];
     while let Some(range) = window {
         let len = usize::try_from((range.end - range.start) * u64::from(ENTRY_BYTES))
             .unwrap_or_else(|_| corrupt("index"));
-        let bytes = view.read(entry_at(node.offset, range.start), len);
+        let bytes = buf
+            .get_mut(..len)
+            .unwrap_or_else(|| corrupt("an index window"));
+        view.read_into(entry_at(node.offset, range.start), bytes);
         let raws = bytes.as_chunks::<ENTRY>().0;
         for step in 0..raws.len() {
             let k = match reach.order {

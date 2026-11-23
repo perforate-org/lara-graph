@@ -48,6 +48,15 @@ impl<M: Memory> Graph<M> {
             self.publish(found.entry, bucket);
             return Ok(Step::new(Vec::new(), Progress::Remaining));
         }
+        // An idle step changes nothing, so it reserves and writes nothing: before, the last call
+        // of every compaction loop still reserved value pages and rewrote the bucket. A run that
+        // still carries a dropped index goes on, so that its header is released.
+        if planned.is_idle()
+            && (matches!(found.bucket.slots, Descriptor::Paged(_))
+                || matches!(found.bucket.index, Index::Empty))
+        {
+            return Ok(Step::new(Vec::new(), Progress::Done));
+        }
         let plan = self.plan_index(&found.bucket, &planned)?;
         let inline = match found.bucket.values {
             Some(values) => {

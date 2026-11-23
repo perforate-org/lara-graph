@@ -38,12 +38,13 @@ mod scale;
 mod stored;
 mod targets;
 
+mod detaching_set;
 mod node;
-mod node_set;
 mod txn;
 mod units;
 mod values;
 
+pub use detaching_set::DetachingSet;
 pub use graph::{Compaction, Detachment, Error, Graph, InitError, Removal, Step, Sweep};
 pub use id::{
     Cursor, Direction, Edge, EdgeRef, Halves, Label, Move, NodeId, NodeState, Order, Placement,
@@ -51,4 +52,3 @@ pub use id::{
 };
 pub use memories::{Memories, MemoryRole};
 pub use memory::{GrowFailed, Memory, PAGE_SIZE, VecMemory};
-pub use node_set::NodeSet;

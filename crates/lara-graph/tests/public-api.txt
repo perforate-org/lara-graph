@@ -69,6 +69,10 @@ pub const fn lara_graph::Cursor::first(lara_graph::Order, core::num::nonzero::No
 pub const fn lara_graph::Cursor::from(&self) -> core::option::Option<lara_graph::Position>
 pub const fn lara_graph::Cursor::order(&self) -> lara_graph::Order
 pub const fn lara_graph::Cursor::span(&self) -> core::num::nonzero::NonZeroU32
+pub struct lara_graph::DetachingSet
+impl lara_graph::DetachingSet
+pub fn lara_graph::DetachingSet::contains(&self, lara_graph::NodeId) -> bool
+pub fn lara_graph::DetachingSet::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = lara_graph::NodeId> + '_
 pub struct lara_graph::Edge
 impl lara_graph::Edge
 pub const fn lara_graph::Edge::position(&self) -> lara_graph::Position
@@ -105,7 +109,8 @@ pub fn lara_graph::Graph<M>::width(&self, lara_graph::Label) -> core::option::Op
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::detach(&mut self, lara_graph::NodeId) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::Graph<M>::detach_step(&mut self, lara_graph::NodeId, core::num::nonzero::NonZeroU32) -> core::result::Result<lara_graph::Detachment, lara_graph::Error>
-pub fn lara_graph::Graph<M>::sweep(&mut self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), (lara_graph::Position, core::num::nonzero::NonZeroU32), &lara_graph::NodeSet) -> core::result::Result<lara_graph::Sweep, lara_graph::Error>
+pub fn lara_graph::Graph<M>::detaching_set(&self, impl core::iter::traits::collect::IntoIterator<Item = lara_graph::NodeId>) -> core::result::Result<lara_graph::DetachingSet, lara_graph::Error>
+pub fn lara_graph::Graph<M>::sweep(&mut self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), (lara_graph::Position, core::num::nonzero::NonZeroU32), &lara_graph::DetachingSet) -> core::result::Result<lara_graph::Sweep, lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::edge_value(&self, lara_graph::EdgeRef) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, lara_graph::Error>
 pub fn lara_graph::Graph<M>::set_edge_value(&mut self, lara_graph::EdgeRef, &[u8]) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, lara_graph::Error>
@@ -152,11 +157,6 @@ pub struct lara_graph::NodeId(_)
 impl lara_graph::NodeId
 pub const fn lara_graph::NodeId::index(self) -> u32
 pub const fn lara_graph::NodeId::new(u32) -> Self
-pub struct lara_graph::NodeSet
-impl lara_graph::NodeSet
-pub fn lara_graph::NodeSet::contains(&self, lara_graph::NodeId) -> bool
-pub fn lara_graph::NodeSet::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = lara_graph::NodeId> + '_
-pub fn lara_graph::NodeSet::new(impl core::iter::traits::collect::IntoIterator<Item = lara_graph::NodeId>) -> Self
 pub struct lara_graph::Position(_)
 impl lara_graph::Position
 pub const fn lara_graph::Position::index(self) -> u32

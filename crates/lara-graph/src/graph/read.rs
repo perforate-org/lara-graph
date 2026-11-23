@@ -105,6 +105,14 @@ impl<M: Memory> Graph<M> {
             out.resize(positions.len(), None);
             return Ok(());
         };
+        // Positions already ascending and distinct, as a reader of windows passes them, go
+        // straight through; others are sorted for the one pass and put back in their order.
+        if positions.is_sorted_by(|a, b| a < b) {
+            label_bucket::read_positions(&d, &self.edges.pages(), positions, |_, target| {
+                out.push(target);
+            });
+            return Ok(());
+        }
         let mut sorted = positions.to_vec();
         sorted.sort_unstable();
         sorted.dedup();

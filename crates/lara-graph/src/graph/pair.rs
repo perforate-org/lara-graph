@@ -89,7 +89,7 @@ impl<M: Memory> Graph<M> {
 
     /// Tombstones the live half at `at` in `found` and takes it out of the target index. Writes
     /// no value and takes no memory.
-    pub(super) fn tombstone(&mut self, found: Found, at: Position) {
+    pub(super) fn tombstone(&mut self, found: Found, at: Position) -> LabelBucket {
         let (next, target) = label_bucket::remove(found.bucket.slots, at, &self.edges)
             .unwrap_or_else(|| corrupt("live half not in its bucket"));
         let bucket = LabelBucket {
@@ -97,18 +97,19 @@ impl<M: Memory> Graph<M> {
             ..found.bucket
         };
         self.index_removed(&bucket, target, at);
-        self.publish(found.entry, bucket);
+        self.publish(found.entry, bucket)
     }
 
     /// Publishes a bucket's new state: its header, and its list entry when it is plain or just
-    /// changed form. Within reserved memory.
-    pub(super) fn publish(&mut self, entry: EntryAt, bucket: LabelBucket) {
+    /// changed form. Returns the bucket as published. Within reserved memory.
+    pub(super) fn publish(&mut self, entry: EntryAt, bucket: LabelBucket) -> LabelBucket {
         let had_header = bucket.header.is_some();
         let bucket = self.settle(bucket);
         bucket.write_header(&self.edges);
         if !had_header || bucket.header.is_none() {
             label_bucket_list::set(&self.label_bucket_lists, entry, &bucket.stored());
         }
+        bucket
     }
 
     /// Gives a bucket with values or an index a header, and releases a header nothing needs any
