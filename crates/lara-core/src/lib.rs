@@ -41,12 +41,14 @@ mod txn;
 mod units;
 mod values;
 mod vertex;
+mod vertex_set;
 
 pub use graph::{
-    Compaction, CreateError, Detachment, Error, Graph, Memories, OpenError, Removal, Step,
+    Compaction, CreateError, Detachment, Error, Graph, Memories, OpenError, Removal, Step, Sweep,
 };
 pub use id::{
     Cursor, Edge, EdgeRef, Halves, Label, Move, Order, Placement, Position, Progress, RemovedEdge,
     Side, VertexId, VertexState, Width,
 };
 pub use memory::{GrowFailed, Memory, PAGE_SIZE, VecMemory};
+pub use vertex_set::VertexSet;

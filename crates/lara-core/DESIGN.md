@@ -143,6 +143,18 @@ When v has no buckets left, it is `Deleted` for good: inserts touching it fail w
 else is persisted, so compaction or reopening between steps cannot invalidate a step. Every edge
 is whole or gone at each step boundary, so reads need no filter for half-removed edges.
 
+**Many vertices at once.** `Graph::sweep(v, (label, side), (from, budget), &detaching)` removes
+the edges of one shared bucket (a hub's, say) whose other ends are in a `VertexSet` of detaching
+vertices.
+- It reads the positions `from..from + budget` in one pass, then removes what it found, both
+  halves of each. The other half is the first live entry to `v` in the detaching vertex's bucket.
+- It returns the edges and where to go on. The detaching vertices' own `detach_step`s then find
+  those edges gone.
+- `VertexSet` is built once: a bit per id when the ids are close together, else a sorted list.
+- Against `detach_step` one vertex at a time, which pairs each edge through the hub's target
+  index, detaching 1024 / 4096 / 16384 of a 65536-edge hub's neighbours costs 11 / 23 / 23 % less.
+  The rest is fixed per edge: the hub's index change and each vertex's list going away.
+
 Compared with ic-stable-lara's `DeleteVertexV1`:
 - there is no unbounded first step and no O(degree) start;
 - the partner is matched by rank, not by "first entry to v";
@@ -329,4 +341,3 @@ instructions moved by 2 % or more. A flag in the table entry marks the first pos
 
 ## Not yet
 
-- Detaching many vertices at once with one pass over each shared hub.

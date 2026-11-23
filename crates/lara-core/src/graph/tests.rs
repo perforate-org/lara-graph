@@ -7,6 +7,7 @@ use crate::paged;
 use crate::stored::{Bucket, Index};
 use crate::targets;
 use crate::values;
+use crate::vertex_set::VertexSet;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use core::num::NonZeroU32;

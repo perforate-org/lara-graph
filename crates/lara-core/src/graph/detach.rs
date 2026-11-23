@@ -2,17 +2,21 @@
 
 use super::index::indexed;
 use super::pair::{Found, opposite, order};
-use super::{Detachment, Error, Graph, Step};
-use crate::bucket;
+use super::{Detachment, Error, Graph, Step, Sweep};
+use crate::bucket::{self, Span, Window};
 use crate::corrupt::corrupt;
-use crate::id::{EdgeRef, Position, Progress, RemovedEdge, VertexId, VertexState};
+use crate::id::{
+    EdgeRef, Label, Order, Position, Progress, RemovedEdge, Side, VertexId, VertexState,
+};
 use crate::labels::{self, BucketKey};
 use crate::memory::Memory;
 use crate::stored::{Bucket, Index};
 use crate::vertex::Record;
+use crate::vertex_set::VertexSet;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::num::NonZeroU32;
+use core::ops::ControlFlow;
 
 impl<M: Memory> Graph<M> {
     /// Starts deleting `v` (DETACH DELETE): from now on it takes no new edges, and
@@ -79,19 +83,12 @@ impl<M: Memory> Graph<M> {
             };
             cursors.insert(key, edge.position());
             let half = EdgeRef::new(v, key.label, key.side, edge.position());
-            let (theirs, other) = self.first_half_to(v, half, edge.target(), &mut hints);
-            let halves = order(half, other);
-            let canonical = if halves.canonical() == half {
-                found
-            } else {
-                theirs
-            };
-            let value = self.read_value(&canonical, half.label(), halves.canonical().position());
-            self.tombstone(found, half.position());
-            if other != half {
-                self.tombstone(theirs, other.position());
-            }
-            removed.push(RemovedEdge::new(halves, value));
+            let key = (edge.target(), opposite_key(half));
+            let from = hints.get(&key).copied().unwrap_or(Position::new(0));
+            let (theirs, other) = self.first_half_from(v, half, (edge.target(), from));
+            // Now a hole, so the next scan starts there.
+            hints.insert(key, other.position());
+            removed.push(self.take_pair((found, half), (theirs, other)));
         }
         let progress = if self.list(v)?.is_none() {
             self.write_record(
@@ -108,6 +105,85 @@ impl<M: Memory> Graph<M> {
         Ok(Step::new(removed, progress))
     }
 
+    /// Removes the edges of `v`'s `(label, side)` bucket whose other ends are in `detaching`,
+    /// both halves of each, looking at up to `budget` positions from `from`. One pass over a
+    /// bucket that many detaching vertices share (a hub's, say) removes their edges to it for less
+    /// than [`Self::detach_step`] does one vertex at a time, which pairs each edge through the
+    /// shared bucket's target index. Their own buckets are left with holes, which their
+    /// [`Self::detach_step`]s then pass over.
+    ///
+    /// Call again from [`Sweep::next`] until it is `None`. A self-loop at `v` is left to `v`'s own
+    /// detach.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownVertex`], or [`Error::NotDetaching`] for a vertex in `detaching` that is
+    /// live; then nothing changed. A deleted one is fine: it has no edges left.
+    pub fn sweep(
+        &mut self,
+        v: VertexId,
+        (label, side): (Label, Side),
+        (from, budget): (Position, NonZeroU32),
+        detaching: &VertexSet,
+    ) -> Result<Sweep, Error> {
+        for d in detaching.iter() {
+            if self.record(d)?.state == VertexState::Live {
+                return Err(Error::NotDetaching(d));
+            }
+        }
+        let key = BucketKey { label, side };
+        let Some(found) = self.find_bucket(v, key)? else {
+            return Ok(Sweep::new(Vec::new(), None));
+        };
+        let stored = found.bucket.slots.stored();
+        let high = from.index().saturating_add(budget.get()).min(stored);
+        // One pass finds the edges; positions stay put as they go, so they are removed after.
+        let mut doomed = Vec::new();
+        let span = Span::new(from.index(), high, Order::Ascending);
+        bucket::visit(
+            &found.bucket.slots,
+            &self.edges.pages(),
+            span,
+            Window::Page,
+            |e| {
+                if e.target() != v && detaching.contains(e.target()) {
+                    doomed.push(e);
+                }
+                ControlFlow::<()>::Continue(())
+            },
+        );
+        let mut removed = Vec::with_capacity(doomed.len());
+        for edge in doomed {
+            let found = self.present(v, key);
+            let half = EdgeRef::new(v, label, side, edge.position());
+            let (theirs, other) = self.first_half_from(v, half, (edge.target(), Position::new(0)));
+            removed.push(self.take_pair((found, half), (theirs, other)));
+        }
+        let next = (high < stored).then(|| Position::new(high));
+        Ok(Sweep::new(removed, next))
+    }
+
+    /// Removes both halves of an edge, `half` in `found` and `other` in `theirs`, and reports it
+    /// with its value.
+    fn take_pair(
+        &mut self,
+        (found, half): (Found, EdgeRef),
+        (theirs, other): (Found, EdgeRef),
+    ) -> RemovedEdge {
+        let halves = order(half, other);
+        let canonical = if halves.canonical() == half {
+            found
+        } else {
+            theirs
+        };
+        let value = self.read_value(&canonical, half.label(), halves.canonical().position());
+        self.tombstone(found, half.position());
+        if other != half {
+            self.tombstone(theirs, other.position());
+        }
+        RemovedEdge::new(halves, value)
+    }
+
     /// A detaching vertex's bucket without its target index: all its edges are going, so
     /// keeping the index in step would only cost. Lookups into it scan instead. Within reserved
     /// memory (releasing allocates nothing).
@@ -122,26 +198,17 @@ impl<M: Memory> Graph<M> {
 
     /// The other half of `half`, `v`'s first live edge in its bucket: the first live entry to
     /// `v` in `other`'s opposite bucket, since `v`'s earlier entries to `other` are gone. For an
-    /// undirected self-loop that is `half` itself. `hints` remembers where each scan stopped
-    /// within one step; positions before it hold no live entry to `v`.
-    fn first_half_to(
+    /// undirected self-loop that is `half` itself. A bucket without an index is scanned from
+    /// `from`: positions before it hold no live entry to `v`.
+    fn first_half_from(
         &self,
         v: VertexId,
         half: EdgeRef,
-        other: VertexId,
-        hints: &mut BTreeMap<(VertexId, BucketKey), Position>,
+        (other, from): (VertexId, Position),
     ) -> (Found, EdgeRef) {
-        let key = BucketKey {
-            label: half.label(),
-            side: opposite(half.side()),
-        };
-        let from = hints
-            .get(&(other, key))
-            .copied()
-            .unwrap_or(Position::new(0));
+        let key = opposite_key(half);
         let theirs = self.present(other, key);
-        // A paged bucket finds it through its target index; a smaller one is scanned from where
-        // the last scan stopped.
+        // A paged bucket finds it through its target index; a smaller one is scanned.
         let at = if indexed(&theirs.bucket).is_some() {
             self.select_to(&theirs.bucket, v, 0)
         } else {
@@ -151,8 +218,14 @@ impl<M: Memory> Graph<M> {
             .map(|e| e.position())
         }
         .unwrap_or_else(|| corrupt("an edge half without its counterpart"));
-        // Now a hole, so the next scan starts there.
-        hints.insert((other, key), at);
         (theirs, EdgeRef::new(other, key.label, key.side, at))
+    }
+}
+
+/// The key of the bucket that holds the other half of `half`.
+const fn opposite_key(half: EdgeRef) -> BucketKey {
+    BucketKey {
+        label: half.label(),
+        side: opposite(half.side()),
     }
 }

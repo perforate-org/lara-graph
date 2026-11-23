@@ -334,3 +334,30 @@ its table entry marks a first posting at zero.
 - A posting alone with a count of one and its segment's first block codes to no bits. Its slot
   still takes a byte, so it starts inside the leaf.
 
+## Ninth round (2026-11-23): detaching many vertices at once
+
+`Graph::sweep` removes the edges of one shared bucket whose other ends are detaching, in one
+pass. The bench detaches `n` evenly spread in-neighbours of a 65536-edge hub: each vertex's
+`detach_step` alone, or after a sweep of the hub's in-bucket.
+
+| n | One by one | Swept first | Change |
+| ---: | ---: | ---: | ---: |
+| 1024 | 43.5 M | 38.8 M | −11 % |
+| 4096 | 170 M | 131 M | −23 % |
+| 16384 | 656 M | 503 M | −23 % |
+
+What it took to get there:
+- **The membership test.** A `BTreeSet` lookup per slot cost ~650 instructions and made the
+  sweep slower than one by one. `VertexSet` answers with a bit per id when the ids are close.
+- **One pass.** Calling `find_in` again after each removal walked the page index and set up a
+  read every time. The sweep now reads its span once, then removes what it found; positions do
+  not move.
+- **No scan hints.** The detaching vertices' buckets are small, so their scans start at 0.
+  Keeping a `BTreeMap` of where each stopped cost more than it saved.
+
+Tried and dropped:
+- Returning each bucket from `tombstone`, to save looking the hub's bucket up again: 3 % for a
+  sweep, but every hub detach got 2-3 % dearer.
+- Collecting the hub index's decrements into one batch. Segments without count bits remove
+  postings one at a time either way, so it saved nothing.
+

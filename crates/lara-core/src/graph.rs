@@ -4,7 +4,7 @@ use crate::bucket;
 use crate::corrupt::{corrupt, reservation_exceeded};
 use crate::descriptor::Descriptor;
 use crate::id::{
-    Edge, EdgeRef, Label, Move, Progress, RemovedEdge, Side, VertexId, VertexState, Width,
+    Edge, EdgeRef, Label, Move, Position, Progress, RemovedEdge, Side, VertexId, VertexState, Width,
 };
 use crate::labels::{self, BucketKey, BucketList};
 use crate::memory::{GrowFailed, Memory, Region, WriteError};
@@ -156,6 +156,32 @@ impl<T> Step<T> {
 /// One [`Graph::compact`] step: the edges that moved. Every other edge of the bucket kept its
 /// position.
 pub type Compaction = Step<Move>;
+
+/// One [`Graph::sweep`]: the edges removed, both halves of each, with their values, and where the
+/// sweep goes on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sweep {
+    removed: Vec<RemovedEdge>,
+    next: Option<Position>,
+}
+
+impl Sweep {
+    const fn new(removed: Vec<RemovedEdge>, next: Option<Position>) -> Self {
+        Self { removed, next }
+    }
+
+    /// The edges removed, in position order.
+    #[must_use]
+    pub fn changes(&self) -> &[RemovedEdge] {
+        &self.removed
+    }
+
+    /// Where the next call goes on; `None` once the bucket's end was reached.
+    #[must_use]
+    pub const fn next(&self) -> Option<Position> {
+        self.next
+    }
+}
 
 /// One [`Graph::detach_step`]: the edges removed, both halves of each, with their values.
 pub type Detachment = Step<RemovedEdge>;

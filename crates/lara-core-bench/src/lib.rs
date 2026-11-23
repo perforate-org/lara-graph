@@ -12,7 +12,7 @@ use ic_stable_structures::DefaultMemoryImpl;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use lara_core::{
     Cursor, EdgeRef, Graph, GrowFailed, Halves, Label, Memories, Memory, Order, Placement,
-    Position, Progress, Side, VecMemory, VertexId, Width,
+    Position, Progress, Side, VecMemory, VertexId, VertexSet, Width,
 };
 
 const LABEL: Label = Label::new(2);
@@ -515,6 +515,79 @@ fn detach_satellite_4096() -> BenchResult {
 #[bench(raw)]
 fn detach_satellite_65536() -> BenchResult {
     detach_satellite(65536)
+}
+
+/// How a bench detaches many vertices.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Detaching {
+    /// Each with its own detach steps.
+    OneByOne,
+    /// A sweep of the bucket they share first.
+    Swept,
+}
+
+/// Detaches `n` of a hub's 65536 in-neighbours, spread evenly.
+fn detach_many(n: u32, how: Detaching) -> BenchResult {
+    let mut g = heap_graph();
+    let hub = vertex(&mut g);
+    let sources = vertices(&mut g, 65536);
+    for &s in &sources {
+        directed(&mut g, s, hub);
+    }
+    let step = usize::try_from(65536 / n).unwrap_or(1);
+    let gone: Vec<VertexId> = sources.iter().step_by(step).copied().collect();
+    bench_fn(|| {
+        for &d in &gone {
+            g.detach(d).unwrap_or_else(|e| panic!("detach: {e}"));
+        }
+        if how == Detaching::Swept {
+            sweep_all(&mut g, hub, &VertexSet::new(gone.iter().copied()));
+        }
+        for &d in &gone {
+            detach_rest(&mut g, d);
+        }
+    })
+}
+
+/// Sweeps the hub's in-bucket of edges from `detaching`, to its end.
+fn sweep_all(g: &mut Graph<VecMemory>, hub: VertexId, detaching: &VertexSet) {
+    let mut from = Some(Position::new(0));
+    while let Some(at) = from {
+        let sweep = g
+            .sweep(hub, (LABEL, Side::In), (at, budget(4096)), detaching)
+            .unwrap_or_else(|e| panic!("sweep: {e}"));
+        from = sweep.next();
+    }
+}
+
+/// Detaches `v`'s remaining edges until it is deleted.
+fn detach_rest(g: &mut Graph<VecMemory>, v: VertexId) {
+    while g
+        .detach_step(v, budget(u32::MAX))
+        .unwrap_or_else(|e| panic!("step: {e}"))
+        .progress()
+        == Progress::Remaining
+    {}
+}
+
+#[bench(raw)]
+fn detach_1024_of_hub_65536() -> BenchResult {
+    detach_many(1024, Detaching::OneByOne)
+}
+
+#[bench(raw)]
+fn detach_1024_of_hub_65536_swept() -> BenchResult {
+    detach_many(1024, Detaching::Swept)
+}
+
+#[bench(raw)]
+fn detach_4096_of_hub_65536() -> BenchResult {
+    detach_many(4096, Detaching::OneByOne)
+}
+
+#[bench(raw)]
+fn detach_4096_of_hub_65536_swept() -> BenchResult {
+    detach_many(4096, Detaching::Swept)
 }
 
 /// Removes one edge from the middle of a hub: the pair is matched through the hub's target index

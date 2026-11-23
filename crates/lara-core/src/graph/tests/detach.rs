@@ -170,3 +170,71 @@ fn a_hub_detaches_in_bounded_steps_across_reopens() {
         assert_eq!(g.degree(v(x), l(0), Side::In), Ok(u32::from(x == 2)));
     }
 }
+
+/// One sweep of a hub's in-bucket, in short calls, removes exactly the edges from detaching
+/// vertices to the hub, parallel ones included, with values. Their own detaches then find those
+/// edges gone and finish. A set naming a vertex that is not detaching changes nothing.
+#[test]
+fn sweeping_a_shared_bucket_removes_the_detaching_vertices_edges() {
+    let backing = Backing::default();
+    let mut g = backing.create(1);
+    g.declare_width(l(0), Width::new(2).unwrap()).unwrap();
+    let hub = v(0);
+    let sources: Vec<VertexId> = (0..1500).map(|_| g.add_vertex().unwrap()).collect();
+    let mut edges = Vec::new();
+    for (i, &s) in sources.iter().enumerate() {
+        let value = u16::try_from(i).unwrap().to_le_bytes();
+        for _ in 0..=i % 3 {
+            edges.push((
+                s,
+                g.insert_directed(s, l(0), hub, Placement::Append, &value)
+                    .unwrap(),
+            ));
+        }
+    }
+    // An edge out of the hub to a detaching vertex stays for that vertex's own detach.
+    g.insert_directed(hub, l(0), sources[3], Placement::Append, &[9, 9])
+        .unwrap();
+    let gone: Vec<VertexId> = sources.iter().copied().step_by(4).collect();
+    let detaching = VertexSet::new(gone.iter().copied());
+    let live = *sources.get(1).unwrap();
+    let with_live = VertexSet::new(gone.iter().copied().chain([live]));
+    for &d in &gone {
+        g.detach(d).unwrap();
+    }
+    assert_eq!(
+        g.sweep(hub, (l(0), Side::In), (p(0), budget(100)), &with_live),
+        Err(Error::NotDetaching(live))
+    );
+    let mut removed = Vec::new();
+    let mut from = Some(p(0));
+    while let Some(at) = from {
+        let sweep = g
+            .sweep(hub, (l(0), Side::In), (at, budget(500)), &detaching)
+            .unwrap();
+        removed.extend(sweep.changes().iter().cloned());
+        from = sweep.next();
+        check(&g);
+    }
+    let want: Vec<Halves> = edges
+        .iter()
+        .filter(|(s, _)| detaching.contains(*s))
+        .map(|&(_, h)| h)
+        .collect();
+    assert_eq!(
+        sorted(removed.iter().map(RemovedEdge::halves).collect()),
+        sorted(want)
+    );
+    for r in &removed {
+        let source = r.halves().canonical().vertex();
+        let i = sources.iter().position(|&s| s == source).unwrap();
+        assert_eq!(r.value(), u16::try_from(i).unwrap().to_le_bytes());
+    }
+    for &d in &gone {
+        let rest = detach_fully(&mut g, d, 7);
+        let out_of_hub = usize::from(d == sources[3]);
+        assert_eq!(rest.len(), out_of_hub, "vertex {}", d.index());
+        assert_eq!(g.vertex_state(d), Ok(VertexState::Deleted));
+    }
+    check(&g);
+}

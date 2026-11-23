@@ -100,6 +100,7 @@ pub fn lara_core::Graph<M>::width(&self, lara_core::Label) -> core::option::Opti
 impl<M: lara_core::Memory> lara_core::Graph<M>
 pub fn lara_core::Graph<M>::detach(&mut self, lara_core::VertexId) -> core::result::Result<(), lara_core::Error>
 pub fn lara_core::Graph<M>::detach_step(&mut self, lara_core::VertexId, core::num::nonzero::NonZeroU32) -> core::result::Result<lara_core::Detachment, lara_core::Error>
+pub fn lara_core::Graph<M>::sweep(&mut self, lara_core::VertexId, (lara_core::Label, lara_core::Side), (lara_core::Position, core::num::nonzero::NonZeroU32), &lara_core::VertexSet) -> core::result::Result<lara_core::Sweep, lara_core::Error>
 impl<M: lara_core::Memory> lara_core::Graph<M>
 pub fn lara_core::Graph<M>::insert_directed(&mut self, lara_core::VertexId, lara_core::Label, lara_core::VertexId, lara_core::Placement, &[u8]) -> core::result::Result<lara_core::Halves, lara_core::Error>
 pub fn lara_core::Graph<M>::insert_undirected(&mut self, lara_core::VertexId, lara_core::Label, lara_core::VertexId, lara_core::Placement, &[u8]) -> core::result::Result<lara_core::Halves, lara_core::Error>
@@ -145,6 +146,10 @@ pub struct lara_core::Step<T>
 impl<T> lara_core::Step<T>
 pub fn lara_core::Step<T>::changes(&self) -> &[T]
 pub const fn lara_core::Step<T>::progress(&self) -> lara_core::Progress
+pub struct lara_core::Sweep
+impl lara_core::Sweep
+pub fn lara_core::Sweep::changes(&self) -> &[lara_core::RemovedEdge]
+pub const fn lara_core::Sweep::next(&self) -> core::option::Option<lara_core::Position>
 pub struct lara_core::VecMemory
 impl lara_core::VecMemory
 pub fn lara_core::VecMemory::new() -> Self
@@ -157,6 +162,11 @@ pub struct lara_core::VertexId(_)
 impl lara_core::VertexId
 pub const fn lara_core::VertexId::index(self) -> u32
 pub const fn lara_core::VertexId::new(u32) -> Self
+pub struct lara_core::VertexSet
+impl lara_core::VertexSet
+pub fn lara_core::VertexSet::contains(&self, lara_core::VertexId) -> bool
+pub fn lara_core::VertexSet::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = lara_core::VertexId> + '_
+pub fn lara_core::VertexSet::new(impl core::iter::traits::collect::IntoIterator<Item = lara_core::VertexId>) -> Self
 pub struct lara_core::Width(_)
 impl lara_core::Width
 pub const lara_core::Width::MAX: u16
