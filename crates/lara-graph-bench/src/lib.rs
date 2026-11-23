@@ -153,6 +153,56 @@ fn hub_remove_edges_4096_loop_stable() -> BenchResult {
     })
 }
 
+fn grow_hub_undirected(mut g: Graph<impl Memory>, degree: u32) -> BenchResult {
+    let hub = node(&mut g);
+    let leaves = nodes(&mut g, degree);
+    bench_fn(|| {
+        for &leaf in &leaves {
+            black_box(
+                g.add_edge(
+                    EdgeKind::Undirected,
+                    hub,
+                    LABEL,
+                    black_box(leaf),
+                    Placement::ReuseHoles,
+                    &[],
+                )
+                .unwrap_or_else(|e| panic!("insert: {e}")),
+            );
+        }
+    })
+}
+
+#[bench(raw)]
+fn hub_insert_undirected_4096() -> BenchResult {
+    grow_hub_undirected(heap_graph(), 4096)
+}
+
+#[bench(raw)]
+fn hub_insert_undirected_4096_stable() -> BenchResult {
+    grow_hub_undirected(stable_graph(), 4096)
+}
+
+fn grow_hub_undirected_batched(mut g: Graph<impl Memory>, degree: u32) -> BenchResult {
+    let hub = node(&mut g);
+    let leaves = nodes(&mut g, degree);
+    let edges: Vec<NewEdge<'_>> = leaves
+        .iter()
+        .map(|&leaf| NewEdge::undirected(hub, LABEL, leaf, Placement::ReuseHoles, &[]))
+        .collect();
+    bench_fn(|| black_box(g.add_edges(&edges).unwrap_or_else(|e| panic!("batch: {e}"))))
+}
+
+#[bench(raw)]
+fn hub_insert_undirected_4096_batched() -> BenchResult {
+    grow_hub_undirected_batched(heap_graph(), 4096)
+}
+
+#[bench(raw)]
+fn hub_insert_undirected_4096_batched_stable() -> BenchResult {
+    grow_hub_undirected_batched(stable_graph(), 4096)
+}
+
 /// Parallel edges to a few targets: every insert also lands in a target's growing in bucket.
 #[bench(raw)]
 fn hub_insert_parallel_4096() -> BenchResult {

@@ -129,6 +129,9 @@ impl<M: Memory> Graph<M> {
         if all_directed && repeated_targets(edges) {
             return self.add_edges_repeated(edges);
         }
+        if edges.iter().all(|edge| edge.kind == EdgeKind::Undirected) {
+            return self.add_edges_undirected(edges);
+        }
         let mut out = Vec::with_capacity(edges.len());
         let mut cache: Option<(LabelBucketKey, Place)> = None;
         for edge in edges {
@@ -163,6 +166,58 @@ impl<M: Memory> Graph<M> {
                 .first()
                 .and_then(|place| *place)
                 .map(|place| (key, place));
+        }
+        Ok(out)
+    }
+
+    /// Undirected batches cache both endpoints by `(node, key)`. A hub is usually the low or
+    /// the high end of every edge, so one side stays hot while the other moves.
+    fn add_edges_undirected(&mut self, edges: &[NewEdge<'_>]) -> Result<Vec<Halves>, Error> {
+        let mut out = Vec::with_capacity(edges.len());
+        let mut high_cache: [Option<(NodeId, LabelBucketKey, Place)>; TARGET_CACHE] =
+            [None; TARGET_CACHE];
+        let mut low_cache: [Option<(NodeId, LabelBucketKey, Place)>; TARGET_CACHE] =
+            [None; TARGET_CACHE];
+        for edge in edges {
+            let (low, high) = (edge.from.min(edge.to), edge.from.max(edge.to));
+            let key = LabelBucketKey {
+                label: edge.label,
+                direction: Direction::Undirected,
+            };
+            let cache_high = cached_place(&high_cache, high, key);
+            let cache_low = cached_place(&low_cache, low, key);
+            let at_high = Half::new(
+                high,
+                (edge.label, Direction::Undirected),
+                low,
+                edge.placement,
+            );
+            if low == high {
+                let (halves, updated) =
+                    self.insert_halves_two([at_high], edge.value, [cache_high])?;
+                let [half] = halves;
+                out.push(Halves::new(half, half));
+                if let Some(place) = updated.first().and_then(|place| *place) {
+                    cache_place(&mut high_cache, high, key, Some(place));
+                }
+                continue;
+            }
+            let at_low = Half::new(
+                low,
+                (edge.label, Direction::Undirected),
+                high,
+                edge.placement,
+            );
+            let (halves, updated) =
+                self.insert_halves_two([at_high, at_low], edge.value, [cache_high, cache_low])?;
+            let [canonical, other] = halves;
+            out.push(Halves::new(canonical, other));
+            if let Some(place) = updated.first().and_then(|place| *place) {
+                cache_place(&mut high_cache, high, key, Some(place));
+            }
+            if let Some(place) = updated.get(1).and_then(|place| *place) {
+                cache_place(&mut low_cache, low, key, Some(place));
+            }
         }
         Ok(out)
     }
@@ -728,6 +783,18 @@ impl<const N: usize> Cached<N> for ManyCache<N> {
     fn get(&self, index: usize) -> Option<Place> {
         self.0.get(index).copied().flatten()
     }
+}
+
+fn cached_place(
+    cache: &[Option<(NodeId, LabelBucketKey, Place)>; TARGET_CACHE],
+    node: NodeId,
+    key: LabelBucketKey,
+) -> Option<Place> {
+    cache
+        .iter()
+        .flatten()
+        .find(|(n, k, _)| *n == node && *k == key)
+        .map(|(_, _, place)| *place)
 }
 
 fn cache_place(

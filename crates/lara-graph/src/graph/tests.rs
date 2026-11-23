@@ -660,6 +660,22 @@ fn add_edges_carries_directed_undirected_and_self_loops() {
 }
 
 #[test]
+fn add_edges_caches_an_undirected_hub() {
+    let backing = Backing::default();
+    let mut g = backing.create(3);
+    let specs = [
+        NewEdge::undirected(v(0), l(0), v(1), Placement::ReuseHoles, &[]),
+        NewEdge::undirected(v(0), l(0), v(2), Placement::ReuseHoles, &[]),
+        NewEdge::undirected(v(0), l(0), v(1), Placement::ReuseHoles, &[]),
+    ];
+    let halves = g.add_edges(&specs).unwrap();
+    assert_eq!(halves.len(), 3);
+    assert_eq!(g.degree(v(0), l(0), Direction::Undirected).unwrap(), 3);
+    assert_eq!(g.degree(v(1), l(0), Direction::Undirected).unwrap(), 2);
+    assert_eq!(g.degree(v(2), l(0), Direction::Undirected).unwrap(), 1);
+}
+
+#[test]
 fn add_edges_checks_all_endpoints_before_writing() {
     let backing = Backing::default();
     let mut g = backing.create(2);
