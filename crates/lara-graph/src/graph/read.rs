@@ -1,9 +1,10 @@
 //! Reads beyond a whole bucket in position order: either order, windows and chosen positions.
 
+use super::pair::key_of;
 use super::{Error, Graph, RecordLines};
 use crate::corrupt::corrupt;
 use crate::descriptor::Descriptor;
-use crate::id::{Cursor, Direction, Edge, Label, NodeId, NodeState, Order, Position};
+use crate::id::{Cursor, Direction, Edge, EdgeRef, Label, NodeId, NodeState, Order, Position};
 use crate::label_bucket::{self, Span, Window};
 use crate::label_bucket_list::{self, LabelBucketKey, LabelBucketList};
 use crate::memory::Memory;
@@ -73,6 +74,7 @@ pub struct ReadBatch<'g, M: Memory> {
     graph: &'g Graph<M>,
     records: RecordLines,
     list_page: ListPageCache,
+    last_bucket: Option<(NodeId, LabelBucketKey, Option<Descriptor>)>,
 }
 
 impl<'g, M: Memory> ReadBatch<'g, M> {
@@ -81,6 +83,7 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
             graph,
             records: RecordLines::default(),
             list_page: ListPageCache::new(),
+            last_bucket: None,
         }
     }
 
@@ -230,6 +233,54 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
             }
         }
         Ok(None)
+    }
+
+    /// Replaces `out` with the target at each half's position: `None` for a hole or a position
+    /// past the end. Consecutive halves in the same bucket reuse one descriptor.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`] for any node at or past [`Graph::node_count`].
+    pub fn edge_targets_each(
+        &mut self,
+        halves: &[EdgeRef],
+        out: &mut Vec<Option<NodeId>>,
+    ) -> Result<(), Error> {
+        let graph = self.graph;
+        for half in halves {
+            graph.check(half.node())?;
+        }
+        out.clear();
+        out.reserve(halves.len());
+        for &half in halves {
+            let node = half.node();
+            let key = key_of(half);
+            let descriptor = match self.last_bucket {
+                Some((last_node, last_key, descriptor)) if last_node == node && last_key == key => {
+                    descriptor
+                }
+                _ => {
+                    let descriptor = self.bucket(node, key);
+                    self.last_bucket = Some((node, key, descriptor));
+                    descriptor
+                }
+            };
+            let view = graph.edges.pages();
+            out.push(
+                descriptor
+                    .and_then(|descriptor| label_bucket::get(&descriptor, half.position(), &view)),
+            );
+        }
+        Ok(())
+    }
+
+    fn bucket(&mut self, v: NodeId, key: LabelBucketKey) -> Option<Descriptor> {
+        let record = record(self.graph, &mut self.records, v, Mode::Sparse);
+        let list = record.list?;
+        let lists = self.graph.label_bucket_lists.pages();
+        let stored = stored(&lists, &mut self.list_page, list, key, Mode::Sparse)?;
+        let view = self.graph.edges.pages();
+        Some(slots(&view, stored))
     }
 
     /// Replaces `out` with the state of each input node. Validates all nodes before it writes

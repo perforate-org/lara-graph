@@ -512,6 +512,55 @@ fn read_batch_shares_buffers_across_reads() {
 }
 
 #[test]
+fn batch_edge_targets_match_one_by_one() {
+    let backing = Backing::default();
+    let mut g = backing.create(10);
+    for target in 1..=8 {
+        insert(&mut g, v(0), l(0), v(target));
+    }
+    let mut edges = Vec::new();
+    g.neighbors_directed(v(0), l(0), Direction::Outgoing, &mut edges)
+        .unwrap();
+    let halves: Vec<EdgeRef> = edges
+        .iter()
+        .map(|edge| EdgeRef::new(v(0), l(0), Direction::Outgoing, edge.position()))
+        .collect();
+    let mut batch = g.read_batch();
+    let mut targets = Vec::new();
+    batch.edge_targets_each(&halves, &mut targets).unwrap();
+    let expected: Vec<Option<NodeId>> = halves
+        .iter()
+        .map(|&half| g.edge_target(half).unwrap())
+        .collect();
+    assert_eq!(targets, expected);
+    let mut untouched = vec![Some(v(1))];
+    assert_eq!(
+        batch.edge_targets_each(
+            &[EdgeRef::new(
+                v(99),
+                l(0),
+                Direction::Outgoing,
+                Position::new(0)
+            )],
+            &mut untouched,
+        ),
+        Err(Error::UnknownNode(v(99)))
+    );
+    assert_eq!(untouched, vec![Some(v(1))]);
+    drop(batch);
+    g.remove_edge(halves[0]).unwrap();
+    let mut batch = g.read_batch();
+    let mut after = Vec::new();
+    batch.edge_targets_each(&halves, &mut after).unwrap();
+    let expected: Vec<Option<NodeId>> = halves
+        .iter()
+        .map(|&half| g.edge_target(half).unwrap())
+        .collect();
+    assert_eq!(after, expected);
+    assert_eq!(after[0], None);
+}
+
+#[test]
 fn appending_never_fills_a_hole_in_any_bucket_form() {
     let backing = Backing::default();
     let mut g = backing.create(3);
