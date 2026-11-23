@@ -72,6 +72,19 @@ impl<M: Memory> Graph<M> {
             direction: opposite(half.direction()),
         };
         let theirs = self.present(other, key);
+        Some(self.pair_with_theirs(half, own, other, key, theirs))
+    }
+
+    /// [`pair_from`] with the target and its bucket already found.
+    pub(super) fn pair_with_theirs(
+        &self,
+        half: EdgeRef,
+        own: Found,
+        other: NodeId,
+        key: LabelBucketKey,
+        theirs: Found,
+    ) -> Pair {
+        let view = self.edges.pages();
         let owner = half.node();
         // A small other bucket with one entry back answers alone; else match by rank.
         let only = (indexed(&theirs.bucket).is_none()
@@ -83,11 +96,11 @@ impl<M: Memory> Graph<M> {
             self.select_to(&theirs.bucket, owner, rank)
                 .unwrap_or_else(|| corrupt("an edge half without its counterpart"))
         });
-        Some(Pair {
+        Pair {
             own,
             other: EdgeRef::new(other, key.label, key.direction, at),
             theirs,
-        })
+        }
     }
 
     /// Tombstones the live half at `at` in `found` and takes it out of the target index. Writes

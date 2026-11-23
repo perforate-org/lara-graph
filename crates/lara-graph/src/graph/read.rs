@@ -1,6 +1,6 @@
 //! Reads beyond a whole bucket in position order: either order, windows and chosen positions.
 
-use super::pair::{Found, key_of};
+use super::pair::{Found, key_of, opposite};
 use super::{Error, Graph, RecordLines};
 use crate::corrupt::corrupt;
 use crate::descriptor::Descriptor;
@@ -100,6 +100,7 @@ pub struct ReadBatch<'g, M: Memory> {
     list_page: ListPageCache,
     last_bucket: Option<(NodeId, LabelBucketKey, Option<Descriptor>)>,
     last_found: Option<(NodeId, LabelBucketKey, Option<Found>)>,
+    last_theirs: Option<(NodeId, LabelBucketKey, Found)>,
 }
 
 impl<'g, M: Memory> ReadBatch<'g, M> {
@@ -110,6 +111,7 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
             list_page: ListPageCache::new(),
             last_bucket: None,
             last_found: None,
+            last_theirs: None,
         }
     }
 
@@ -340,7 +342,28 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
                 out.push(None);
                 continue;
             };
-            out.push(graph.pair_from(half, own).map(|pair| pair.other));
+            let view = graph.edges.pages();
+            let Some(other) = label_bucket::get(&own.bucket.slots, half.position(), &view) else {
+                out.push(None);
+                continue;
+            };
+            let key = LabelBucketKey {
+                label: half.label(),
+                direction: opposite(half.direction()),
+            };
+            let theirs = match self.last_theirs {
+                Some((last_node, last_key, theirs)) if last_node == other && last_key == key => {
+                    theirs
+                }
+                _ => {
+                    let theirs = graph.present(other, key);
+                    self.last_theirs = Some((other, key, theirs));
+                    theirs
+                }
+            };
+            out.push(Some(
+                graph.pair_with_theirs(half, own, other, key, theirs).other,
+            ));
         }
         Ok(())
     }

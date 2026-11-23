@@ -714,3 +714,50 @@ fn counterpart_1024_batched() -> BenchResult {
         black_box(live)
     })
 }
+
+/// A hub with `n` parallel edges to one target.
+fn seed_parallel<M: Memory>(g: &mut Graph<M>, n: u32) -> (NodeId, Vec<EdgeRef>) {
+    let hub = node(g);
+    let target = node(g);
+    for _ in 0..n {
+        black_box(directed(g, hub, target));
+    }
+    let halves = (0..n)
+        .map(|i| EdgeRef::new(hub, LABEL, Direction::Outgoing, Position::new(i)))
+        .collect();
+    (hub, halves)
+}
+
+/// 1024 counterparts of parallel edges, one call each.
+#[bench(raw)]
+fn counterpart_parallel_1024_loop() -> BenchResult {
+    let mut g = heap_graph();
+    let (_, halves) = seed_parallel(&mut g, 1024);
+    bench_fn(|| {
+        let mut live = 0u64;
+        for &half in &halves {
+            live += u64::from(
+                g.counterpart(half)
+                    .unwrap_or_else(|err| panic!("counterpart: {err}"))
+                    .is_some(),
+            );
+        }
+        black_box(live)
+    })
+}
+
+/// The same 1024 counterparts through one `ReadBatch`, reusing both buckets.
+#[bench(raw)]
+fn counterpart_parallel_1024_batched() -> BenchResult {
+    let mut g = heap_graph();
+    let (_, halves) = seed_parallel(&mut g, 1024);
+    bench_fn(|| {
+        let mut batch = g.read_batch();
+        let mut out = Vec::new();
+        batch
+            .counterparts_each(&halves, &mut out)
+            .unwrap_or_else(|err| panic!("counterpart batch: {err}"));
+        let live: u64 = out.iter().map(|other| u64::from(other.is_some())).sum();
+        black_box(live)
+    })
+}
