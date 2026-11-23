@@ -37,13 +37,19 @@ impl Coded {
     /// Codes sorted postings (at most [`SEGMENT_MAX`]): each target gap after the first in
     /// Rice(`k`), each count in `c` bits, each block in `w` bits.
     fn encode(postings: &[Posting]) -> Self {
-        let Some(first) = postings.first().map(Posting::key) else {
-            corrupt("an empty index segment")
-        };
         let max_block = postings.iter().map(|p| p.block).max().unwrap_or(0);
         let w = (32 - max_block.leading_zeros()).max(1);
         let k = best_k(postings);
         let c = count_bits(postings.iter().map(|p| p.count).max().unwrap_or(1));
+        Self::code(postings, (k, w, c))
+    }
+
+    /// Codes sorted postings with the parameters given; each count and block must fit its width.
+    #[inline]
+    fn code(postings: &[Posting], (k, w, c): (u32, u32, u32)) -> Self {
+        let Some(first) = postings.first().map(Posting::key) else {
+            corrupt("an empty index segment")
+        };
         let mut out = Writer::with_capacity(postings.len() * 4);
         let mut previous = first.0;
         for (i, p) in postings.iter().enumerate() {
@@ -260,10 +266,70 @@ impl Entry {
         self.scan(&self.padded(read), |p, _| f(p));
     }
 
+    /// Raises the count of the posting at `key` by one, adding the posting when it is missing,
+    /// re-coded with the segment's own parameters in its own slot. `None` when that does not fit:
+    /// a count or block past its width, a full segment, a slot too small, or a new first
+    /// posting (the table and the parent list the old one).
+    pub(super) fn raise(&self, read: Read<'_>, key: (u32, u32)) -> Option<Patched> {
+        let old = self.padded(read);
+        let mut postings = Vec::with_capacity(self.n + 1);
+        self.scan(&old, |p, _| {
+            postings.push(p);
+            false
+        });
+        let count = match postings.binary_search_by_key(&key, Posting::key) {
+            Ok(i) => {
+                let p = postings.get_mut(i)?;
+                p.count = p.count.checked_add(1)?;
+                p.count
+            }
+            Err(0) => return None,
+            Err(_) if postings.len() >= SEGMENT_MAX => return None,
+            Err(i) => {
+                let (target, block) = key;
+                postings.insert(
+                    i,
+                    Posting {
+                        target,
+                        block,
+                        count: 1,
+                    },
+                );
+                1
+            }
+        };
+        if count_bits(count) > self.c || count_bits(key.1) > self.w {
+            return None;
+        }
+        let code = Coded::code(&postings, (self.k, self.w, self.c)).bytes;
+        if code.len() > self.cap {
+            return None;
+        }
+        // The code up to the changed posting is the same: write from the first byte that differs.
+        let same = old
+            .iter()
+            .take(self.len)
+            .zip(&code)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let entry = Self {
+            total: self.total.checked_add(1)?,
+            len: code.len(),
+            n: postings.len(),
+            ..*self
+        };
+        Some(Patched {
+            changed: same..code.len(),
+            code,
+            entry,
+        })
+    }
+
     /// Lowers the counts of postings it holds by `changes` (sorted, all decrements) in place, or
     /// `None` when a change names a posting it lacks. A lower count always fits its field; one
     /// that reaches zero stays until the segment is rewritten.
-    pub(super) fn lower(&self, read: Read<'_>, changes: &[Change]) -> Option<Lowered> {
+    #[inline]
+    pub(super) fn lower(&self, read: Read<'_>, changes: &[Change]) -> Option<Patched> {
         let mut code = self.padded(read);
         let mut found: Vec<(usize, u32)> = Vec::with_capacity(changes.len());
         let mut rest = changes.iter().peekable();
@@ -287,7 +353,7 @@ impl Entry {
             high = high.max((at + usize::try_from(self.c).unwrap_or(32)).div_ceil(8));
         }
         let total = u32::try_from(total).ok()?;
-        Some(Lowered {
+        Some(Patched {
             code,
             changed: low..high,
             entry: Self { total, ..*self },
@@ -295,6 +361,7 @@ impl Entry {
     }
 
     /// The segment's postings, read from its slot.
+    #[inline]
     pub(super) fn decode(&self, read: Read<'_>) -> Vec<Posting> {
         let mut out = Vec::with_capacity(self.n + 1);
         self.walk(read, |p| {
@@ -305,9 +372,9 @@ impl Entry {
     }
 }
 
-/// A segment with counts lowered in place.
-pub(super) struct Lowered {
-    /// The slot's code with the counts rewritten.
+/// A segment rewritten in its own slot.
+pub(super) struct Patched {
+    /// The slot's new code.
     code: Vec<u8>,
     /// The bytes of the code that changed.
     changed: Range<usize>,
@@ -315,7 +382,7 @@ pub(super) struct Lowered {
     pub(super) entry: Entry,
 }
 
-impl Lowered {
+impl Patched {
     /// The changed bytes of the code, and where in the leaf they go.
     pub(super) fn changed(&self) -> (usize, &[u8]) {
         (

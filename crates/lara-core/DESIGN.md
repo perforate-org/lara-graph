@@ -84,8 +84,11 @@ never needs compaction, so nothing keyed by position is ever re-keyed.
   bucket is absent, or tiny without an edge back, there is none and the index is not read.
 - The page index then leads straight to the first page with a hole after it, and the page's entry
   names its first hole.
-- A fill costs ~40-45K instructions on a 65536-edge hub, against ~12K for an append. Most of it is
-  the target index's new posting: its segment is decoded and coded again.
+- A fill costs ~33-38K instructions on a 65536-edge hub, against ~12K for an append.
+- About half of that is the target index's +1. It goes in place (`targets::raise`): the posting's
+  segment is decoded and coded again with its own parameters in its own slot, and only the bytes
+  from the change on are written. A segment that cannot take it (a count or block past its width,
+  a full segment or slot, a new first key) goes through a plan instead.
 
 The descriptor size is set by memory: on sparse graphs per-vertex descriptors dominate, and 16
 bytes with 3 inline slots used 8-17% less memory than 24 bytes with 5
@@ -283,9 +286,8 @@ postings are usually reached in one descent, by walking the leaf where they star
 
 ## Not yet
 
-- A cheaper index change for a filled hole: a new posting re-codes its whole segment (~25K
-  instructions). Bumping an existing posting's count in place, and appending a posting past a
-  segment's last key, would avoid it.
+- A filled hole's index change still decodes its whole segment and codes it again (~10K
+  instructions). Coding only from the changed posting on would roughly halve the coding part.
 - Reclaiming zero-count postings and index pages of hubs whose edges were mostly removed,
   short of demotion.
 - Detaching many vertices at once with one pass over each shared hub.

@@ -13,7 +13,7 @@ use crate::descriptor::Descriptor;
 use crate::id::{Placement, Position, VertexId};
 use crate::memory::Memory;
 use crate::stored::{Bucket, Index};
-use crate::targets::{self, BLOCK, Change, Nth, Root};
+use crate::targets::{self, BLOCK, Change, InPlace, Nth, Root};
 use alloc::vec::Vec;
 
 /// What an insert knows of the edges already between a half's two ends.
@@ -86,7 +86,15 @@ impl<M: Memory> Graph<M> {
                     .unwrap_or_else(|| corrupt("a completed block without its planned batch"));
                 Index::of(reserved(targets::commit(&mut self.edges, *b.plan)))
             }
-            Some(_) if at.index() < end => self.index_apply(root, &[change(target, at, 1)]),
+            // A filled hole: in place when its posting's segment can take it.
+            Some(_) if at.index() < end => match root {
+                Some(root)
+                    if targets::raise(&self.edges, root, key(target, at)) == InPlace::Done =>
+                {
+                    bucket.index
+                }
+                Some(_) | None => self.index_apply(root, &[change(target, at, 1)]),
+            },
             Some(_) => bucket.index,
         };
         Bucket { index, ..bucket }

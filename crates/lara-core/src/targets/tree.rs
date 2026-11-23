@@ -73,21 +73,57 @@ pub(crate) fn apply_reserved<M: Memory>(
 /// Lowers the count of the posting at `key` by one, in place: no page moves and none is
 /// allocated. A count that reaches zero stays until its segment is next rewritten.
 pub(crate) fn lower<M: Memory>(store: &PageStore<M>, root: Root, key: (u32, u32)) {
-    lower_under(store, (root.page, root.depth), key);
+    let lowered = nudge(store, (root.page, root.depth), key, -1, leaf::lowered);
+    if lowered == InPlace::Unfit {
+        corrupt("an index decrement without its posting");
+    }
 }
 
-fn lower_under<M: Memory>(store: &PageStore<M>, (page, level): (PageId, u8), key: (u32, u32)) {
+/// Raises the count of the posting at `key` by one, adding it when missing, in place when its
+/// segment can take it in its own slot with its own coding parameters. Otherwise nothing is
+/// written: the change goes through a [`plan`].
+pub(crate) fn raise<M: Memory>(store: &PageStore<M>, root: Root, key: (u32, u32)) -> InPlace {
+    nudge(store, (root.page, root.depth), key, 1, leaf::raised)
+}
+
+/// Whether a change was written in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InPlace {
+    Done,
+    /// Nothing was written.
+    Unfit,
+}
+
+/// Changes the count at `key` under `page` by `delta` in place: the leaf's patch, then each
+/// parent's count on the way back up. Writes nothing when the leaf gives no patch.
+fn nudge<M: Memory>(
+    store: &PageStore<M>,
+    (page, level): (PageId, u8),
+    key: (u32, u32),
+    delta: i64,
+    patch: impl Fn(leaf::Read<'_>, (u32, u32)) -> Option<leaf::Patch> + Copy,
+) -> InPlace {
     let view = store.pages();
     if level == 0 {
         let read = |offset, buf: &mut [u8]| read_into(&view, page, offset, buf);
-        leaf::lowered(&read, key)
-            .unwrap_or_else(|| corrupt("an index decrement without its posting"))
-            .write(|offset, bytes| store.write(at(page, offset), bytes));
-        return;
+        let Some(patch) = patch(&read, key) else {
+            return InPlace::Unfit;
+        };
+        patch.write(|offset, bytes| store.write(at(page, offset), bytes));
+        return InPlace::Done;
     }
     let i = child_of(&view, page, node_len(&view, page), key);
-    lower_under(store, (page_at(&view, page, i), level - 1), key);
-    write_child(store, page, i, shifted(count_at(&view, page, i), -1));
+    let done = nudge(
+        store,
+        (page_at(&view, page, i), level - 1),
+        key,
+        delta,
+        patch,
+    );
+    if done == InPlace::Done {
+        write_child(store, page, i, shifted(count_at(&view, page, i), delta));
+    }
+    done
 }
 
 /// What `changes` would do to the tree, read but not written: [`Plan::pages`] tells what to

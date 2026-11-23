@@ -22,7 +22,7 @@ use super::tree::Change;
 use crate::corrupt::corrupt;
 use alloc::vec::Vec;
 use core::ops::Range;
-use segment::{Entry, Lowered, merge, rebuild};
+use segment::{Entry, Patched, merge, rebuild};
 use write::{Split, Touched, gather, in_place, pack};
 
 pub(super) const LEAF_BYTES: usize = 4096;
@@ -288,19 +288,19 @@ pub(super) fn update(old: Option<Read<'_>>, changes: &[Change]) -> Update {
         .unwrap_or_else(|| Update::Replace(pack(&gather(&leaf, touched), split)))
 }
 
-/// Decrements written over one segment in place.
+/// A change written over one segment in its own slot.
 pub(super) struct Patch {
     index: usize,
-    lowered: Lowered,
+    patched: Patched,
 }
 
 impl Patch {
-    /// Calls `write` with each `(offset, bytes)` the patch writes: the changed count bits, and
-    /// the segment's table entry with its new total.
+    /// Calls `write` with each `(offset, bytes)` the patch writes: the changed code bytes, and
+    /// the segment's table entry.
     pub(super) fn write(&self, mut write: impl FnMut(usize, &[u8])) {
-        let (offset, bytes) = self.lowered.changed();
+        let (offset, bytes) = self.patched.changed();
         write(offset, bytes);
-        write(table_end(self.index), &self.lowered.entry.to_bytes());
+        write(table_end(self.index), &self.patched.entry.to_bytes());
     }
 }
 
@@ -311,9 +311,19 @@ pub(super) fn lowered(read: Read<'_>, key: (u32, u32)) -> Option<Patch> {
     patch(&leaf, leaf.segment_of(key), &[Change { key, delta: -1 }])
 }
 
+/// The patch that raises the count of the posting at `key` by one in its segment's slot (adding
+/// the posting), or `None` when it does not fit there.
+pub(super) fn raised(read: Read<'_>, key: (u32, u32)) -> Option<Patch> {
+    let leaf = Leaf::open(read);
+    let index = leaf.segment_of(key);
+    let patched = leaf.entry(index)?.raise(read, key)?;
+    Some(Patch { index, patched })
+}
+
+#[inline]
 fn patch(leaf: &Leaf<'_>, index: usize, changes: &[Change]) -> Option<Patch> {
-    let lowered = leaf.entry(index)?.lower(leaf.read, changes)?;
-    Some(Patch { index, lowered })
+    let patched = leaf.entry(index)?.lower(leaf.read, changes)?;
+    Some(Patch { index, patched })
 }
 
 /// The writes that apply every group's decrements by lowering counts in place, or `None` when one

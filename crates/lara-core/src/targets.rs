@@ -19,7 +19,8 @@ mod tree;
 #[cfg(any(test, feature = "bench-internals"))]
 pub(crate) use tree::extents;
 pub(crate) use tree::{
-    Change, Nth, Plan, Root, apply_reserved, commit, last_block, lower, nth, plan, rank, release,
+    Change, InPlace, Nth, Plan, Root, apply_reserved, commit, last_block, lower, nth, plan, raise,
+    rank, release,
 };
 #[cfg(test)]
 pub(crate) use tree::{count_before, postings, select};
