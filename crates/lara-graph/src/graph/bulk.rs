@@ -233,24 +233,24 @@ impl<M: Memory> Graph<M> {
         let label = halves[0].key.label;
         let width = self.widths.get(label);
         let count = u32::try_from(halves.len()).map_err(|_| Error::AddressSpaceExhausted)?;
-        let slots: Vec<Slot> = halves.iter().map(|half| Slot::Live(half.target)).collect();
         let tiny_slots = u32::try_from(TINY_SLOTS).unwrap_or(3);
-        let mut bucket = if width.is_none() && count <= tiny_slots {
+        if width.is_none() && count <= tiny_slots {
             let mut tiny = Tiny::EMPTY;
-            for slot in &slots {
-                tiny = tiny.push(*slot);
+            for half in halves {
+                tiny = tiny.push(Slot::Live(half.target));
             }
-            LabelBucket::plain(Descriptor::Tiny(tiny))
-        } else if count <= PAGE_SLOTS {
+            return Ok(LabelBucket::plain(Descriptor::Tiny(tiny)).stored());
+        }
+        let mut bucket = if count <= PAGE_SLOTS {
             let extent = self.edges.allocate(label_bucket::run_class(count))?;
-            write_slots(&self.edges, extent.offset(), &slots);
+            write_halves(&self.edges, extent.offset(), halves);
             LabelBucket::plain(Descriptor::Run(Run {
                 extent,
                 stored: label_bucket::narrow(count),
                 live: label_bucket::narrow(count),
             }))
         } else {
-            let paged = self.build_paged(&slots)?;
+            let paged = self.build_paged(halves)?;
             LabelBucket::plain(Descriptor::Paged(paged))
         };
         if let Some(width) = width {
@@ -294,17 +294,17 @@ impl<M: Memory> Graph<M> {
         clippy::indexing_slicing,
         reason = "page ranges come from the slot count"
     )]
-    fn build_paged(&mut self, slots: &[Slot]) -> Result<Paged, Error> {
-        let count = u32::try_from(slots.len()).map_err(|_| Error::AddressSpaceExhausted)?;
+    fn build_paged(&mut self, halves: &[Half<'_>]) -> Result<Paged, Error> {
+        let count = u32::try_from(halves.len()).map_err(|_| Error::AddressSpaceExhausted)?;
         let page_slots = usize::try_from(PAGE_SLOTS).unwrap_or(1024);
         let first = self.edges.allocate(ByteClass::PAGE)?.page();
         let (mut index, second) =
             paged::start(&mut self.edges, Leaf::data(first, 0, paged::NO_HOLE))?;
-        write_slots(&self.edges, first.offset(), &slots[..page_slots]);
-        write_slots(
+        write_halves(&self.edges, first.offset(), &halves[..page_slots]);
+        write_halves(
             &self.edges,
             second.offset(),
-            &slots
+            &halves
                 [page_slots..usize::try_from(count.min(2 * PAGE_SLOTS)).unwrap_or(2 * page_slots)],
         );
         let page_count = paged::data_pages(count);
@@ -316,10 +316,10 @@ impl<M: Memory> Graph<M> {
                 live: before,
             };
             let (next, data) = paged::append_page(&mut self.edges, &paged)?;
-            write_slots(
+            write_halves(
                 &self.edges,
                 data.offset(),
-                &slots[usize::try_from(before).unwrap_or(0)
+                &halves[usize::try_from(before).unwrap_or(0)
                     ..usize::try_from(count.min(before + PAGE_SLOTS)).unwrap_or(0)],
             );
             index = next;
@@ -332,10 +332,15 @@ impl<M: Memory> Graph<M> {
     }
 }
 
-fn write_slots<M: Memory>(store: &PageStore<M>, at: ByteOffset, slots: &[Slot]) {
-    let mut bytes = alloc::vec![0u8; slots.len() * 4];
-    for (dst, slot) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(slots) {
-        *dst = slot.encode();
+#[expect(
+    clippy::indexing_slicing,
+    reason = "one page of slots bounds the slice"
+)]
+fn write_halves<M: Memory>(store: &PageStore<M>, at: ByteOffset, halves: &[Half<'_>]) {
+    let mut bytes = [0u8; 4096];
+    let len = halves.len() * 4;
+    for (dst, half) in bytes[..len].as_chunks_mut::<4>().0.iter_mut().zip(halves) {
+        *dst = Slot::Live(half.target).encode();
     }
-    store.write(at, &bytes);
+    store.write(at, &bytes[..len]);
 }
