@@ -20,14 +20,12 @@ use alloc::vec::Vec;
 const RECORDS_PER_LINE_USIZE: usize = 8;
 
 /// One half of an input edge before positions are assigned.
-struct Half<'a> {
+struct Half {
     node: NodeId,
     key: LabelBucketKey,
     target: NodeId,
-    value: &'a [u8],
-    edge: usize,
+    edge: u32,
     slot: u8,
-    position: Position,
 }
 
 impl<M: Memory> Graph<M> {
@@ -69,8 +67,8 @@ impl<M: Memory> Graph<M> {
             return Ok(Vec::new());
         }
 
-        let mut positions = alloc::vec![[None; 2]; edges.len()];
-        let mut halves: Vec<Half<'_>> = Vec::with_capacity(edges.len() * 2);
+        let mut positions = alloc::vec![[u32::MAX; 2]; edges.len()];
+        let mut halves: Vec<Half> = Vec::with_capacity(edges.len() * 2);
         for (edge_index, edge) in edges.iter().enumerate() {
             match edge.kind() {
                 EdgeKind::Directed => {
@@ -81,10 +79,8 @@ impl<M: Memory> Graph<M> {
                             direction: Direction::Outgoing,
                         },
                         target: edge.to(),
-                        value: edge.value(),
-                        edge: edge_index,
+                        edge: u32::try_from(edge_index).unwrap_or(u32::MAX),
                         slot: 0,
-                        position: Position::new(0),
                     };
                     let into = Half {
                         node: edge.to(),
@@ -93,10 +89,8 @@ impl<M: Memory> Graph<M> {
                             direction: Direction::Incoming,
                         },
                         target: edge.from(),
-                        value: edge.value(),
-                        edge: edge_index,
+                        edge: u32::try_from(edge_index).unwrap_or(u32::MAX),
                         slot: 1,
-                        position: Position::new(0),
                     };
                     halves.push(out);
                     halves.push(into);
@@ -110,10 +104,8 @@ impl<M: Memory> Graph<M> {
                             direction: Direction::Undirected,
                         },
                         target: low,
-                        value: edge.value(),
-                        edge: edge_index,
+                        edge: u32::try_from(edge_index).unwrap_or(u32::MAX),
                         slot: 0,
-                        position: Position::new(0),
                     };
                     if low == high {
                         halves.push(high_half);
@@ -125,10 +117,8 @@ impl<M: Memory> Graph<M> {
                                 direction: Direction::Undirected,
                             },
                             target: high,
-                            value: edge.value(),
-                            edge: edge_index,
+                            edge: u32::try_from(edge_index).unwrap_or(u32::MAX),
                             slot: 1,
-                            position: Position::new(0),
                         };
                         halves.push(high_half);
                         halves.push(low_half);
@@ -148,15 +138,14 @@ impl<M: Memory> Graph<M> {
                 end += 1;
             }
             for (offset, half) in halves[start..end].iter_mut().enumerate() {
-                let position = Position::new(u32::try_from(offset).unwrap_or(u32::MAX));
-                half.position = position;
-                positions[half.edge][usize::from(half.slot)] = Some(position);
+                let at = u32::try_from(offset).unwrap_or(u32::MAX);
+                positions[usize::try_from(half.edge).unwrap_or(0)][usize::from(half.slot)] = at;
             }
             start = end;
         }
 
         let mut records = alloc::vec![[0u8; 8]; usize::try_from(self.node_count()).unwrap_or(0)];
-        let mut singles: Vec<(NodeId, LabelBucketKey, Stored)> = Vec::new();
+        let mut singles: Vec<(NodeId, LabelBucketKey, Stored)> = Vec::with_capacity(1024);
         let mut start = 0;
         while start < halves.len() {
             let node = halves[start].node;
@@ -174,8 +163,11 @@ impl<M: Memory> Graph<M> {
                 groups += 1;
             }
             if groups == 1 {
-                let stored = self.build_bucket(&halves[start..node_end])?;
+                let stored = self.build_bucket(&halves[start..node_end], edges)?;
                 singles.push((node, halves[start].key, stored));
+                if singles.len() == 1024 {
+                    flush_singles(&mut self.label_bucket_lists, &mut singles, &mut records)?;
+                }
             } else {
                 let mut list: Option<label_bucket_list::LabelBucketList> = None;
                 cursor = start;
@@ -185,7 +177,7 @@ impl<M: Memory> Graph<M> {
                     while end < node_end && halves[end].key == key {
                         end += 1;
                     }
-                    let stored = self.build_bucket(&halves[cursor..end])?;
+                    let stored = self.build_bucket(&halves[cursor..end], edges)?;
                     let pages = self.label_bucket_lists.pages();
                     let gap = match label_bucket_list::lookup(&pages, list, key) {
                         Lookup::Present { .. } => return Err(Error::TooManyLabelBuckets(node)),
@@ -215,22 +207,7 @@ impl<M: Memory> Graph<M> {
             }
             start = node_end;
         }
-        for chunk in singles.chunks(1024) {
-            let entries: Vec<(LabelBucketKey, Stored)> = chunk
-                .iter()
-                .map(|&(_, key, stored)| (key, stored))
-                .collect();
-            let built = label_bucket_list::one_batch(&mut self.label_bucket_lists, &entries)?;
-            for (&(node, _, _), list) in chunk.iter().zip(built) {
-                if let Some(record) = records.get_mut(usize::try_from(node.index()).unwrap_or(0)) {
-                    *record = Record {
-                        list: Some(list),
-                        ..Record::NEW
-                    }
-                    .encode();
-                }
-            }
-        }
+        flush_singles(&mut self.label_bucket_lists, &mut singles, &mut records)?;
 
         for base in (0..records.len()).step_by(RECORDS_PER_LINE_USIZE) {
             let end = (base + RECORDS_PER_LINE_USIZE).min(records.len());
@@ -253,10 +230,16 @@ impl<M: Memory> Graph<M> {
 
         let mut out = Vec::with_capacity(edges.len());
         for (edge_index, edge) in edges.iter().enumerate() {
-            let first = positions[edge_index][0]
-                .unwrap_or_else(|| corrupt("a bulk edge without its canonical half"));
-            let second = positions[edge_index][1]
-                .unwrap_or_else(|| corrupt("a bulk edge without its other half"));
+            let first = if positions[edge_index][0] == u32::MAX {
+                corrupt("a bulk edge without its canonical half")
+            } else {
+                Position::new(positions[edge_index][0])
+            };
+            let second = if positions[edge_index][1] == u32::MAX {
+                corrupt("a bulk edge without its other half")
+            } else {
+                Position::new(positions[edge_index][1])
+            };
             let (which, other) = match edge.kind() {
                 EdgeKind::Directed => (
                     EdgeRef::new(edge.from(), edge.label(), Direction::Outgoing, first),
@@ -276,7 +259,11 @@ impl<M: Memory> Graph<M> {
     }
 
     #[expect(clippy::indexing_slicing, reason = "the group is non-empty")]
-    fn build_bucket(&mut self, halves: &[Half<'_>]) -> Result<Stored, Error> {
+    fn build_bucket(
+        &mut self,
+        halves: &[Half],
+        edges: &[super::NewEdge<'_>],
+    ) -> Result<Stored, Error> {
         let label = halves[0].key.label;
         let width = self.widths.get(label);
         let count = u32::try_from(halves.len()).map_err(|_| Error::AddressSpaceExhausted)?;
@@ -308,7 +295,7 @@ impl<M: Memory> Graph<M> {
                     plane,
                     width,
                     u32::try_from(position).map_err(|_| Error::AddressSpaceExhausted)?,
-                    half.value,
+                    edges[usize::try_from(half.edge).unwrap_or(0)].value(),
                 )?;
             }
             bucket.values = Some(Values { plane, width });
@@ -341,7 +328,7 @@ impl<M: Memory> Graph<M> {
         clippy::indexing_slicing,
         reason = "page ranges come from the slot count"
     )]
-    fn build_paged(&mut self, halves: &[Half<'_>]) -> Result<Paged, Error> {
+    fn build_paged(&mut self, halves: &[Half]) -> Result<Paged, Error> {
         let count = u32::try_from(halves.len()).map_err(|_| Error::AddressSpaceExhausted)?;
         let page_slots = usize::try_from(PAGE_SLOTS).unwrap_or(1024);
         let first = self.edges.allocate(ByteClass::PAGE)?.page();
@@ -379,11 +366,37 @@ impl<M: Memory> Graph<M> {
     }
 }
 
+fn flush_singles<M: Memory>(
+    store: &mut PageStore<M>,
+    singles: &mut Vec<(NodeId, LabelBucketKey, Stored)>,
+    records: &mut [[u8; 8]],
+) -> Result<(), Error> {
+    if singles.is_empty() {
+        return Ok(());
+    }
+    let entries: Vec<(LabelBucketKey, Stored)> = singles
+        .iter()
+        .map(|&(_, key, stored)| (key, stored))
+        .collect();
+    let built = label_bucket_list::one_batch(store, &entries)?;
+    for (&(node, _, _), list) in singles.iter().zip(built) {
+        if let Some(record) = records.get_mut(usize::try_from(node.index()).unwrap_or(0)) {
+            *record = Record {
+                list: Some(list),
+                ..Record::NEW
+            }
+            .encode();
+        }
+    }
+    singles.clear();
+    Ok(())
+}
+
 #[expect(
     clippy::indexing_slicing,
     reason = "one page of slots bounds the slice"
 )]
-fn write_halves<M: Memory>(store: &PageStore<M>, at: ByteOffset, halves: &[Half<'_>]) {
+fn write_halves<M: Memory>(store: &PageStore<M>, at: ByteOffset, halves: &[Half]) {
     let mut bytes = [0u8; 4096];
     let len = halves.len() * 4;
     for (dst, half) in bytes[..len].as_chunks_mut::<4>().0.iter_mut().zip(halves) {
