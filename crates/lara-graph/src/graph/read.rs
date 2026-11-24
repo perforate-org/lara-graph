@@ -1,16 +1,18 @@
 //! Reads beyond a whole bucket in position order: either order, windows and chosen positions.
 
 use super::pair::{Found, key_of, opposite};
+use super::props::Join;
 use super::{Error, Graph, RecordLines};
 use crate::corrupt::corrupt;
-use crate::descriptor::Descriptor;
+use crate::descriptor::{Descriptor, PAGE_SLOTS};
 use crate::id::{Cursor, Direction, Edge, EdgeRef, Label, NodeId, NodeState, Order, Position};
 use crate::label_bucket::{self, Span, Window};
 use crate::label_bucket_list::{self, LabelBucketKey, LabelBucketList};
 use crate::memory::Memory;
 use crate::node::Record;
 use crate::page_store::{Extent, PAGE_BYTES, Pages};
-use crate::stored::Stored;
+use crate::stored::{LabelBucket, Stored};
+use crate::values;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
@@ -156,6 +158,71 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
             &mut self.list_page,
             f,
         )
+    }
+
+    /// Calls `f` with `(node, edge, value)` for every live edge of each node's bucket, in
+    /// `nodes` order and `order` within each bucket, until `f` breaks.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`] for any node at or past [`Graph::node_count`].
+    pub fn visit_neighbors_with_values_each<B>(
+        &mut self,
+        nodes: &[NodeId],
+        label: Label,
+        direction: Direction,
+        order: Order,
+        mut f: impl FnMut(NodeId, Edge, &[u8]) -> ControlFlow<B>,
+    ) -> Result<Option<B>, Error> {
+        let graph = self.graph;
+        for &v in nodes {
+            graph.check(v)?;
+        }
+        let key = LabelBucketKey { label, direction };
+        let mode = mode(nodes);
+        let records = &mut self.records;
+        let list_page = &mut self.list_page;
+        for &v in nodes {
+            let record = record(graph, records, v, mode);
+            let Some(list) = record.list else { continue };
+            let Some(stored) = stored(
+                &graph.label_bucket_lists.pages(),
+                list_page,
+                list,
+                key,
+                mode,
+            ) else {
+                continue;
+            };
+            let view = graph.edges.pages();
+            let bucket = LabelBucket::resolve(&view, stored);
+            let slots = bucket.slots;
+            let width = graph.widths.get(label);
+            let plane = bucket
+                .values
+                .map_or(values::Plane::Empty, |cells| cells.plane);
+            let mut windows: Vec<u32> = (0..slots.stored().div_ceil(PAGE_SLOTS)).collect();
+            if order == Order::Descending {
+                windows.reverse();
+            }
+            let mut join = Join {
+                view: &view,
+                slots: &slots,
+                plane,
+                width,
+                edges: Vec::new(),
+                cells: Vec::new(),
+            };
+            for k in windows {
+                let span = (k * PAGE_SLOTS, ((k + 1) * PAGE_SLOTS).min(slots.stored()));
+                if let ControlFlow::Break(done) =
+                    join.window(span, order, &mut |e, value| f(v, e, value))
+                {
+                    return Ok(Some(done));
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Replaces `out` with the live-edge counts of each node's `(label, direction)` bucket, one

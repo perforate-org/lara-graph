@@ -474,7 +474,90 @@ fn hub_visit_with_values_1024() -> BenchResult {
     })
 }
 
-/// Overwriting one edge's value in both halves, in a 4096-edge hub.
+/// 1024 sources, each with one valued out-edge, one node at a time.
+#[bench(raw)]
+fn visit_with_values_many_1024_loop() -> BenchResult {
+    let mut g = heap_graph();
+    g.declare_width(LABEL, Width::new(8).unwrap_or_else(|| panic!("width")))
+        .unwrap_or_else(|e| panic!("width: {e}"));
+    let sources: Vec<NodeId> = (0..1024)
+        .map(|i| {
+            let source = node(&mut g);
+            let target = node(&mut g);
+            let value = [u8::try_from(i % 251).unwrap_or_else(|_| panic!("byte")); 8];
+            g.add_edge(
+                EdgeKind::Directed,
+                source,
+                LABEL,
+                target,
+                Placement::Append,
+                &value,
+            )
+            .unwrap_or_else(|e| panic!("insert: {e}"));
+            source
+        })
+        .collect();
+    bench_fn(|| {
+        let mut count = 0u32;
+        for &source in &sources {
+            g.visit_neighbors_with_values(
+                source,
+                (LABEL, Direction::Outgoing),
+                Order::Ascending,
+                |_, _| {
+                    count += 1;
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .unwrap_or_else(|e| panic!("visit: {e}"));
+        }
+        black_box(count)
+    })
+}
+
+/// The same 1024 sources through one `ReadBatch`.
+#[bench(raw)]
+fn visit_with_values_many_1024_batched() -> BenchResult {
+    let mut g = heap_graph();
+    g.declare_width(LABEL, Width::new(8).unwrap_or_else(|| panic!("width")))
+        .unwrap_or_else(|e| panic!("width: {e}"));
+    let sources: Vec<NodeId> = (0..1024)
+        .map(|i| {
+            let source = node(&mut g);
+            let target = node(&mut g);
+            let value = [u8::try_from(i % 251).unwrap_or_else(|_| panic!("byte")); 8];
+            g.add_edge(
+                EdgeKind::Directed,
+                source,
+                LABEL,
+                target,
+                Placement::Append,
+                &value,
+            )
+            .unwrap_or_else(|e| panic!("insert: {e}"));
+            source
+        })
+        .collect();
+    bench_fn(|| {
+        let mut batch = g.read_batch();
+        let mut count = 0u32;
+        batch
+            .visit_neighbors_with_values_each(
+                &sources,
+                LABEL,
+                Direction::Outgoing,
+                Order::Ascending,
+                |_, _, _| {
+                    count += 1;
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .unwrap_or_else(|e| panic!("batch: {e}"));
+        black_box(count)
+    })
+}
+
+/// Overwriting one edge's value in both halves, in a 4096-edge hub./// Overwriting one edge's value in both halves, in a 4096-edge hub.
 #[bench(raw)]
 fn set_value_4096() -> BenchResult {
     let mut g = heap_graph();

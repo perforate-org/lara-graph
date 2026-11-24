@@ -271,3 +271,41 @@ fn batch_edge_values_match_the_single_reads() {
     assert_eq!(values, expected);
     assert!(values[2].is_none());
 }
+
+#[test]
+fn batch_value_visits_match_the_single_visits() {
+    let backing = Backing::default();
+    let mut g = backing.create(2);
+    g.declare_width(l(0), w(4)).unwrap();
+    let halves = valued_edges(&mut g, l(0), 6, 4);
+    g.remove_edge(halves[2]).unwrap();
+    let nodes = [v(0), v(0)];
+    let mut single = Vec::new();
+    for _ in &nodes {
+        g.visit_neighbors_with_values(
+            v(0),
+            (l(0), Direction::Outgoing),
+            Order::Descending,
+            |edge, value| {
+                single.push((edge.position(), value.to_vec()));
+                ControlFlow::<()>::Continue(())
+            },
+        )
+        .unwrap();
+    }
+    let mut batch = Vec::new();
+    let mut reader = g.read_batch();
+    reader
+        .visit_neighbors_with_values_each(
+            &nodes,
+            l(0),
+            Direction::Outgoing,
+            Order::Descending,
+            |_, edge, value| {
+                batch.push((edge.position(), value.to_vec()));
+                ControlFlow::<()>::Continue(())
+            },
+        )
+        .unwrap();
+    assert_eq!(batch, single);
+}

@@ -246,18 +246,18 @@ impl<M: Memory> Graph<M> {
 }
 
 /// A combined scan's state: a window's live edges, then its values in one read.
-struct Join<'a, 'v, M: Memory> {
-    view: &'a Pages<'v, M>,
-    slots: &'a Descriptor,
-    plane: values::Plane,
-    width: Option<Width>,
-    edges: Vec<Edge>,
-    cells: Vec<u8>,
+pub(super) struct Join<'a, 'v, M: Memory> {
+    pub(super) view: &'a Pages<'v, M>,
+    pub(super) slots: &'a Descriptor,
+    pub(super) plane: values::Plane,
+    pub(super) width: Option<Width>,
+    pub(super) edges: Vec<Edge>,
+    pub(super) cells: Vec<u8>,
 }
 
 impl<M: Memory> Join<'_, '_, M> {
     /// Calls `f` with each live edge of positions `low..high` and its value.
-    fn window<B>(
+    pub(super) fn window<B>(
         &mut self,
         (low, high): (u32, u32),
         order: Order,
