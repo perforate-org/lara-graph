@@ -309,3 +309,55 @@ fn batch_value_visits_match_the_single_visits() {
         .unwrap();
     assert_eq!(batch, single);
 }
+
+#[test]
+fn set_edge_values_matches_one_by_one() {
+    let setup = || {
+        let backing = Backing::default();
+        let mut g = backing.create(2);
+        g.declare_width(l(0), w(4)).unwrap();
+        let halves = valued_edges(&mut g, l(0), 4, 4);
+        (g, halves)
+    };
+    let (mut one, halves) = setup();
+    let mut expected = Vec::new();
+    for (i, &half) in halves.iter().enumerate() {
+        let value = val(u8::try_from(i + 10).unwrap(), 4);
+        expected.push(one.set_edge_value(half, &value).unwrap());
+    }
+    let (mut batch, halves) = setup();
+    let new_values: Vec<Vec<u8>> = (0..4)
+        .map(|i| val(u8::try_from(i + 10).unwrap(), 4))
+        .collect();
+    let writes: Vec<EdgeValue<'_>> = halves
+        .iter()
+        .zip(&new_values)
+        .map(|(&half, value)| EdgeValue::new(half, value))
+        .collect();
+    let old = batch.set_edge_values(&writes).unwrap();
+    assert_eq!(old, expected);
+    for &half in &halves {
+        assert_eq!(
+            batch.edge_value(half).unwrap(),
+            one.edge_value(half).unwrap()
+        );
+    }
+}
+
+#[test]
+fn set_edge_values_checks_all_nodes_before_writing() {
+    let backing = Backing::default();
+    let mut g = backing.create(2);
+    g.declare_width(l(0), w(2)).unwrap();
+    let half = valued_edges(&mut g, l(0), 1, 2)[0];
+    g.set_edge_values(&[EdgeValue::new(half, &[9, 9])]).unwrap();
+    let writes = [
+        EdgeValue::new(half, &[8, 8]),
+        EdgeValue::new(
+            EdgeRef::new(v(9), l(0), Direction::Outgoing, Position::new(0)),
+            &[8, 8],
+        ),
+    ];
+    assert_eq!(g.set_edge_values(&writes), Err(Error::UnknownNode(v(9))));
+    assert_eq!(g.edge_value(half).unwrap().as_deref(), Some(&[9, 9][..]));
+}

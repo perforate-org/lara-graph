@@ -513,6 +513,8 @@ pub use insert::{EdgeKind, NewEdge};
 mod lifecycle;
 mod pair;
 mod props;
+
+pub use props::EdgeValue;
 mod read;
 
 pub use read::ReadBatch;

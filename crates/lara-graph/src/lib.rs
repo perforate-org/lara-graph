@@ -46,8 +46,8 @@ mod values;
 
 pub use detaching_set::DetachingSet;
 pub use graph::{
-    Compaction, Detachment, EdgeKind, Error, Graph, InitError, NewEdge, ReadBatch, Removal, Step,
-    Sweep,
+    Compaction, Detachment, EdgeKind, EdgeValue, Error, Graph, InitError, NewEdge, ReadBatch,
+    Removal, Step, Sweep,
 };
 pub use id::{
     Cursor, Direction, Edge, EdgeRef, Halves, Label, Move, NodeId, NodeState, Order, Placement,

@@ -87,6 +87,9 @@ pub const fn lara_graph::EdgeRef::label(&self) -> lara_graph::Label
 pub const fn lara_graph::EdgeRef::new(lara_graph::NodeId, lara_graph::Label, lara_graph::Direction, lara_graph::Position) -> Self
 pub const fn lara_graph::EdgeRef::node(&self) -> lara_graph::NodeId
 pub const fn lara_graph::EdgeRef::position(&self) -> lara_graph::Position
+pub struct lara_graph::EdgeValue<'a>
+impl<'a> lara_graph::EdgeValue<'a>
+pub const fn lara_graph::EdgeValue<'a>::new(lara_graph::EdgeRef, &'a [u8]) -> Self
 pub struct lara_graph::Graph<M: lara_graph::Memory>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::add_edge(&mut self, lara_graph::EdgeKind, lara_graph::NodeId, lara_graph::Label, lara_graph::NodeId, lara_graph::Placement, &[u8]) -> core::result::Result<lara_graph::Halves, lara_graph::Error>
@@ -118,6 +121,7 @@ pub fn lara_graph::Graph<M>::sweep(&mut self, lara_graph::NodeId, (lara_graph::L
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::edge_value(&self, lara_graph::EdgeRef) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, lara_graph::Error>
 pub fn lara_graph::Graph<M>::set_edge_value(&mut self, lara_graph::EdgeRef, &[u8]) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, lara_graph::Error>
+pub fn lara_graph::Graph<M>::set_edge_values(&mut self, &[lara_graph::EdgeValue<'_>]) -> core::result::Result<alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>, lara_graph::Error>
 pub fn lara_graph::Graph<M>::values_at(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), &[lara_graph::Position], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::Graph<M>::visit_neighbors_with_values<B>(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), lara_graph::Order, impl core::ops::function::FnMut(lara_graph::Edge, &[u8]) -> core::ops::control_flow::ControlFlow<B>) -> core::result::Result<core::option::Option<B>, lara_graph::Error>
 pub fn lara_graph::Graph<M>::visit_values<B>(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), lara_graph::Order, impl core::ops::function::FnMut(lara_graph::Position, &[u8]) -> core::ops::control_flow::ControlFlow<B>) -> core::result::Result<core::option::Option<B>, lara_graph::Error>

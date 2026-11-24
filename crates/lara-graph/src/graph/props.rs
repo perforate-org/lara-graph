@@ -1,6 +1,6 @@
 //! Edge values: writing, point and batch reads, values-first scans and combined scans.
 
-use super::pair::{Found, key_of};
+use super::pair::{Found, key_of, opposite};
 use super::{Error, Graph, reserved};
 use crate::descriptor::{Descriptor, PAGE_SLOTS};
 use crate::id::{Direction, Edge, EdgeRef, Label, NodeId, Order, Position, Width};
@@ -13,6 +13,21 @@ use crate::values;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
+
+/// One edge value to write in [`Graph::set_edge_values`].
+#[derive(Clone, Copy, Debug)]
+pub struct EdgeValue<'a> {
+    half: EdgeRef,
+    value: &'a [u8],
+}
+
+impl<'a> EdgeValue<'a> {
+    /// Writes `value` to the edge `half` belongs to.
+    #[must_use]
+    pub const fn new(half: EdgeRef, value: &'a [u8]) -> Self {
+        Self { half, value }
+    }
+}
 
 impl<M: Memory> Graph<M> {
     /// Replaces the value of the edge `half` belongs to, in both halves, and returns the value
@@ -63,9 +78,99 @@ impl<M: Memory> Graph<M> {
         Ok(Some(old))
     }
 
+    /// Writes each edge value in `values`, in order, and returns the old canonical value of
+    /// each edge (`None` for a hole). Each edge is all-or-none, but the batch is not atomic:
+    /// an error leaves the values before it written.
+    ///
+    /// All nodes and value lengths are checked before the first write.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::set_edge_value`], for the value that fails.
+    pub fn set_edge_values(
+        &mut self,
+        values: &[EdgeValue<'_>],
+    ) -> Result<Vec<Option<Vec<u8>>>, Error> {
+        for edge in values {
+            self.check(edge.half.node())?;
+            self.value_width(edge.half.label(), edge.value)?;
+        }
+        let mut out = Vec::with_capacity(values.len());
+        let mut own_cache: Option<(NodeId, LabelBucketKey, Option<Found>)> = None;
+        let mut theirs_cache: Option<(NodeId, LabelBucketKey, Found)> = None;
+        for edge in values {
+            let half = edge.half;
+            let node = half.node();
+            let key = key_of(half);
+            let own = match own_cache {
+                Some((last_node, last_key, found)) if last_node == node && last_key == key => found,
+                _ => {
+                    let found = self.find_label_bucket(node, key)?;
+                    own_cache = Some((node, key, found));
+                    found
+                }
+            };
+            let Some(own) = own else {
+                out.push(None);
+                continue;
+            };
+            let view = self.edges.pages();
+            let Some(other) = label_bucket::get(&own.bucket.slots, half.position(), &view) else {
+                out.push(None);
+                continue;
+            };
+            let theirs_key = LabelBucketKey {
+                label: half.label(),
+                direction: opposite(half.direction()),
+            };
+            let theirs = match theirs_cache {
+                Some((last_node, last_key, found))
+                    if last_node == other && last_key == theirs_key =>
+                {
+                    found
+                }
+                _ => {
+                    let found = self.present(other, theirs_key);
+                    theirs_cache = Some((other, theirs_key, found));
+                    found
+                }
+            };
+            let pair = self.pair_with_theirs(half, own, other, theirs_key, theirs);
+            let halves = super::pair::order(half, pair.other);
+            let old = if halves.canonical() == half {
+                self.read_value(&pair.own, half.label(), half.position())
+            } else {
+                self.read_value(&pair.theirs, pair.other.label(), pair.other.position())
+            };
+            let Some(width) = self.value_width(half.label(), edge.value)? else {
+                out.push(Some(old));
+                continue;
+            };
+            let mut targets = [(half, pair.own), (pair.other, pair.theirs)];
+            let count = if pair.other == half { 1 } else { 2 };
+            self.edges
+                .reserve((2 + values::PAGES_PER_WRITE) * u32::try_from(count).unwrap_or(2))?;
+            for (h, found) in targets.iter_mut().take(count) {
+                let updated = self.write_value(*found, (width, h.position()), edge.value);
+                if *h == half {
+                    own_cache = Some((node, key, Some(updated)));
+                } else {
+                    theirs_cache = Some((other, theirs_key, updated));
+                }
+            }
+            out.push(Some(old));
+        }
+        Ok(out)
+    }
+
     /// Writes `value` at `position` of `found`, giving the bucket a value plane if it has none.
     /// Within reserved memory.
-    fn write_value(&mut self, found: Found, (width, position): (Width, Position), value: &[u8]) {
+    fn write_value(
+        &mut self,
+        found: Found,
+        (width, position): (Width, Position),
+        value: &[u8],
+    ) -> Found {
         let mut bucket = if found.bucket.values.is_none() {
             self.with_values(found.bucket, width)
         } else {
@@ -80,7 +185,11 @@ impl<M: Memory> Graph<M> {
                 value,
             ));
         }
-        self.publish(found.entry, bucket);
+        let bucket = self.publish(found.entry, bucket);
+        Found {
+            entry: found.entry,
+            bucket,
+        }
     }
 
     /// The value at `position` of `found` (a bucket of `label`), whether or not an edge is live

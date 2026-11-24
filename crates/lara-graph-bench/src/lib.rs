@@ -13,8 +13,8 @@ use core::ops::ControlFlow;
 use ic_stable_structures::DefaultMemoryImpl;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use lara_graph::{
-    Cursor, Direction, EdgeKind, EdgeRef, Graph, Halves, Label, Memories, Memory, NewEdge, NodeId,
-    Order, Placement, Position, Progress, VecMemory, Width,
+    Cursor, Direction, EdgeKind, EdgeRef, EdgeValue, Graph, Halves, Label, Memories, Memory,
+    NewEdge, NodeId, Order, Placement, Position, Progress, VecMemory, Width,
 };
 
 mod btree;
@@ -1000,6 +1000,47 @@ fn edge_value_1024_batched() -> BenchResult {
             .unwrap_or_else(|err| panic!("value batch: {err}"));
         let live: u64 = out.iter().map(|value| u64::from(value.is_some())).sum();
         black_box(live)
+    })
+}
+
+/// 1024 edge values in one hub bucket, one write each.
+#[bench(raw)]
+fn set_edge_value_1024_loop() -> BenchResult {
+    let mut g = heap_graph();
+    let hub = seed_valued_hub(&mut g, 65536);
+    let halves: Vec<EdgeRef> = (0..1024)
+        .map(|i| EdgeRef::new(hub, LABEL, Direction::Outgoing, Position::new(i)))
+        .collect();
+    let value = [7u8; 8];
+    bench_fn(|| {
+        for &half in &halves {
+            black_box(
+                g.set_edge_value(half, &value)
+                    .unwrap_or_else(|err| panic!("value: {err}")),
+            );
+        }
+    })
+}
+
+/// The same 1024 writes through one batch.
+#[bench(raw)]
+fn set_edge_value_1024_batched() -> BenchResult {
+    let mut g = heap_graph();
+    let hub = seed_valued_hub(&mut g, 65536);
+    let value = [7u8; 8];
+    let writes: Vec<EdgeValue<'_>> = (0..1024)
+        .map(|i| {
+            EdgeValue::new(
+                EdgeRef::new(hub, LABEL, Direction::Outgoing, Position::new(i)),
+                &value,
+            )
+        })
+        .collect();
+    bench_fn(|| {
+        black_box(
+            g.set_edge_values(&writes)
+                .unwrap_or_else(|err| panic!("value batch: {err}")),
+        )
     })
 }
 
