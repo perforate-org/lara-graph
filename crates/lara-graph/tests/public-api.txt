@@ -25,6 +25,7 @@ pub lara_graph::Error::AddressSpaceExhausted
 pub lara_graph::Error::Deleted(lara_graph::NodeId)
 pub lara_graph::Error::Detaching(lara_graph::NodeId)
 pub lara_graph::Error::NotDetaching(lara_graph::NodeId)
+pub lara_graph::Error::NotEmpty
 pub lara_graph::Error::OutOfMemory(lara_graph::GrowFailed)
 pub lara_graph::Error::TooManyLabelBuckets(lara_graph::NodeId)
 pub lara_graph::Error::TooManyWidths
@@ -119,6 +120,8 @@ pub fn lara_graph::Graph<M>::labels(&self, lara_graph::NodeId, lara_graph::Direc
 pub fn lara_graph::Graph<M>::neighbors_directed(&self, lara_graph::NodeId, lara_graph::Label, lara_graph::Direction, &mut alloc::vec::Vec<lara_graph::Edge>) -> core::result::Result<(), lara_graph::Error>
 pub const fn lara_graph::Graph<M>::node_count(&self) -> u32
 pub fn lara_graph::Graph<M>::node_state(&self, lara_graph::NodeId) -> core::result::Result<lara_graph::NodeState, lara_graph::Error>
+impl<M: lara_graph::Memory> lara_graph::Graph<M>
+pub fn lara_graph::Graph<M>::bulk_load(&mut self, &[lara_graph::NewEdge<'_>]) -> core::result::Result<alloc::vec::Vec<lara_graph::Halves>, lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::compact(&mut self, lara_graph::NodeId, lara_graph::Label, lara_graph::Direction) -> core::result::Result<lara_graph::Compaction, lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>

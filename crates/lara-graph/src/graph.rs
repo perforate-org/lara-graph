@@ -89,6 +89,8 @@ pub enum Error {
     NotDetaching(NodeId),
     /// The node was deleted ([`Graph::detach`]); ids are never reused.
     Deleted(NodeId),
+    /// [`Graph::bulk_load`] was called on a graph that already holds edges.
+    NotEmpty,
     /// The label already has a different width ([`Graph::declare_width`]).
     WidthConflict {
         /// The label.
@@ -572,6 +574,7 @@ impl fmt::Display for Error {
             Self::Detaching(v) => write!(f, "node {} is being detached", v.index()),
             Self::NotDetaching(v) => write!(f, "node {} is not being detached", v.index()),
             Self::Deleted(v) => write!(f, "node {} is deleted", v.index()),
+            Self::NotEmpty => f.write_str("the graph already holds edges"),
             Self::WidthConflict { label, declared } => write!(
                 f,
                 "label {} already has width {}",
@@ -605,6 +608,7 @@ impl fmt::Display for InitError {
 impl core::error::Error for Error {}
 impl core::error::Error for InitError {}
 
+mod bulk;
 mod compaction;
 mod detach;
 mod index;

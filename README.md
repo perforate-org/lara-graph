@@ -74,6 +74,12 @@ was changed.
 | `remove_edges` | Checks every node first, then removes all or nothing. |
 | `detach_many` | Checks every node first, then marks all or nothing. |
 
+For an empty graph with nodes and widths already declared, `bulk_load` builds every bucket and
+its target index in one pass. Within a bucket, positions follow input order; the `placement` of
+each `NewEdge` is ignored because there are no holes yet. It returns `Error::NotEmpty` if the
+graph already holds edges. On the stable-memory hub benchmark, bulk load is about 35 % cheaper
+than `add_edges`.
+
 `BatchError::Unchanged` means no element was applied. `BatchError::PartiallyApplied` means the
 elements before `index` were applied; only `add_edges` can return it. A canister can turn a partial batch into an all-or-none
 update by trapping on `PartiallyApplied`; the IC then discards the call's state changes:

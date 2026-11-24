@@ -106,6 +106,38 @@ fn add_nodes_1024_batched() -> BenchResult {
     })
 }
 
+fn bulk_hub<M: Memory>(mut g: Graph<M>, degree: u32) -> BenchResult {
+    let hub = node(&mut g);
+    let leaves = nodes(&mut g, degree);
+    let edges: Vec<NewEdge<'_>> = leaves
+        .iter()
+        .map(|&leaf| NewEdge::directed(hub, LABEL, leaf, Placement::Append, &[]))
+        .collect();
+    bench_fn(|| {
+        black_box(g.bulk_load(&edges).unwrap_or_else(|e| panic!("bulk: {e}")));
+    })
+}
+
+#[bench(raw)]
+fn bulk_hub_4096() -> BenchResult {
+    bulk_hub(heap_graph(), 4096)
+}
+
+#[bench(raw)]
+fn bulk_hub_4096_stable() -> BenchResult {
+    bulk_hub(stable_graph(), 4096)
+}
+
+#[bench(raw)]
+fn bulk_hub_65536() -> BenchResult {
+    bulk_hub(heap_graph(), 65536)
+}
+
+#[bench(raw)]
+fn bulk_hub_65536_stable() -> BenchResult {
+    bulk_hub(stable_graph(), 65536)
+}
+
 #[bench(raw)]
 fn hub_insert_1024() -> BenchResult {
     grow_hub(heap_graph(), 1024)

@@ -126,6 +126,28 @@ impl<'a> NewEdge<'a> {
     }
 }
 
+impl NewEdge<'_> {
+    pub(crate) const fn kind(&self) -> EdgeKind {
+        self.kind
+    }
+
+    pub(crate) const fn from(&self) -> NodeId {
+        self.from
+    }
+
+    pub(crate) const fn label(&self) -> Label {
+        self.label
+    }
+
+    pub(crate) const fn to(&self) -> NodeId {
+        self.to
+    }
+
+    pub(crate) const fn value(&self) -> &[u8] {
+        self.value
+    }
+}
+
 impl<M: Memory> Graph<M> {
     /// Adds every edge in `edges`, in order. Each edge is all-or-none like [`Self::add_edge`],
     /// but the batch is not atomic: an error leaves the edges before it inserted.

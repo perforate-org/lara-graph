@@ -1461,3 +1461,86 @@ fn add_edges_keeps_a_cache_per_from_node() {
     assert_eq!(g.degree(v(3), l(0), Direction::Incoming).unwrap(), 1);
     check(&g);
 }
+
+#[test]
+fn bulk_load_matches_add_edges() {
+    let edges: Vec<NewEdge<'_>> = (1..=1500)
+        .map(|target| NewEdge::directed(v(0), l(0), v(target), Placement::Append, &[]))
+        .chain([
+            NewEdge::undirected(v(1), l(1), v(2), Placement::Append, &[]),
+            NewEdge::directed(v(3), l(1), v(3), Placement::Append, &[]),
+            NewEdge::undirected(v(4), l(1), v(4), Placement::Append, &[]),
+        ])
+        .collect();
+    let mut one = Backing::default().create(1502);
+    let mut bulk = Backing::default().create(1502);
+    one.add_edges(&edges).unwrap();
+    bulk.bulk_load(&edges).unwrap();
+    check(&one);
+    check(&bulk);
+    for node in 0..1502 {
+        for label in 0..2 {
+            for direction in [
+                Direction::Outgoing,
+                Direction::Incoming,
+                Direction::Undirected,
+            ] {
+                assert_eq!(
+                    edges_on(&one, v(node), l(label), direction),
+                    edges_on(&bulk, v(node), l(label), direction),
+                    "node {node} label {label} {direction:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn bulk_load_refuses_a_graph_with_edges() {
+    let backing = Backing::default();
+    let mut g = backing.create(2);
+    insert(&mut g, v(0), l(0), v(1));
+    let error = g
+        .bulk_load(&[NewEdge::directed(v(0), l(0), v(1), Placement::Append, &[])])
+        .unwrap_err();
+    assert_eq!(error, Error::NotEmpty);
+}
+
+#[test]
+fn bulk_load_writes_values() {
+    let values: Vec<Vec<u8>> = (0..1500u32)
+        .map(|i| vec![u8::try_from(i % 251).unwrap_or(0); 4])
+        .collect();
+    let edges: Vec<NewEdge<'_>> = (1..=1500)
+        .map(|target| {
+            NewEdge::directed(
+                v(0),
+                l(0),
+                v(target),
+                Placement::Append,
+                &values[usize::try_from(target - 1).unwrap_or(0)],
+            )
+        })
+        .collect();
+    let mut one = Backing::default().create(1501);
+    let mut bulk = Backing::default().create(1501);
+    one.declare_width(l(0), Width::new(4).unwrap()).unwrap();
+    bulk.declare_width(l(0), Width::new(4).unwrap()).unwrap();
+    let one_halves = one.add_edges(&edges).unwrap();
+    let bulk_halves = bulk.bulk_load(&edges).unwrap();
+    check(&one);
+    check(&bulk);
+    for (a, b) in one_halves.iter().zip(bulk_halves.iter()) {
+        assert_eq!(a.canonical().node(), b.canonical().node(), "canonical node");
+        assert_eq!(
+            a.canonical().position(),
+            b.canonical().position(),
+            "canonical position"
+        );
+        assert_eq!(
+            one.edge_value(a.canonical()).unwrap(),
+            bulk.edge_value(b.canonical()).unwrap(),
+            "value"
+        );
+    }
+}
