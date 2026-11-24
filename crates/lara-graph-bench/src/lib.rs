@@ -734,6 +734,46 @@ fn refill_hub(degree: u32, to: Refill) -> BenchResult {
     })
 }
 
+fn refill_hub_batched(degree: u32, to: Refill) -> BenchResult {
+    let mut g = heap_graph();
+    let (hub, edges) = seed_hub(&mut g, degree);
+    for halves in edges.iter().step_by(2) {
+        black_box(
+            g.remove_edge(halves.canonical())
+                .unwrap_or_else(|e| panic!("{e}")),
+        );
+    }
+    let targets: Vec<NodeId> = match to {
+        Refill::Fresh => nodes(&mut g, degree / 2),
+        Refill::Parallel => edges
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .map(|halves| halves.other().node())
+            .collect(),
+    };
+    let refill: Vec<NewEdge<'_>> = targets
+        .iter()
+        .map(|&leaf| NewEdge::directed(hub, LABEL, leaf, Placement::ReuseHoles, &[]))
+        .collect();
+    bench_fn(|| {
+        black_box(
+            g.add_edges(&refill)
+                .unwrap_or_else(|e| panic!("batch: {e}")),
+        )
+    })
+}
+
+#[bench(raw)]
+fn hub_refill_holes_65536_batched() -> BenchResult {
+    refill_hub_batched(65536, Refill::Fresh)
+}
+
+#[bench(raw)]
+fn hub_refill_holes_parallel_65536_batched() -> BenchResult {
+    refill_hub_batched(65536, Refill::Parallel)
+}
+
 /// Whose edges refill a hub's holes.
 #[derive(Clone, Copy)]
 enum Refill {

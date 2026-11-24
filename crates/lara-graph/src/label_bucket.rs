@@ -97,7 +97,25 @@ fn paged_hole<M: Memory>(
     paged: &Paged,
     after: Option<Position>,
 ) -> Option<Position> {
-    let start = after.map_or(0, |p| p.index() + 1);
+    paged_hole_from(view, paged, after.map_or(0, |p| p.index() + 1))
+}
+
+/// The first hole in a paged bucket at or after `start`.
+pub(crate) fn hole_from<M: Memory>(
+    d: &Descriptor,
+    view: &Pages<'_, M>,
+    start: Position,
+) -> Option<Position> {
+    if d.live() == d.stored() {
+        return None;
+    }
+    match d {
+        Descriptor::Paged(paged) => paged_hole_from(view, paged, start.index()),
+        Descriptor::Tiny(_) | Descriptor::Run(_) => None,
+    }
+}
+
+fn paged_hole_from<M: Memory>(view: &Pages<'_, M>, paged: &Paged, start: u32) -> Option<Position> {
     let mut from = start / PAGE_SLOTS;
     loop {
         // Only the page holding `start` can have all its holes before it.

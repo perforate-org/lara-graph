@@ -719,6 +719,39 @@ fn add_edges_invalidates_a_target_that_gains_a_bucket() {
 }
 
 #[test]
+fn add_edges_reuses_paged_holes_from_a_cursor() {
+    let backing = Backing::default();
+    let mut g = backing.create(1537);
+    for target in 1..=1024 {
+        insert(&mut g, v(0), l(0), v(target));
+    }
+    for position in (0..1024).step_by(2) {
+        g.remove_edge(EdgeRef::new(
+            v(0),
+            l(0),
+            Direction::Outgoing,
+            Position::new(position),
+        ))
+        .unwrap();
+    }
+    let specs: Vec<NewEdge<'_>> = (1025..=1536)
+        .map(|target| NewEdge::directed(v(0), l(0), v(target), Placement::ReuseHoles, &[]))
+        .collect();
+    g.add_edges(&specs).unwrap();
+    assert_eq!(g.degree(v(0), l(0), Direction::Outgoing).unwrap(), 1024);
+    for target in 1..=1024 {
+        let want = u32::from(target % 2 == 0);
+        assert_eq!(
+            g.degree(v(target), l(0), Direction::Incoming).unwrap(),
+            want
+        );
+    }
+    for target in 1025..=1536 {
+        assert_eq!(g.degree(v(target), l(0), Direction::Incoming).unwrap(), 1);
+    }
+}
+
+#[test]
 fn add_edges_checks_all_endpoints_before_writing() {
     let backing = Backing::default();
     let mut g = backing.create(2);

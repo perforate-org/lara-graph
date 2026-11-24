@@ -20,6 +20,22 @@ const TARGET_CACHE: usize = 8;
 /// A mixed batch keeps both directions and both undirected ends, so it needs a few more.
 const MIXED_CACHE: usize = 16;
 
+/// A batch-local cursor into a paged bucket's holes. It is only used for fresh targets, so the
+/// holes before `next` have been filled by this run.
+struct HoleCursor {
+    key: Option<(NodeId, LabelBucketKey)>,
+    next: Position,
+}
+
+impl Default for HoleCursor {
+    fn default() -> Self {
+        Self {
+            key: None,
+            next: Position::new(0),
+        }
+    }
+}
+
 /// Whether a target repeats near the start of the batch. The probe is capped so a long unique
 /// fan-out does not pay for a set it will not use; a repeated run of edges is visible early.
 #[inline(never)]
@@ -140,6 +156,7 @@ impl<M: Memory> Graph<M> {
         }
         let mut out = Vec::with_capacity(edges.len());
         let mut cache: Option<(LabelBucketKey, Place)> = None;
+        let mut holes = HoleCursor::default();
         for (index, edge) in edges.iter().enumerate() {
             if edge.kind == EdgeKind::Undirected {
                 self.add_undirected_batch_edge(edge, &mut out)
@@ -167,7 +184,7 @@ impl<M: Memory> Graph<M> {
                 edge.placement,
             );
             let (halves, updated) = self
-                .insert_halves_cached([from, to], edge.value, cached)
+                .insert_halves_cached([from, to], edge.value, cached, Some((0, &mut holes)))
                 .map_err(|error| BatchError::after_prefix(index, error))?;
             let [canonical, other] = halves;
             out.push(Halves::new(canonical, other));
@@ -207,7 +224,7 @@ impl<M: Memory> Graph<M> {
                         cached_place(&cache, to.node, to.key),
                     ];
                     let (halves, updated) = self
-                        .insert_halves_with([from, to], edge.value, &ManyCache(cached))
+                        .insert_halves_with([from, to], edge.value, &ManyCache(cached), None)
                         .map_err(|error| BatchError::after_prefix(index, error))?;
                     remember_halves(&mut cache, [from, to], updated);
                     let [canonical, other] = halves;
@@ -224,7 +241,7 @@ impl<M: Memory> Graph<M> {
                     if low == high {
                         let cached = [cached_place(&cache, at_high.node, at_high.key)];
                         let (halves, updated) = self
-                            .insert_halves_with([at_high], edge.value, &ManyCache(cached))
+                            .insert_halves_with([at_high], edge.value, &ManyCache(cached), None)
                             .map_err(|error| BatchError::after_prefix(index, error))?;
                         remember_halves(&mut cache, [at_high], updated);
                         let [half] = halves;
@@ -242,7 +259,7 @@ impl<M: Memory> Graph<M> {
                         cached_place(&cache, at_low.node, at_low.key),
                     ];
                     let (halves, updated) = self
-                        .insert_halves_with([at_high, at_low], edge.value, &ManyCache(cached))
+                        .insert_halves_with([at_high, at_low], edge.value, &ManyCache(cached), None)
                         .map_err(|error| BatchError::after_prefix(index, error))?;
                     remember_halves(&mut cache, [at_high, at_low], updated);
                     let [canonical, other] = halves;
@@ -397,6 +414,7 @@ impl<M: Memory> Graph<M> {
                     [from, to],
                     edge.value,
                     cache_from.map(|place| (0, place)),
+                    None,
                 )
             }
             .map_err(|error| BatchError::after_prefix(index, error))?;
@@ -476,7 +494,7 @@ impl<M: Memory> Graph<M> {
         halves: [Half; N],
         value: &[u8],
     ) -> Result<[EdgeRef; N], Error> {
-        Ok(self.insert_halves_with(halves, value, &NoCache)?.0)
+        Ok(self.insert_halves_with(halves, value, &NoCache, None)?.0)
     }
 
     /// [`insert_halves`] with an optional already admitted half.
@@ -485,8 +503,9 @@ impl<M: Memory> Graph<M> {
         halves: [Half; N],
         value: &[u8],
         cached: Option<(usize, Place)>,
+        cursor: Option<(usize, &mut HoleCursor)>,
     ) -> Result<([EdgeRef; N], [Option<Place>; N]), Error> {
-        self.insert_halves_with(halves, value, &OneCache(cached))
+        self.insert_halves_with(halves, value, &OneCache(cached), cursor)
     }
 
     /// [`insert_halves`] with both halves' places already admitted.
@@ -496,7 +515,35 @@ impl<M: Memory> Graph<M> {
         value: &[u8],
         cached: [Option<Place>; N],
     ) -> Result<([EdgeRef; N], [Option<Place>; N]), Error> {
-        self.insert_halves_with(halves, value, &ManyCache(cached))
+        self.insert_halves_with(halves, value, &ManyCache(cached), None)
+    }
+
+    fn spot_for_cursor(
+        &self,
+        bucket: &LabelBucket,
+        half: Half,
+        between: Between,
+        cursor: &mut HoleCursor,
+    ) -> Spot {
+        if half.placement != Placement::ReuseHoles
+            || between != Between::Nothing
+            || !matches!(bucket.slots, Descriptor::Paged(_))
+        {
+            return self.spot_for(bucket, half.target, half.placement, between);
+        }
+        let key = (half.node, half.key);
+        if cursor.key != Some(key) {
+            cursor.key = Some(key);
+            cursor.next = Position::new(0);
+        }
+        let Some(position) =
+            label_bucket::hole_from(&bucket.slots, &self.edges.pages(), cursor.next)
+        else {
+            cursor.next = Position::new(bucket.slots.stored());
+            return Spot::End;
+        };
+        cursor.next = Position::new(position.index().saturating_add(1));
+        Spot::Hole(position)
     }
 
     /// The one insert path: a cache supplies any half already admitted, then the batch plans
@@ -506,6 +553,7 @@ impl<M: Memory> Graph<M> {
         halves: [Half; N],
         value: &[u8],
         cached: &C,
+        mut cursor: Option<(usize, &mut HoleCursor)>,
     ) -> Result<([EdgeRef; N], [Option<Place>; N]), Error> {
         let label = halves
             .first()
@@ -528,7 +576,12 @@ impl<M: Memory> Graph<M> {
                         .then(|| halves.get(1 - i).zip(places.get(1 - i)))
                         .flatten();
                     let between = partner.map_or(Between::Unknown, |(h, p)| between(h, p));
-                    let spot = self.spot_for(&bucket, half.target, half.placement, between);
+                    let spot = match cursor.as_mut() {
+                        Some((at, cursor)) if *at == i => {
+                            self.spot_for_cursor(&bucket, *half, between, cursor)
+                        }
+                        _ => self.spot_for(&bucket, half.target, half.placement, between),
+                    };
                     let batch = match spot {
                         Spot::End => self.batch_for(&bucket, half.target),
                         Spot::Hole(_) => None,
