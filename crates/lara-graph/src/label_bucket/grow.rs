@@ -1,9 +1,10 @@
 //! Appending at the end of a bucket: a tiny bucket becomes a run, a run grows a class or becomes
 //! the first data page, a paged bucket fills its last page or opens a new one.
 
-use super::{byte_len, first_tombstone, narrow, position, run_class, slot_offset, stored_u32};
-use crate::descriptor::{Descriptor, PAGE_SLOTS, Paged, Run, Slot, TINY_SLOTS, Tiny};
-use crate::id::{NodeId, Position};
+use super::{byte_len, first_tombstone, narrow, position, slot_offset, stored_u32};
+use crate::corrupt::corrupt;
+use crate::descriptor::{Descriptor, PAGE_SLOTS, Paged, Run, Slot, TINY_SLOTS, Tiny, run_class};
+use crate::id::{NodeId, Position, Width};
 use crate::memory::{Memory, WriteError};
 use crate::page_store::PageStore;
 use crate::paged::{self, Leaf};
@@ -18,7 +19,7 @@ pub(super) fn tiny_to_run<M: Memory>(
     store: &mut PageStore<M>,
 ) -> Result<(Descriptor, Position), WriteError> {
     let stored = TINY_SLOTS + 1;
-    let extent = store.allocate(run_class(stored_u32(stored)))?;
+    let extent = store.allocate(run_class(stored_u32(stored), None))?;
     let mut bytes = [0u8; (TINY_SLOTS + 1) * 4];
     for (dst, slot) in bytes
         .as_chunks_mut::<4>()
@@ -34,6 +35,7 @@ pub(super) fn tiny_to_run<M: Memory>(
         extent,
         stored: narrow(stored_u32(stored)),
         live: narrow(live),
+        values: None,
     };
     Ok((Descriptor::Run(run), position(TINY_SLOTS)))
 }
@@ -56,17 +58,24 @@ pub(super) fn run_append<M: Memory>(
         store.write(slot_offset(run.extent.offset(), stored), &edge.encode());
         return Ok((Descriptor::Run(next), Position::new(stored)));
     }
-    if run.capacity() < PAGE_SLOTS {
+    if run.can_grow() {
         // Move to the next class. One allocation: a failure leaves nothing behind.
-        let extent = store.allocate(run_class(stored + 1))?;
+        let extent = store.allocate(run_class(stored + 1, run.values))?;
+        let grown = Run { extent, ..next };
         let bytes = store.pages().read(run.extent.offset(), byte_len(stored));
         store.write(extent.offset(), &bytes);
         store.write(slot_offset(extent.offset(), stored), &edge.encode());
+        if let Some(width) = run.values {
+            let cells = store
+                .pages()
+                .read(run.cells_offset(), cells_len(stored, width));
+            store.write(grown.cells_offset(), &cells);
+        }
         store.release(run.extent);
-        return Ok((
-            Descriptor::Run(Run { extent, ..next }),
-            Position::new(stored),
-        ));
+        return Ok((Descriptor::Run(grown), Position::new(stored)));
+    }
+    if run.values.is_some() {
+        corrupt("a full run with values beside its slots");
     }
     // A full page: it becomes data page 0 as it is, and the new edge opens page 1.
     let tombstones = narrow(stored - u32::from(run.live));
@@ -85,6 +94,11 @@ pub(super) fn run_append<M: Memory>(
         live: u32::from(live),
     };
     Ok((Descriptor::Paged(paged), Position::new(stored)))
+}
+
+/// Bytes of `cells` values of `width`.
+pub(super) fn cells_len(cells: u32, width: Width) -> usize {
+    usize::try_from(cells * u32::from(width.get())).unwrap_or_else(|_| corrupt("cells length"))
 }
 
 // --- pages -------------------------------------------------------------------------------------

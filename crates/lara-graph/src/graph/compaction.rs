@@ -58,13 +58,15 @@ impl<M: Memory> Graph<M> {
             return Ok(Step::new(Vec::new(), Progress::Done));
         }
         let plan = self.plan_index(&found.bucket, &planned)?;
-        let inline = match found.bucket.values {
-            Some(values) => {
+        // Values beside a run's slots move with them; values in a plane move below.
+        let inline = match (found.bucket.values, found.bucket.cells()) {
+            (Some(values), _) => {
                 // Moved values may land in value pages not yet allocated.
                 self.edges.reserve(values::pages_per_moves(values.width))?;
                 Inline::Forbidden
             }
-            None => Inline::Allowed,
+            (None, Some(_)) => Inline::Forbidden,
+            (None, None) => Inline::Allowed,
         };
         let step = compact::apply(planned, &mut self.edges, inline)?;
         let old_end = found.bucket.slots.stored();

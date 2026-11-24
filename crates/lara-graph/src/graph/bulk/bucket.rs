@@ -2,7 +2,7 @@
 
 use super::super::{Error, Graph, NewEdge};
 use super::halves::Half;
-use crate::descriptor::{Descriptor, PAGE_SLOTS, Paged, Run, Slot, TINY_SLOTS, Tiny};
+use crate::descriptor::{self, Descriptor, PAGE_SLOTS, Paged, Run, Slot, TINY_SLOTS, Tiny};
 use crate::id::Width;
 use crate::label_bucket;
 use crate::memory::Memory;
@@ -28,10 +28,24 @@ impl<M: Memory> Graph<M> {
         if width.is_none() && count <= tiny_slots {
             return Ok(tiny_bucket(halves));
         }
-        let mut bucket = self.build_slots(halves, count)?;
-        if let Some(width) = width {
-            let plane = self.build_values(halves, edges, width)?;
-            bucket.values = Some(Values { plane, width });
+        // A small enough bucket keeps its values beside its slots; others in a value plane.
+        let beside = width.filter(|&w| descriptor::beside(w) && count <= descriptor::max_beside(w));
+        let mut bucket = self.build_slots(halves, count, beside)?;
+        match (bucket.cells(), width) {
+            (Some(cells), _) => {
+                let bytes: Vec<u8> = halves
+                    .iter()
+                    .flat_map(|half| value_of(edges, half).iter().copied())
+                    .collect();
+                if let (Descriptor::Run(run), Plane::Beside { .. }) = (bucket.slots, cells.plane) {
+                    self.edges.write(run.cells_offset(), &bytes);
+                }
+            }
+            (None, Some(width)) => {
+                let plane = self.build_values(halves, edges, width)?;
+                bucket.values = Some(Values { plane, width });
+            }
+            (None, None) => {}
         }
         if matches!(bucket.slots, Descriptor::Paged(_)) {
             self.build_target_index(&mut bucket, halves, count)?;
@@ -43,15 +57,22 @@ impl<M: Memory> Graph<M> {
         Ok(bucket.stored())
     }
 
-    /// Writes the slots of a bucket too large to be tiny: one run, or pages.
-    fn build_slots(&mut self, halves: &[Half], count: u32) -> Result<LabelBucket, Error> {
+    /// Writes the slots of a bucket too large to be tiny: one run (with room for values of
+    /// `beside` beside them if set), or pages.
+    fn build_slots(
+        &mut self,
+        halves: &[Half],
+        count: u32,
+        beside: Option<Width>,
+    ) -> Result<LabelBucket, Error> {
         if count <= PAGE_SLOTS {
-            let extent = self.edges.allocate(label_bucket::run_class(count))?;
+            let extent = self.edges.allocate(descriptor::run_class(count, beside))?;
             write_halves(&self.edges, extent.offset(), halves);
             Ok(LabelBucket::plain(Descriptor::Run(Run {
                 extent,
                 stored: label_bucket::narrow(count),
                 live: label_bucket::narrow(count),
+                values: beside,
             })))
         } else {
             let paged = self.build_paged(halves)?;
@@ -60,7 +81,6 @@ impl<M: Memory> Graph<M> {
     }
 
     /// Writes each half's edge value at its position.
-    #[expect(clippy::indexing_slicing, reason = "every half names an input edge")]
     fn build_values(
         &mut self,
         halves: &[Half],
@@ -74,7 +94,7 @@ impl<M: Memory> Graph<M> {
                 plane,
                 width,
                 u32::try_from(position).map_err(|_| Error::AddressSpaceExhausted)?,
-                edges[usize::try_from(half.edge).unwrap_or(0)].value(),
+                value_of(edges, half),
             )?;
         }
         Ok(plane)
@@ -150,6 +170,13 @@ impl<M: Memory> Graph<M> {
             live: count,
         })
     }
+}
+
+/// The value of the input edge `half` belongs to.
+fn value_of<'e>(edges: &'e [NewEdge<'_>], half: &Half) -> &'e [u8] {
+    edges
+        .get(usize::try_from(half.edge).unwrap_or(usize::MAX))
+        .map_or(&[], NewEdge::value)
 }
 
 /// A bucket of at most [`TINY_SLOTS`] halves without values, held inline.

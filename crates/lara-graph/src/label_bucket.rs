@@ -11,21 +11,24 @@
 //!   entries; a full one-page run becomes the first data page without copying.
 
 use crate::corrupt::corrupt;
-use crate::descriptor::{Descriptor, PAGE_SLOTS, Paged, Run, SLOT_BYTES, Slot, TOMBSTONE};
-use crate::id::{NodeId, Position};
+use crate::descriptor::{
+    Descriptor, PAGE_SLOTS, Paged, Run, SLOT_BYTES, Slot, TOMBSTONE, run_class,
+};
+use crate::id::{NodeId, Position, Width};
 use crate::memory::{Memory, WriteError};
-use crate::page_store::{ByteClass, PageId, PageStore, Pages};
+use crate::page_store::{PageId, PageStore, Pages};
 use crate::paged;
 use crate::units::ByteOffset;
+use crate::values::{self, Plane};
 use alloc::vec::Vec;
 
 mod grow;
 mod positions;
 mod scan;
 
-use grow::{paged_append, run_append, tiny_to_run};
+use grow::{cells_len, paged_append, run_append, tiny_to_run};
 pub(crate) use positions::read_positions;
-pub(crate) use scan::{Span, Window, find, find_in, read, visit};
+pub(crate) use scan::{Span, Window, find, find_in, read, visit, visit_beside};
 
 /// Pages one [`insert`] can take from the store. The worst case is a paged bucket whose index
 /// deepens: a data page, a new top and the fresh nodes on the path below it (two at most, as
@@ -277,7 +280,7 @@ pub(crate) fn target_at<M: Memory>(view: &Pages<'_, M>, at: ByteOffset) -> Optio
 }
 
 /// The same slots, never tiny: a tiny bucket becomes a run of the smallest class (a bucket with
-/// values needs one); a run or paged bucket is unchanged.
+/// values in a plane needs one); a run or paged bucket is unchanged.
 pub(crate) fn without_tiny<M: Memory>(
     d: Descriptor,
     store: &mut PageStore<M>,
@@ -286,13 +289,90 @@ pub(crate) fn without_tiny<M: Memory>(
         return Ok(d);
     };
     let stored = stored_u32(tiny.slots().len());
-    let extent = store.allocate(run_class(stored.max(1)))?;
+    let extent = store.allocate(run_class(stored.max(1), None))?;
     store.write(extent.offset(), &tiny_bytes(tiny.slots()));
     Ok(Descriptor::Run(Run {
         extent,
         stored: narrow(stored),
         live: narrow(d.live()),
+        values: None,
     }))
+}
+
+/// A tiny bucket or a run without values as a run with values of `width` beside its slots, all
+/// zero, in the smallest class that holds one more slot. Within one page of copying.
+pub(crate) fn with_values_beside<M: Memory>(
+    d: Descriptor,
+    width: Width,
+    store: &mut PageStore<M>,
+) -> Result<Descriptor, WriteError> {
+    let (slots, old) = match d {
+        Descriptor::Tiny(tiny) => (tiny_bytes(tiny.slots()), None),
+        Descriptor::Run(run) if run.values.is_none() => (
+            store
+                .pages()
+                .read(run.extent.offset(), byte_len(u32::from(run.stored))),
+            Some(run.extent),
+        ),
+        Descriptor::Run(_) | Descriptor::Paged(_) => corrupt("values beside a run or pages"),
+    };
+    let stored = d.stored();
+    let extent = store.allocate(run_class(stored + 1, Some(width)))?;
+    let run = Run {
+        extent,
+        stored: narrow(stored),
+        live: narrow(d.live()),
+        values: Some(width),
+    };
+    store.write(extent.offset(), &slots);
+    store.write(
+        run.cells_offset(),
+        &alloc::vec![0u8; cells_len(run.capacity(), width)],
+    );
+    if let Some(old) = old {
+        store.release(old);
+    }
+    Ok(Descriptor::Run(run))
+}
+
+/// Whether appending to `d` needs its values moved out first: a page-sized run with values
+/// beside its slots is full. Then [`values_out`] makes room.
+pub(crate) fn full_beside(d: &Descriptor) -> bool {
+    matches!(d, Descriptor::Run(run)
+        if run.values.is_some() && u32::from(run.stored) >= run.capacity() && !run.can_grow())
+}
+
+/// A run with values beside its slots as a run of its slots alone, with room for one more, and
+/// a value plane of its cells. Copies at most a page of each.
+pub(crate) fn values_out<M: Memory>(
+    run: Run,
+    store: &mut PageStore<M>,
+) -> Result<(Descriptor, Plane), WriteError> {
+    let width = run
+        .values
+        .unwrap_or_else(|| corrupt("a run without values beside its slots"));
+    let stored = u32::from(run.stored);
+    let view = store.pages();
+    let slots = view.read(run.extent.offset(), byte_len(stored));
+    let cells = view.read(run.cells_offset(), cells_len(stored, width));
+    let extent = store.allocate(run_class(stored + 1, None))?;
+    let plane = match values::run_of(store, &cells) {
+        Ok(plane) => plane,
+        Err(error) => {
+            store.release(extent);
+            return Err(error);
+        }
+    };
+    store.write(extent.offset(), &slots);
+    store.release(run.extent);
+    Ok((
+        Descriptor::Run(Run {
+            extent,
+            values: None,
+            ..run
+        }),
+        plane,
+    ))
 }
 
 /// A tiny bucket's slots as stored bytes, slot by slot rather than through an iterator chain
@@ -319,11 +399,6 @@ fn reusable_hole(slots: &[Slot], target: NodeId) -> Option<usize> {
         }
     }
     hole
-}
-
-/// The class of a run holding `slots` slots.
-pub(crate) fn run_class(slots: u32) -> ByteClass {
-    ByteClass::for_bytes(slots * SLOT_BYTES).unwrap_or_else(|| corrupt("run beyond a page"))
 }
 
 fn slot_offset(start: ByteOffset, slot: u32) -> ByteOffset {

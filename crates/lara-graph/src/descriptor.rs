@@ -26,7 +26,9 @@
 //! ----------------------------------------
 //! Extent                          ↕ 7 bytes
 //! ----------------------------------------
-//! Reserved space                  ↕ 4 bytes
+//! Value width beside the slots    ↕ 2 bytes       (0 for none)
+//! ----------------------------------------
+//! Reserved space                  ↕ 2 bytes
 //! ---------------------------------------- <- Paged: 1024 slots per data page
 //! Kind (3)                        ↕ 1 byte
 //! ----------------------------------------
@@ -39,8 +41,9 @@
 //! ```
 
 use crate::corrupt::corrupt;
-use crate::id::NodeId;
-use crate::page_store::{EXTENT_BYTES, Extent};
+use crate::id::{NodeId, Width};
+use crate::page_store::{ByteClass, EXTENT_BYTES, Extent, PAGE_BYTES};
+use crate::units::ByteOffset;
 
 /// Bytes per descriptor.
 pub(crate) const DESCRIPTOR_BYTES: usize = 16;
@@ -50,6 +53,19 @@ pub(crate) const TINY_SLOTS: usize = 3;
 pub(crate) const PAGE_SLOTS: u32 = 1024;
 /// Bytes per slot.
 pub(crate) const SLOT_BYTES: u32 = 4;
+/// The fewest slots a page-sized run with values beside them must hold: a label whose values are
+/// wider keeps them in a value plane instead.
+const MIN_BESIDE_CAPACITY: u32 = 32;
+
+/// Whether a small bucket of a label of `width` keeps its values beside its slots.
+pub(crate) fn beside(width: Width) -> bool {
+    max_beside(width) >= MIN_BESIDE_CAPACITY
+}
+
+/// The most slots a run with values of `width` beside them holds: those of a page.
+pub(crate) fn max_beside(width: Width) -> u32 {
+    PAGE_BYTES / (SLOT_BYTES + u32::from(width.get()))
+}
 
 /// A stored slot: an edge, or the tombstone of a removed one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,11 +115,14 @@ pub(crate) struct Tiny {
     slots: [Slot; TINY_SLOTS],
 }
 
+/// Slots at the front of one extent, and when `values` is set, a value of that width per slot
+/// after them: positions `0..capacity` are slots, then `capacity` cells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Run {
     pub(crate) extent: Extent,
     pub(crate) stored: u16,
     pub(crate) live: u16,
+    pub(crate) values: Option<Width>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,8 +136,29 @@ pub(crate) struct Paged {
 impl Run {
     /// Slots the run's extent holds.
     pub(crate) fn capacity(&self) -> u32 {
-        self.extent.len() / SLOT_BYTES
+        self.extent.len() / slot_and_cell(self.values)
     }
+
+    /// Where the cells beside the slots start.
+    pub(crate) fn cells_offset(&self) -> ByteOffset {
+        ByteOffset::new(self.extent.offset().get() + u64::from(self.capacity() * SLOT_BYTES))
+    }
+
+    /// Whether the run can grow into a larger class.
+    pub(crate) fn can_grow(&self) -> bool {
+        self.extent.class() != ByteClass::PAGE
+    }
+}
+
+/// Bytes a position takes in a run: its slot, and its cell when values sit beside the slots.
+fn slot_and_cell(values: Option<Width>) -> u32 {
+    SLOT_BYTES + values.map_or(0, |w| u32::from(w.get()))
+}
+
+/// The class of a run of `slots` slots, with values of `values` beside them if set.
+pub(crate) fn run_class(slots: u32, values: Option<Width>) -> ByteClass {
+    ByteClass::for_bytes(slots * slot_and_cell(values))
+        .unwrap_or_else(|| corrupt("run beyond a page"))
 }
 
 impl Tiny {
@@ -205,8 +245,9 @@ impl Descriptor {
                 let [s0, s1] = run.stored.to_le_bytes();
                 let [l0, l1] = run.live.to_le_bytes();
                 let [e0, e1, e2, e3, e4, e5, e6] = run.extent.encode();
+                let [w0, w1] = run.values.map_or(0, Width::get).to_le_bytes();
                 [
-                    KIND_RUN, s0, s1, l0, l1, e0, e1, e2, e3, e4, e5, e6, 0, 0, 0, 0,
+                    KIND_RUN, s0, s1, l0, l1, e0, e1, e2, e3, e4, e5, e6, w0, w1, 0, 0,
                 ]
             }
             Self::Paged(paged) => {
@@ -254,6 +295,7 @@ impl Descriptor {
                 stored: u16::from_le_bytes([b1, b2]),
                 live: u16::from_le_bytes([b3, b4]),
                 extent: Extent::decode([b5, b6, b7, b8, b9, b10, b11]),
+                values: Width::stored(u16::from_le_bytes([b12, b13])),
             }),
             KIND_PAGED => Self::Paged(Paged {
                 stored: u32::from_le_bytes([b1, b2, b3, b4]),
@@ -285,6 +327,13 @@ mod tests {
                 extent,
                 stored: 9,
                 live: 4,
+                values: None,
+            }),
+            Descriptor::Run(Run {
+                extent,
+                stored: 3,
+                live: 2,
+                values: Width::new(8),
             }),
             Descriptor::Paged(Paged {
                 index: extent,

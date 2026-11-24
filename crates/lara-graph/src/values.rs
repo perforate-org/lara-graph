@@ -94,9 +94,20 @@ pub(crate) enum Plane {
     Run(Extent),
     /// A radix tree `depth` levels of nodes deep.
     Table { root: PageId, depth: u8 },
+    /// Cells `0..cells` beside a run's slots, from byte `at` of `page`: owned by the run, which
+    /// grows, moves and frees them with its slots. Never stored in a header. As small as the other
+    /// forms, so that a bucket carrying a plane is no larger for it.
+    Beside { page: PageId, at: u16, cells: u16 },
 }
 
 impl Plane {
+    /// Cells `0..cells` beside a run's slots, from `start` on `page`.
+    pub(crate) fn beside(page: PageId, start: ByteOffset, cells: u16) -> Self {
+        let at = u16::try_from(start.get() - page.offset().get())
+            .unwrap_or_else(|_| corrupt("cells beyond their page"));
+        Self::Beside { page, at, cells }
+    }
+
     /// As the module's Plane root diagram shows.
     pub(crate) fn encode(self) -> [u8; ROOT_BYTES] {
         match self {
@@ -109,6 +120,7 @@ impl Plane {
                 let [r0, r1, r2, r3] = root.get().to_le_bytes();
                 [KIND_TABLE, r0, r1, r2, r3, depth, 0, 0]
             }
+            Self::Beside { .. } => corrupt("values beside slots in a header"),
         }
     }
 
@@ -154,6 +166,9 @@ fn cell_at<M: Memory>(
                 page.offset().get() + u64::from(position % cpp) * w,
             ))
         }
+        Plane::Beside { page, at, cells } => (position < u32::from(cells)).then(|| {
+            ByteOffset::new(page.offset().get() + u64::from(at) + u64::from(position) * w)
+        }),
     }
 }
 
@@ -217,6 +232,7 @@ fn stored_cells(plane: Plane, width: Width, cell: Option<ByteOffset>, (a, b): (u
     match (plane, cell) {
         (_, None) | (Plane::Empty, _) => 0,
         (Plane::Run(extent), Some(_)) => (extent.len() / u32::from(width.get())).saturating_sub(a),
+        (Plane::Beside { cells, .. }, Some(_)) => u32::from(cells).saturating_sub(a),
         (Plane::Table { .. }, Some(_)) => b - a,
     }
     .min(b - a)
@@ -235,8 +251,15 @@ pub(crate) fn write<M: Memory>(
         store.write(at, value);
         return Ok(plane);
     }
+    if let Plane::Beside { .. } = plane {
+        let at = cell_at(&store.pages(), plane, width, position)
+            .unwrap_or_else(|| corrupt("a value past a run's slots"));
+        store.write(at, value);
+        return Ok(plane);
+    }
     let cpp = cells_per_page(width);
     let next = match plane {
+        Plane::Beside { .. } => plane,
         Plane::Empty if position < cpp => grow_run(store, None, width, position)?,
         Plane::Run(extent) if position < cpp => grow_run(store, Some(extent), width, position)?,
         Plane::Empty => table_with(store, None, u64::from(position / cpp))?,
@@ -312,7 +335,7 @@ pub(crate) fn release_range<M: Memory>(
             store.release(extent);
             Plane::Empty
         }
-        Plane::Empty | Plane::Run(_) => plane,
+        Plane::Empty | Plane::Run(_) | Plane::Beside { .. } => plane,
         Plane::Table { root, depth } => {
             release_table_range(store, (root, depth), width, (low, high))
         }
@@ -345,10 +368,30 @@ fn release_table_range<M: Memory>(
 /// Releases every page and extent of a plane.
 pub(crate) fn release<M: Memory>(store: &mut PageStore<M>, plane: Plane) {
     match plane {
-        Plane::Empty => {}
+        Plane::Empty | Plane::Beside { .. } => {}
         Plane::Run(extent) => store.release(extent),
         Plane::Table { root, depth } => release_node(store, root, depth),
     }
+}
+
+/// A plane holding `cells` (whole values, at most a page of them) from position 0.
+pub(crate) fn run_of<M: Memory>(
+    store: &mut PageStore<M>,
+    cells: &[u8],
+) -> Result<Plane, WriteError> {
+    if cells.is_empty() {
+        return Ok(Plane::Empty);
+    }
+    let len = u32::try_from(cells.len()).unwrap_or(u32::MAX);
+    let class = ByteClass::for_bytes(len).unwrap_or_else(|| corrupt("value run beyond a page"));
+    let extent = store.allocate(class)?;
+    // The run covers its whole extent: cells past the given ones read as zeros.
+    let mut content = vec![0u8; usize::try_from(extent.len()).unwrap_or(0)];
+    if let Some(head) = content.get_mut(..cells.len()) {
+        head.copy_from_slice(cells);
+    }
+    store.write(extent.offset(), &content);
+    Ok(Plane::Run(extent))
 }
 
 /// Every extent a plane owns (test invariant checks).
@@ -370,7 +413,7 @@ pub(crate) fn extents<M: Memory>(view: &Pages<'_, M>, plane: Plane) -> Vec<Exten
     }
     let mut out = Vec::new();
     match plane {
-        Plane::Empty => {}
+        Plane::Empty | Plane::Beside { .. } => {}
         Plane::Run(extent) => out.push(extent),
         Plane::Table { root, depth } => walk(view, root, depth, &mut out),
     }

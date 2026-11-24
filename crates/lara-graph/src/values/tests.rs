@@ -159,7 +159,7 @@ fn copying_a_zero_onto_missing_storage_writes_nothing() {
 fn released(plane: Plane, cpp: u32, (low, high): (u32, u32), p: u32) -> bool {
     match plane {
         Plane::Empty => true,
-        Plane::Run(_) => false,
+        Plane::Run(_) | Plane::Beside { .. } => false,
         Plane::Table { .. } => {
             let start = p / cpp * cpp;
             start >= low && (high == u32::MAX || start.saturating_add(cpp) <= high)

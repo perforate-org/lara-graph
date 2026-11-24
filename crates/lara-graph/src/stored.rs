@@ -1,11 +1,13 @@
 //! How a label bucket is stored in its label bucket list entry: a plain descriptor, or a header
 //! for a bucket with more to it.
 //!
-//! The 16-byte list entry holds a [`Descriptor`] for a plain bucket. A bucket whose edges carry
-//! values (never tiny: three inline slots leave no room for them), or a paged bucket with its
-//! target index (or one dropped while its node detaches), holds `Extended`: the extent of a
-//! 32-byte header in the edge store with the slot descriptor, the value plane's root and width, and
-//! the target index's root. Plain buckets pay nothing; an extended one costs one more 32-byte read.
+//! The 16-byte list entry holds a [`Descriptor`] for a plain bucket, including a run that keeps
+//! its values beside its slots (see `descriptor`). A bucket whose values are in a value plane (a
+//! paged one, a run too large for its values beside it, or one of a label with wide values; never
+//! tiny: three inline slots leave no room for them), or a paged bucket with its target index (or
+//! one dropped while its node detaches), holds `Extended`: the extent of a 32-byte header in the
+//! edge store with the slot descriptor, the value plane's root and width, and the target index's
+//! root. Plain buckets pay nothing; an extended one costs one more 32-byte read.
 //!
 //! # Extended entry
 //!
@@ -128,8 +130,9 @@ impl Index {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LabelBucket {
     pub(crate) slots: Descriptor,
-    /// The header, while the bucket has values or an index.
+    /// The header, while the bucket has values in a plane or an index.
     pub(crate) header: Option<Extent>,
+    /// Values in a value plane; values beside a run's slots are not here (see [`Self::cells`]).
     pub(crate) values: Option<Values>,
     pub(crate) index: Index,
 }
@@ -175,7 +178,27 @@ impl LabelBucket {
         }
     }
 
-    /// Whether the bucket needs a header: it has values or an index.
+    /// The bucket's values: beside a run's slots, or in the value plane its header holds.
+    pub(crate) fn cells(&self) -> Option<Values> {
+        match self.slots {
+            Descriptor::Run(run) => run.values.map_or(self.values, |width| {
+                Some(Values {
+                    plane: Plane::beside(run.extent.page(), run.cells_offset(), run.stored),
+                    width,
+                })
+            }),
+            Descriptor::Tiny(_) | Descriptor::Paged(_) => self.values,
+        }
+    }
+
+    /// Records the plane a value write left: values beside a run's slots never move.
+    pub(crate) fn set_plane(&mut self, plane: Plane) {
+        if let Some(values) = self.values.as_mut() {
+            values.plane = plane;
+        }
+    }
+
+    /// Whether the bucket needs a header: it has values in a plane, or an index.
     pub(crate) const fn extended(&self) -> bool {
         self.values.is_some() || !matches!(self.index, Index::Empty)
     }

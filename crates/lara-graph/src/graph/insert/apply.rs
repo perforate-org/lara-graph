@@ -11,7 +11,7 @@ use crate::label_bucket::{self, Spot};
 use crate::label_bucket_list::{self, EntryAt, LabelBucketKey, LabelBucketList};
 use crate::memory::Memory;
 use crate::node::Record;
-use crate::stored::{LabelBucket, Stored};
+use crate::stored::{LabelBucket, Stored, Values};
 use crate::values;
 
 /// A batch-local cursor into a paged bucket's holes. It is only used for fresh targets, so the
@@ -195,6 +195,7 @@ impl<M: Memory> Graph<M> {
         (destination, batch): (Spot, Option<Batch>),
     ) -> (Position, Option<Place>) {
         let (slot, slots) = match place.target {
+            // A run with values beside its slots is of a label with a width, never here.
             Target::Present(entry, Stored::Plain(slots)) => (Ok(entry), slots),
             Target::Absent(gap) => (Err(gap), Descriptor::EMPTY),
             Target::Present(_, Stored::Extended(_)) => {
@@ -231,7 +232,8 @@ impl<M: Memory> Graph<M> {
             Target::Absent(gap) => (Err(gap), LabelBucket::plain(Descriptor::EMPTY)),
         };
         let mut bucket = match value {
-            Some((width, _)) if bucket.values.is_none() => self.with_values(bucket, width),
+            Some((width, _)) if bucket.cells().is_none() => self.with_values(bucket, width),
+            Some(_) if destination == Spot::End => self.room_to_append(bucket),
             Some(_) | None => bucket,
         };
         let (slots, at) = reserved(label_bucket::insert(
@@ -241,18 +243,41 @@ impl<M: Memory> Graph<M> {
             &mut self.edges,
         ));
         let was = core::mem::replace(&mut bucket.slots, slots);
-        if let (Some(cells), Some((width, bytes))) = (bucket.values.as_mut(), value) {
-            cells.plane = reserved(values::write(
+        if let Some((width, bytes)) = value
+            && let Some(cells) = bucket.cells()
+        {
+            let written = reserved(values::write(
                 &mut self.edges,
                 cells.plane,
                 width,
                 at.index(),
                 bytes,
             ));
+            bucket.set_plane(written);
         }
         let bucket = self.index_inserted(bucket, &was, (half.target, at), batch);
         let updated = self.finish_place(half, place, slot, bucket);
         (at, updated)
+    }
+
+    /// `bucket` with room to append: a full page-sized run with values beside its slots moves them
+    /// into a value plane, so that it can grow on into pages. Within reserved memory.
+    fn room_to_append(&mut self, bucket: LabelBucket) -> LabelBucket {
+        let Descriptor::Run(run) = bucket.slots else {
+            return bucket;
+        };
+        if !label_bucket::full_beside(&bucket.slots) {
+            return bucket;
+        }
+        let width = run
+            .values
+            .unwrap_or_else(|| corrupt("a full run without values beside its slots"));
+        let (slots, plane) = reserved(label_bucket::values_out(run, &mut self.edges));
+        LabelBucket {
+            slots,
+            values: Some(Values { plane, width }),
+            ..bucket
+        }
     }
 
     /// Publishes a half's bucket: in place when it existed, else as a new list entry.

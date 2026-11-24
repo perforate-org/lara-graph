@@ -220,19 +220,20 @@ impl<M: Memory> Graph<M> {
         (width, position): (Width, Position),
         value: &[u8],
     ) -> Found {
-        let mut bucket = if found.bucket.values.is_none() {
+        let mut bucket = if found.bucket.cells().is_none() {
             self.with_values(found.bucket, width)
         } else {
             found.bucket
         };
-        if let Some(cells) = bucket.values.as_mut() {
-            cells.plane = reserved(values::write(
+        if let Some(cells) = bucket.cells() {
+            let plane = reserved(values::write(
                 &mut self.edges,
                 cells.plane,
                 width,
                 position.index(),
                 value,
             ));
+            bucket.set_plane(plane);
         }
         let bucket = self.publish(found.entry, bucket);
         Found {
@@ -244,7 +245,7 @@ impl<M: Memory> Graph<M> {
     /// The value at `position` of `found` (a bucket of `label`), whether or not an edge is live
     /// there: its cell, zeros before any write, empty for a label without a width.
     pub(super) fn read_value(&self, found: &Found, label: Label, position: Position) -> Vec<u8> {
-        let Some(cells) = found.bucket.values else {
+        let Some(cells) = found.bucket.cells() else {
             let width = self.widths.get(label);
             return vec![0; width.map_or(0, |w| usize::from(w.get()))];
         };

@@ -9,6 +9,7 @@ mod batch;
 mod cache;
 
 use super::{Error, Graph, reserved};
+use crate::descriptor::{self, Descriptor};
 use crate::id::{Direction, EdgeRef, Halves, Label, NodeId, Placement, Width};
 use crate::label_bucket;
 use crate::label_bucket_list::{EntryAt, LabelBucketKey};
@@ -222,9 +223,23 @@ impl<M: Memory> Graph<M> {
         }
     }
 
-    /// `bucket` with an empty value plane, never tiny; [`Self::publish`] gives it a header.
-    /// Within reserved memory.
+    /// `bucket`, which has no values, ready for values of `width`, all zero: a small bucket as a
+    /// run with them beside its slots, others (never tiny) with an empty value plane, which
+    /// [`Self::publish`] gives a header. Within reserved memory.
     pub(super) fn with_values(&mut self, bucket: LabelBucket, width: Width) -> LabelBucket {
+        let small = match bucket.slots {
+            Descriptor::Tiny(_) => true,
+            Descriptor::Run(run) => u32::from(run.stored) < descriptor::max_beside(width),
+            Descriptor::Paged(_) => false,
+        };
+        if small && descriptor::beside(width) && bucket.header.is_none() {
+            let slots = reserved(label_bucket::with_values_beside(
+                bucket.slots,
+                width,
+                &mut self.edges,
+            ));
+            return LabelBucket { slots, ..bucket };
+        }
         let slots = reserved(label_bucket::without_tiny(bucket.slots, &mut self.edges));
         LabelBucket {
             slots,

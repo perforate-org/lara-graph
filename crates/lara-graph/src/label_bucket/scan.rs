@@ -1,8 +1,8 @@
 //! Reading a bucket: ranges of positions in either order, searches and chosen positions.
 
 use super::{byte_len, slot_offset, stored_u32};
-use crate::descriptor::{Descriptor, PAGE_SLOTS, Paged, Slot, TINY_SLOTS, Tiny};
-use crate::id::{Edge, Order, Position};
+use crate::descriptor::{Descriptor, PAGE_SLOTS, Paged, Run, SLOT_BYTES, Slot, TINY_SLOTS, Tiny};
+use crate::id::{Edge, Order, Position, Width};
 use crate::memory::Memory;
 use crate::page_store::Pages;
 use crate::paged::{self, Leaf};
@@ -70,6 +70,39 @@ pub(crate) fn visit<M: Memory, B>(
             Order::Descending => emit_descending(first, bytes, &mut f),
         }
     })
+}
+
+/// Calls `f` with each live edge of `run`, which keeps values of `width` beside its slots, and
+/// its value, in `order`, until it breaks: one read covers the slots and the cells.
+pub(crate) fn visit_beside<M: Memory, B>(
+    run: &Run,
+    width: Width,
+    view: &Pages<'_, M>,
+    order: Order,
+    mut f: impl FnMut(Edge, &[u8]) -> ControlFlow<B>,
+) -> Option<B> {
+    let stored = usize::from(run.stored);
+    let w = usize::from(width.get());
+    let cells_at = usize::try_from(run.capacity() * SLOT_BYTES).unwrap_or(usize::MAX);
+    let mut buf = ReadBuf::new();
+    let bytes = buf.fill(view, run.extent.offset(), cells_at + stored * w);
+    let (slots, rest) = bytes.split_at(cells_at.min(bytes.len()));
+    let slots = slots.as_chunks::<4>().0.iter().take(stored);
+    let mut emit = |(i, &raw): (usize, &[u8; 4])| match Slot::decode(raw) {
+        Slot::Live(target) => {
+            let at = i * w;
+            f(
+                Edge::new(Position::new(stored_u32(i)), target),
+                rest.get(at..at + w).unwrap_or(&[]),
+            )
+        }
+        Slot::Tombstone => ControlFlow::Continue(()),
+    };
+    match order {
+        Order::Ascending => slots.enumerate().try_for_each(&mut emit),
+        Order::Descending => slots.enumerate().rev().try_for_each(&mut emit),
+    }
+    .break_value()
 }
 
 /// Calls `f` with the live edges of a tiny bucket in `span`, in its order.

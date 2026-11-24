@@ -51,7 +51,7 @@ impl<M: Memory> Graph<M> {
         if order == Order::Descending {
             ranges.reverse();
         }
-        let plane = bucket.values.map_or(values::Plane::Empty, |c| c.plane);
+        let plane = bucket.cells().map_or(values::Plane::Empty, |c| c.plane);
         let descending = order == Order::Descending;
         for (low, high) in ranges {
             let flow = values::visit(
@@ -120,7 +120,12 @@ pub(in crate::graph) fn visit_joined<M: Memory, B>(
             f(e, &[])
         });
     };
-    let plane = bucket.values.map_or(values::Plane::Empty, |c| c.plane);
+    if let Descriptor::Run(run) = slots
+        && let Some(beside) = run.values
+    {
+        return label_bucket::visit_beside(run, beside, view, order, f);
+    }
+    let plane = bucket.cells().map_or(values::Plane::Empty, |c| c.plane);
     let w = usize::from(width.get());
     let descending = order == Order::Descending;
     let mut visit_range = |(low, high): (u32, u32)| {

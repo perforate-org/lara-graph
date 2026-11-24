@@ -12,9 +12,10 @@
 //!   fit in one page. No position after them moves. The last page is left to inserts, which
 //!   reuse its holes.
 
-use crate::descriptor::{Descriptor, PAGE_SLOTS, Paged, Run, Slot, TINY_SLOTS, Tiny};
+use crate::descriptor::{Descriptor, PAGE_SLOTS, Paged, Run, Slot, TINY_SLOTS, Tiny, run_class};
+use crate::id::Width;
 use crate::id::{Edge, Move, Position, Progress};
-use crate::label_bucket::{self, byte_len, narrow, run_class, stored_u32};
+use crate::label_bucket::{self, byte_len, narrow, stored_u32};
 use crate::memory::{Memory, WriteError};
 use crate::page_store::{Extent, PageId, PageStore};
 use crate::paged::{self, Leaf};
@@ -158,26 +159,54 @@ pub(crate) fn apply<M: Memory>(
     })
 }
 
-/// Packs a tiny or run bucket's live `edges` into the smallest form that holds them.
+/// Packs a tiny or run bucket's live `edges` into the smallest form that holds them. Values
+/// beside a run's slots are packed with them.
 fn pack_small<M: Memory>(
     d: Descriptor,
     edges: &[Edge],
     store: &mut PageStore<M>,
     inline: Inline,
 ) -> Result<Outcome, WriteError> {
-    let old_extent = match d {
-        Descriptor::Run(run) => Some(run.extent),
-        Descriptor::Tiny(_) | Descriptor::Paged(_) => None,
+    let Descriptor::Run(run) = d else {
+        return rebuild(edges, (None, None), store, inline);
     };
+    // The packed edges' cells, read before the run is rewritten (perhaps in place).
+    let cells = run
+        .values
+        .map(|width| (width, packed_cells(&run, edges, store, width)));
     // Reuse the run's extent when the packed edges stay a run of the same class. A tiny or empty
     // result uses no extent, so the old one is released below.
     let stays_run = edges.len() > TINY_SLOTS || (inline == Inline::Forbidden && !edges.is_empty());
-    let reuse = old_extent.filter(|e| stays_run && e.class() == run_class(stored_u32(edges.len())));
-    let outcome = rebuild(edges, reuse, store, inline)?;
-    if let Some(old) = old_extent.filter(|old| Some(*old) != reuse) {
-        store.release(old);
+    let count = stored_u32(edges.len());
+    let reuse = Some(run.extent).filter(|e| stays_run && e.class() == run_class(count, run.values));
+    let outcome = rebuild(edges, (reuse, run.values), store, inline)?;
+    if let (Outcome::LabelBucket(Descriptor::Run(packed)), Some((_, cells))) = (&outcome, &cells) {
+        store.write(packed.cells_offset(), cells);
+    }
+    if Some(run.extent) != reuse {
+        store.release(run.extent);
     }
     Ok(outcome)
+}
+
+/// The cells of `edges` (live edges of `run`, in position order), packed in that order.
+fn packed_cells<M: Memory>(
+    run: &Run,
+    edges: &[Edge],
+    store: &PageStore<M>,
+    width: Width,
+) -> Vec<u8> {
+    let w = usize::from(width.get());
+    let all = store
+        .pages()
+        .read(run.cells_offset(), usize::from(run.stored) * w);
+    edges
+        .iter()
+        .flat_map(|e| {
+            let at = usize::try_from(e.position().index()).unwrap_or(usize::MAX) * w;
+            all.get(at..at + w).unwrap_or(&[]).iter().copied()
+        })
+        .collect()
 }
 
 /// Packs a paged bucket's few live `edges` into a run or tiny bucket, releasing its pages.
@@ -187,8 +216,9 @@ fn demote<M: Memory>(
     store: &mut PageStore<M>,
     inline: Inline,
 ) -> Result<Outcome, WriteError> {
-    // Allocate first: if that fails, the paged bucket is untouched.
-    let outcome = rebuild(edges, None, store, inline)?;
+    // Allocate first: if that fails, the paged bucket is untouched. Its values stay in their
+    // plane.
+    let outcome = rebuild(edges, (None, None), store, inline)?;
     let view = store.pages();
     let data: Vec<PageId> = paged::leaves(&view, &paged)
         .into_iter()
@@ -301,10 +331,10 @@ fn page_edges<M: Memory>(store: &PageStore<M>, number: u32, page: PageId) -> Vec
 }
 
 /// A tiny bucket for up to three edges where allowed, a run for more (in `reuse` if given, else
-/// a new extent), or nothing for none.
+/// a new extent; with room for values of `values` beside its slots if set), or nothing for none.
 fn rebuild<M: Memory>(
     edges: &[Edge],
-    reuse: Option<Extent>,
+    (reuse, values): (Option<Extent>, Option<Width>),
     store: &mut PageStore<M>,
     inline: Inline,
 ) -> Result<Outcome, WriteError> {
@@ -320,7 +350,7 @@ fn rebuild<M: Memory>(
     }
     let extent = match reuse {
         Some(extent) => extent,
-        None => store.allocate(run_class(count))?,
+        None => store.allocate(run_class(count, values))?,
     };
     let bytes: Vec<u8> = edges
         .iter()
@@ -332,6 +362,7 @@ fn rebuild<M: Memory>(
         extent,
         stored: packed,
         live: packed,
+        values,
     })))
 }
 
