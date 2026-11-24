@@ -12,7 +12,9 @@
 //! ---------------------------------------- <- Address 8 (AT_WIDTHS)
 //! Width table present (0 or 1)    ↕ 1 byte
 //! ----------------------------------------
-//! Width table extent              ↕ 7 bytes
+//! Width table extent              ↕ 5 bytes
+//! ----------------------------------------
+//! Reserved space                  ↕ 2 bytes
 //! ---------------------------------------- <- Address 16 (RECORDS_START)
 //! Record of node 0                ↕ 6 bytes
 //! ----------------------------------------
