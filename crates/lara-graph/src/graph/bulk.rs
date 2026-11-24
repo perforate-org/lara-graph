@@ -7,6 +7,7 @@ use crate::id::{EdgeRef, Halves, NodeId, NodeState, Position};
 use crate::label_bucket;
 use crate::label_bucket_list::{self, Lookup};
 use crate::memory::Memory;
+use crate::node::Record;
 use crate::page_store::{ByteClass, PageStore};
 use crate::paged::{self, Leaf};
 use crate::stored::{Index, LabelBucket, Stored, Values};
@@ -150,52 +151,74 @@ impl<M: Memory> Graph<M> {
             }
             start = end;
         }
-        for edge in edges {
-            let index = positions.iter().position(|_| false).unwrap_or_default();
-            let _ = index;
-            let _ = edge;
-        }
 
-        let mut list: Option<label_bucket_list::LabelBucketList> = None;
-        let mut current: Option<NodeId> = None;
         let mut start = 0;
         while start < halves.len() {
             let node = halves[start].node;
-            if current != Some(node) {
-                if let (Some(previous), Some(built)) = (current, list) {
-                    self.set_label_bucket_list(previous, Some(built));
-                }
-                current = Some(node);
-                list = None;
+            let mut node_end = start + 1;
+            while node_end < halves.len() && halves[node_end].node == node {
+                node_end += 1;
             }
-            let mut end = start + 1;
-            while end < halves.len()
-                && halves[end].node == node
-                && halves[end].key == halves[start].key
-            {
-                end += 1;
-            }
-            let stored = self.build_bucket(&halves[start..end])?;
-            let pages = self.label_bucket_lists.pages();
-            let gap = match label_bucket_list::lookup(&pages, list, halves[start].key) {
-                Lookup::Present { .. } => {
-                    return Err(Error::TooManyLabelBuckets(node));
+            let mut groups = 0;
+            let mut cursor = start;
+            while cursor < node_end {
+                let key = halves[cursor].key;
+                while cursor < node_end && halves[cursor].key == key {
+                    cursor += 1;
                 }
-                Lookup::Absent { gap } => gap,
-            };
-            self.label_bucket_lists
-                .reserve(label_bucket_list::PAGES_PER_ADD)?;
-            list = Some(label_bucket_list::add(
-                &mut self.label_bucket_lists,
-                list,
-                gap,
-                halves[start].key,
-                &stored,
-            )?);
-            start = end;
-        }
-        if let (Some(node), Some(built)) = (current, list) {
-            self.set_label_bucket_list(node, Some(built));
+                groups += 1;
+            }
+            if groups == 1 {
+                let stored = self.build_bucket(&halves[start..node_end])?;
+                let list = label_bucket_list::one(
+                    &mut self.label_bucket_lists,
+                    halves[start].key,
+                    &stored,
+                )?;
+                self.write_record(
+                    node,
+                    Record {
+                        list: Some(list),
+                        ..Record::NEW
+                    },
+                );
+            } else {
+                let mut list: Option<label_bucket_list::LabelBucketList> = None;
+                cursor = start;
+                while cursor < node_end {
+                    let key = halves[cursor].key;
+                    let mut end = cursor + 1;
+                    while end < node_end && halves[end].key == key {
+                        end += 1;
+                    }
+                    let stored = self.build_bucket(&halves[cursor..end])?;
+                    let pages = self.label_bucket_lists.pages();
+                    let gap = match label_bucket_list::lookup(&pages, list, key) {
+                        Lookup::Present { .. } => return Err(Error::TooManyLabelBuckets(node)),
+                        Lookup::Absent { gap } => gap,
+                    };
+                    self.label_bucket_lists
+                        .reserve(label_bucket_list::PAGES_PER_ADD)?;
+                    list = Some(label_bucket_list::add(
+                        &mut self.label_bucket_lists,
+                        list,
+                        gap,
+                        key,
+                        &stored,
+                    )?);
+                    cursor = end;
+                }
+                if let Some(list) = list {
+                    self.write_record(
+                        node,
+                        Record {
+                            list: Some(list),
+                            ..Record::NEW
+                        },
+                    );
+                }
+            }
+            start = node_end;
         }
 
         for (edge_index, edge) in edges.iter().enumerate() {

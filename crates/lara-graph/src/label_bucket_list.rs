@@ -372,6 +372,29 @@ pub(crate) fn entries<M: Memory>(
     all
 }
 
+/// A flat list holding exactly one entry, written directly.
+pub(crate) fn one<M: Memory>(
+    store: &mut PageStore<M>,
+    key: LabelBucketKey,
+    d: &Stored,
+) -> Result<LabelBucketList, WriteError> {
+    let class = ByteClass::for_bytes(u32::try_from(ENTRY_BYTES).unwrap_or(u32::MAX))
+        .unwrap_or_else(|| corrupt("bucket list entry class"));
+    let extent = store.allocate(class)?;
+    let [l0, l1] = key.label.get().to_le_bytes();
+    let direction = match key.direction {
+        Direction::Outgoing => DIRECTION_OUTGOING,
+        Direction::Incoming => DIRECTION_INCOMING,
+        Direction::Undirected => DIRECTION_UNDIRECTED,
+    };
+    let mut bytes = [0u8; ENTRY_BYTES];
+    bytes[..2].copy_from_slice(&[l0, l1]);
+    bytes[2] = direction;
+    bytes[3..].copy_from_slice(&d.encode());
+    store.write(extent.offset(), &bytes);
+    Ok(LabelBucketList(Shape::Flat { extent, count: 1 }))
+}
+
 fn read_entries<M: Memory>(
     pages: &Pages<'_, M>,
     base: ByteOffset,
