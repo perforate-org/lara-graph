@@ -821,6 +821,20 @@ fn budget(n: u32) -> NonZeroU32 {
 
 /// Detaches a hub of `degree` leaves in steps of `step` edges (ic-stable-lara
 /// `bench_l_s2_det_hub_<degree>` and its stepped variant).
+/// A hub with 1024 parallel edges to one target: every step re-enters the same opposite bucket.
+#[bench(raw)]
+fn detach_parallel_1024() -> BenchResult {
+    let mut g = heap_graph();
+    let (hub, _) = seed_parallel(&mut g, 1024);
+    bench_fn(|| {
+        g.detach(hub).unwrap_or_else(|e| panic!("detach: {e}"));
+        black_box(
+            g.detach_step(hub, budget(u32::MAX))
+                .unwrap_or_else(|e| panic!("detach step: {e}")),
+        )
+    })
+}
+
 fn detach_hub(degree: u32, step: u32) -> BenchResult {
     let mut g = heap_graph();
     let (hub, _) = seed_hub(&mut g, degree);

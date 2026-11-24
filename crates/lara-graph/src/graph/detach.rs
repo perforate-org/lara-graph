@@ -63,6 +63,8 @@ impl<M: Memory> Graph<M> {
         // Parallel edges to one neighbour follow each other there; any other bucket is scanned
         // from its start, or reached through its target index.
         let mut hint: Option<((NodeId, LabelBucketKey), Position)> = None;
+        // The opposite bucket of the last edge, while parallel edges stay on one neighbour.
+        let mut theirs_cache: Option<((NodeId, LabelBucketKey), Found)> = None;
         // `v`'s bucket as the last removal published it: it stays `v`'s first, at the same list
         // entry, until compaction drops it, and the other half is never in it. Reading it again
         // for each edge cost about 5 % of detaching a hub.
@@ -96,12 +98,18 @@ impl<M: Memory> Graph<M> {
             let half = EdgeRef::new(v, key.label, key.direction, edge.position());
             let theirs_key = (edge.target(), opposite_key(half));
             let from = start_in(hint, &theirs_key);
-            let (theirs, other) = self.first_half_from(v, half, (edge.target(), from));
+            let (theirs, other) = theirs_cache
+                .filter(|(cached, _)| *cached == theirs_key)
+                .map_or_else(
+                    || self.first_half_from(v, half, (edge.target(), from)),
+                    |(_, theirs)| self.first_half_in(v, half, (edge.target(), from), theirs),
+                );
             // Now a hole, so the next scan there starts at it.
             hint = Some((theirs_key, other.position()));
-            let (edge, found) = self.take_pair((found, half), (theirs, other));
+            let (edge, found, next_theirs) = self.take_pair((found, half), (theirs, other));
             removed.push(edge);
             drained = Some((found, key));
+            theirs_cache = next_theirs.map(|theirs| (theirs_key, theirs));
         }
         let progress = if self.label_bucket_list(v)?.is_none() {
             self.write_record(
@@ -188,7 +196,7 @@ impl<M: Memory> Graph<M> {
         for edge in doomed {
             let half = EdgeRef::new(v, label, direction, edge.position());
             let (theirs, other) = self.first_half_from(v, half, (edge.target(), Position::new(0)));
-            let (pair, next) = self.take_pair((found, half), (theirs, other));
+            let (pair, next, _) = self.take_pair((found, half), (theirs, other));
             removed.push(pair);
             found = next;
         }
@@ -202,7 +210,7 @@ impl<M: Memory> Graph<M> {
         &mut self,
         (found, half): (Found, EdgeRef),
         (theirs, other): (Found, EdgeRef),
-    ) -> (RemovedEdge, Found) {
+    ) -> (RemovedEdge, Found, Option<Found>) {
         let halves = order(half, other);
         let canonical = if halves.canonical() == half {
             found
@@ -211,10 +219,17 @@ impl<M: Memory> Graph<M> {
         };
         let value = self.read_value(&canonical, half.label(), halves.canonical().position());
         let bucket = self.tombstone(found, half.position());
-        if other != half {
-            self.tombstone(theirs, other.position());
-        }
-        (RemovedEdge::new(halves, value), Found { bucket, ..found })
+        let next_theirs = if other == half {
+            None
+        } else {
+            let bucket = self.tombstone(theirs, other.position());
+            Some(Found { bucket, ..theirs })
+        };
+        (
+            RemovedEdge::new(halves, value),
+            Found { bucket, ..found },
+            next_theirs,
+        )
     }
 
     /// A detaching node's bucket without its target index: all its edges are going, so
@@ -240,7 +255,18 @@ impl<M: Memory> Graph<M> {
         (other, from): (NodeId, Position),
     ) -> (Found, EdgeRef) {
         let key = opposite_key(half);
-        let theirs = self.present(other, key);
+        self.first_half_in(v, half, (other, from), self.present(other, key))
+    }
+
+    /// [`first_half_from`] with the opposite bucket already resolved.
+    fn first_half_in(
+        &self,
+        v: NodeId,
+        half: EdgeRef,
+        (other, from): (NodeId, Position),
+        theirs: Found,
+    ) -> (Found, EdgeRef) {
+        let key = opposite_key(half);
         // A paged bucket finds it through its target index; a smaller one is scanned.
         let at = if indexed(&theirs.bucket).is_some() {
             self.select_to(&theirs.bucket, v, 0)
