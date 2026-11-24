@@ -299,14 +299,13 @@ fn model_insert<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n
     let to = rng.below(3);
     if let Some(error) = [from, to].into_iter().find_map(|x| model.blocked(x)) {
         assert_eq!(
-            g.add_edge(
-                EdgeKind::Directed,
+            g.add_edge(NewEdge::directed(
                 v(from),
                 label,
                 v(to),
                 placement_of(label),
                 &model.fresh_value(label, &mut Rng(1))
-            ),
+            )),
             Err(error)
         );
         return;
@@ -319,14 +318,13 @@ fn model_insert<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n
     }
     let halves = if label == HUB.1 || rng.below(4) != 0 {
         let halves = g
-            .add_edge(
-                EdgeKind::Directed,
+            .add_edge(NewEdge::directed(
                 v(from),
                 label,
                 v(to),
                 placement_of(label),
                 &value,
-            )
+            ))
             .unwrap();
         assert_eq!(
             halves.canonical(),
@@ -339,14 +337,13 @@ fn model_insert<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n
         halves
     } else {
         let halves = g
-            .add_edge(
-                EdgeKind::Undirected,
+            .add_edge(NewEdge::undirected(
                 v(from),
                 label,
                 v(to),
                 placement_of(label),
                 &value,
-            )
+            ))
             .unwrap();
         let (low, high) = (from.min(to), from.max(to));
         assert_eq!(halves.canonical().node(), v(high));

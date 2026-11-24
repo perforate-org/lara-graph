@@ -27,7 +27,7 @@ use std::cell::RefCell;
 
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::DefaultMemoryImpl;
-use lara_graph::{Direction, EdgeKind, Graph, Label, Memories, Placement};
+use lara_graph::{Direction, Graph, Label, Memories, NewEdge, Placement};
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 
@@ -48,7 +48,7 @@ GRAPH.with(|graph| {
     let alice = graph.add_node().unwrap();
     let bob = graph.add_node().unwrap();
     graph
-        .add_edge(EdgeKind::Directed, alice, FOLLOWS, bob, Placement::Append, &[])
+        .add_edge(NewEdge::directed(alice, FOLLOWS, bob, Placement::Append, &[]))
         .unwrap();
 
     let mut out = Vec::new();

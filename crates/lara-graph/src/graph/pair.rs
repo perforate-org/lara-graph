@@ -60,68 +60,64 @@ impl<M: Memory> Graph<M> {
                 .map_err(|error| BatchError::unchanged(index, error))?;
         }
         let mut out = Vec::with_capacity(halves.len());
-        let mut own_cache: Option<(NodeId, LabelBucketKey, Found)> = None;
-        let mut theirs_cache: Option<(NodeId, LabelBucketKey, Found)> = None;
+        let mut pending = Pending::default();
         for (index, &half) in halves.iter().enumerate() {
-            let node = half.node();
-            let key = key_of(half);
-            if let Some((last_node, last_key, _)) = own_cache
-                && (last_node != node || last_key != key)
-            {
-                self.flush_pending(&mut own_cache);
-            }
-            let own = match own_cache {
-                Some((last_node, last_key, found)) if last_node == node && last_key == key => {
-                    Some(found)
-                }
-                _ => self
-                    .find_label_bucket(node, key)
-                    .map_err(|error| BatchError::after_prefix(index, error))?,
-            };
-            let Some(own) = own else {
-                out.push(Removal::Absent);
-                own_cache = None;
-                continue;
-            };
-            let other = {
-                let view = self.edges.pages();
-                label_bucket::get(&own.bucket.slots, half.position(), &view)
-            };
-            let Some(other) = other else {
-                out.push(Removal::Absent);
-                own_cache = Some((node, key, own));
-                continue;
-            };
-            let their_key = LabelBucketKey {
-                label: half.label(),
-                direction: opposite(half.direction()),
-            };
-            if let Some((last_node, last_key, _)) = theirs_cache
-                && (last_node != other || last_key != their_key)
-            {
-                self.flush_pending(&mut theirs_cache);
-            }
-            let theirs = match theirs_cache {
-                Some((last_node, last_key, found))
-                    if last_node == other && last_key == their_key =>
-                {
-                    found
-                }
-                _ => self.present(other, their_key),
-            };
-            let pair = self.pair_with_theirs(half, own, other, their_key, theirs);
-            let (removal, own_after, theirs_after) = self.take_removal(half, pair);
-            own_cache = Some((node, key, own_after));
-            theirs_cache = theirs_after.map(|found| (other, their_key, found));
+            let removal = self
+                .remove_pending(half, &mut pending)
+                .map_err(|error| BatchError::after_prefix(index, error))?;
             out.push(removal);
         }
-        self.flush_pending(&mut own_cache);
-        self.flush_pending(&mut theirs_cache);
+        self.flush_pending(&mut pending.own);
+        self.flush_pending(&mut pending.theirs);
         Ok(out)
     }
 
-    fn flush_pending(&mut self, cache: &mut Option<(NodeId, LabelBucketKey, Found)>) {
-        if let Some((_, _, found)) = cache.take() {
+    /// Removes the edge `half` belongs to, keeping both changed buckets in `pending` and
+    /// publishing a pending bucket only when the batch moves on from it.
+    fn remove_pending(&mut self, half: EdgeRef, pending: &mut Pending) -> Result<Removal, Error> {
+        let node = half.node();
+        let key = key_of(half);
+        self.flush_unless(&mut pending.own, node, key);
+        let own = match pending.own.get(node, key) {
+            Some(found) => Some(found),
+            None => self.find_label_bucket(node, key)?,
+        };
+        let Some(own) = own else {
+            pending.own.clear();
+            return Ok(Removal::Absent);
+        };
+        let other = {
+            let view = self.edges.pages();
+            label_bucket::get(&own.bucket.slots, half.position(), &view)
+        };
+        let Some(other) = other else {
+            pending.own.set(node, key, own);
+            return Ok(Removal::Absent);
+        };
+        let their_key = LabelBucketKey {
+            label: half.label(),
+            direction: opposite(half.direction()),
+        };
+        self.flush_unless(&mut pending.theirs, other, their_key);
+        let theirs = pending
+            .theirs
+            .get_or_else(other, their_key, || self.present(other, their_key));
+        let pair = self.pair_with_theirs(half, own, other, their_key, theirs);
+        let (removal, own_after, theirs_after) = self.take_removal(half, pair);
+        pending.own.set(node, key, own_after);
+        pending.theirs = LastBucket(theirs_after.map(|found| (other, their_key, found)));
+        Ok(removal)
+    }
+
+    /// Publishes the bucket `cache` holds unless it is `(node, key)`'s.
+    fn flush_unless(&mut self, cache: &mut LastBucket<Found>, node: NodeId, key: LabelBucketKey) {
+        if cache.holds_other(node, key) {
+            self.flush_pending(cache);
+        }
+    }
+
+    fn flush_pending(&mut self, cache: &mut LastBucket<Found>) {
+        if let Some(found) = cache.take() {
             self.publish(found.entry, found.bucket);
         }
     }
@@ -296,6 +292,88 @@ impl<M: Memory> Graph<M> {
 pub(super) struct Found {
     pub(super) entry: EntryAt,
     pub(super) bucket: LabelBucket,
+}
+
+/// The bucket last looked up for one `(node, key)`, so consecutive halves in that bucket reuse
+/// the lookup.
+#[derive(Clone, Copy)]
+pub(super) struct LastBucket<T>(Option<(NodeId, LabelBucketKey, T)>);
+
+impl<T> Default for LastBucket<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<T: Copy> LastBucket<T> {
+    /// The bucket held for `(node, key)`, if that is the one held.
+    #[inline]
+    pub(super) fn get(&self, node: NodeId, key: LabelBucketKey) -> Option<T> {
+        match self.0 {
+            Some((last_node, last_key, found)) if last_node == node && last_key == key => {
+                Some(found)
+            }
+            _ => None,
+        }
+    }
+
+    /// The bucket held for `(node, key)`, else `find`'s, which is then held.
+    #[inline]
+    pub(super) fn get_or_try<E>(
+        &mut self,
+        node: NodeId,
+        key: LabelBucketKey,
+        find: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
+        if let Some(found) = self.get(node, key) {
+            return Ok(found);
+        }
+        let found = find()?;
+        self.set(node, key, found);
+        Ok(found)
+    }
+
+    /// The bucket held for `(node, key)`, else `find`'s, which is then held.
+    #[inline]
+    pub(super) fn get_or_else(
+        &mut self,
+        node: NodeId,
+        key: LabelBucketKey,
+        find: impl FnOnce() -> T,
+    ) -> T {
+        if let Some(found) = self.get(node, key) {
+            return found;
+        }
+        let found = find();
+        self.set(node, key, found);
+        found
+    }
+
+    #[inline]
+    pub(super) fn set(&mut self, node: NodeId, key: LabelBucketKey, found: T) {
+        self.0 = Some((node, key, found));
+    }
+
+    fn clear(&mut self) {
+        self.0 = None;
+    }
+
+    fn take(&mut self) -> Option<T> {
+        self.0.take().map(|(_, _, found)| found)
+    }
+
+    /// Whether a bucket other than `(node, key)`'s is held.
+    fn holds_other(&self, node: NodeId, key: LabelBucketKey) -> bool {
+        self.0
+            .is_some_and(|(last_node, last_key, _)| last_node != node || last_key != key)
+    }
+}
+
+/// A removal batch's changed buckets, published once the batch moves on from them.
+#[derive(Default)]
+struct Pending {
+    own: LastBucket<Found>,
+    theirs: LastBucket<Found>,
 }
 
 /// Both halves of one edge: the given half's bucket, the other half, and its bucket.

@@ -1,19 +1,18 @@
-//! Edge values: writing, point and batch reads, values-first scans and combined scans.
+//! Edge values: writing and point and batch reads.
 
-use super::pair::{Found, key_of, opposite};
+mod scan;
+
+pub(super) use scan::visit_joined;
+
+use super::pair::{Found, LastBucket, key_of, opposite};
 use super::{BatchError, Error, Graph, corrupt, reserved};
-use crate::descriptor::{Descriptor, PAGE_SLOTS};
-use crate::id::{Direction, Edge, EdgeRef, Label, NodeId, Order, Position, Width};
-use crate::label_bucket::{self, Span, Window, stored_u32};
+use crate::id::{Direction, EdgeRef, Label, NodeId, Position, Width};
+use crate::label_bucket;
 use crate::label_bucket_list::LabelBucketKey;
 use crate::memory::Memory;
-use crate::page_store::Pages;
-use crate::paged;
-use crate::stored::LabelBucket;
 use crate::values;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::ops::ControlFlow;
 
 /// One edge value to write in [`Graph::set_edge_values`].
 #[derive(Clone, Copy, Debug)]
@@ -28,6 +27,22 @@ impl<'a> EdgeValue<'a> {
     pub const fn new(half: EdgeRef, value: &'a [u8]) -> Self {
         Self { half, value }
     }
+}
+
+/// What one write of a batch did to its edge, with the old canonical value.
+enum SetValue {
+    /// The half is not live.
+    Absent,
+    /// The label has no width, so nothing was written.
+    Kept(Vec<u8>),
+    Written(Vec<u8>),
+}
+
+/// The buckets of the batch's last edge: its own half's and the other half's.
+#[derive(Default)]
+struct LastPair {
+    own: LastBucket<Option<Found>>,
+    theirs: LastBucket<Found>,
 }
 
 impl<M: Memory> Graph<M> {
@@ -98,85 +113,73 @@ impl<M: Memory> Graph<M> {
         }
         let mut out = Vec::with_capacity(values.len());
         let mut journal: Vec<(EdgeRef, usize)> = Vec::new();
-        let mut own_cache: Option<(NodeId, LabelBucketKey, Option<Found>)> = None;
-        let mut theirs_cache: Option<(NodeId, LabelBucketKey, Found)> = None;
+        let mut last = LastPair::default();
         for (index, edge) in values.iter().enumerate() {
-            let half = edge.half;
-            let node = half.node();
-            let key = key_of(half);
-            let own = match own_cache {
-                Some((last_node, last_key, found)) if last_node == node && last_key == key => found,
-                _ => {
-                    let found = self.find_label_bucket(node, key).map_err(|error| {
-                        self.rollback_values(&journal, &out);
-                        BatchError::unchanged(index, error)
-                    })?;
-                    own_cache = Some((node, key, found));
-                    found
+            match self.set_value_reusing(edge, &mut last) {
+                Ok(SetValue::Absent) => out.push(None),
+                Ok(SetValue::Kept(old)) => out.push(Some(old)),
+                Ok(SetValue::Written(old)) => {
+                    journal.push((edge.half, out.len()));
+                    out.push(Some(old));
                 }
-            };
-            let Some(own) = own else {
-                out.push(None);
-                continue;
-            };
-            let view = self.edges.pages();
-            let Some(other) = label_bucket::get(&own.bucket.slots, half.position(), &view) else {
-                out.push(None);
-                continue;
-            };
-            let theirs_key = LabelBucketKey {
-                label: half.label(),
-                direction: opposite(half.direction()),
-            };
-            let theirs = match theirs_cache {
-                Some((last_node, last_key, found))
-                    if last_node == other && last_key == theirs_key =>
-                {
-                    found
-                }
-                _ => {
-                    let found = self.present(other, theirs_key);
-                    theirs_cache = Some((other, theirs_key, found));
-                    found
-                }
-            };
-            let pair = self.pair_with_theirs(half, own, other, theirs_key, theirs);
-            let halves = super::pair::order(half, pair.other);
-            let old = if halves.canonical() == half {
-                self.read_value(&pair.own, half.label(), half.position())
-            } else {
-                self.read_value(&pair.theirs, pair.other.label(), pair.other.position())
-            };
-            let Some(width) = self
-                .value_width(half.label(), edge.value)
-                .map_err(|error| {
+                Err(error) => {
                     self.rollback_values(&journal, &out);
-                    BatchError::unchanged(index, error)
-                })?
-            else {
-                out.push(Some(old));
-                continue;
-            };
-            let mut targets = [(half, pair.own), (pair.other, pair.theirs)];
-            let count = if pair.other == half { 1 } else { 2 };
-            self.edges
-                .reserve((2 + values::PAGES_PER_WRITE) * u32::try_from(count).unwrap_or(2))
-                .map_err(|error| {
-                    self.rollback_values(&journal, &out);
-                    BatchError::unchanged(index, error.into())
-                })?;
-            for (h, found) in targets.iter_mut().take(count) {
-                let updated = self.write_value(*found, (width, h.position()), edge.value);
-                if *h == half {
-                    own_cache = Some((node, key, Some(updated)));
-                } else {
-                    theirs_cache = Some((other, theirs_key, updated));
+                    return Err(BatchError::unchanged(index, error));
                 }
             }
-            journal.push((half, out.len()));
-            out.push(Some(old));
         }
         Ok(out)
+    }
+
+    /// Writes one edge value of a batch, reusing the buckets `last` holds from the edge before.
+    fn set_value_reusing(
+        &mut self,
+        edge: &EdgeValue<'_>,
+        last: &mut LastPair,
+    ) -> Result<SetValue, Error> {
+        let half = edge.half;
+        let node = half.node();
+        let key = key_of(half);
+        let own = last
+            .own
+            .get_or_try(node, key, || self.find_label_bucket(node, key))?;
+        let Some(own) = own else {
+            return Ok(SetValue::Absent);
+        };
+        let view = self.edges.pages();
+        let Some(other) = label_bucket::get(&own.bucket.slots, half.position(), &view) else {
+            return Ok(SetValue::Absent);
+        };
+        let theirs_key = LabelBucketKey {
+            label: half.label(),
+            direction: opposite(half.direction()),
+        };
+        let theirs = last
+            .theirs
+            .get_or_else(other, theirs_key, || self.present(other, theirs_key));
+        let pair = self.pair_with_theirs(half, own, other, theirs_key, theirs);
+        let halves = super::pair::order(half, pair.other);
+        let old = if halves.canonical() == half {
+            self.read_value(&pair.own, half.label(), half.position())
+        } else {
+            self.read_value(&pair.theirs, pair.other.label(), pair.other.position())
+        };
+        let Some(width) = self.value_width(half.label(), edge.value)? else {
+            return Ok(SetValue::Kept(old));
+        };
+        let mut targets = [(half, pair.own), (pair.other, pair.theirs)];
+        let count = if pair.other == half { 1 } else { 2 };
+        self.edges
+            .reserve((2 + values::PAGES_PER_WRITE) * u32::try_from(count).unwrap_or(2))?;
+        for (h, found) in targets.iter_mut().take(count) {
+            let updated = self.write_value(*found, (width, h.position()), edge.value);
+            if *h == half {
+                last.own.set(node, key, Some(updated));
+            } else {
+                last.theirs.set(other, theirs_key, updated);
+            }
+        }
+        Ok(SetValue::Written(old))
     }
 
     /// Restores the old values written before a failed batch, newest first.
@@ -297,181 +300,4 @@ impl<M: Memory> Graph<M> {
         }
         Ok(())
     }
-
-    /// Calls `f` with the value of every position of `v`'s `(label, direction)` bucket in `order`,
-    /// until it breaks: the first phase of a values-first traversal. Reads the value plane only,
-    /// skipping pages the slot index marks all dead; other removed positions come with their last
-    /// value, so the second phase ([`Self::targets_at`]) drops them.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnknownNode`].
-    pub fn visit_values<B>(
-        &self,
-        v: NodeId,
-        (label, direction): (Label, Direction),
-        order: Order,
-        mut f: impl FnMut(Position, &[u8]) -> ControlFlow<B>,
-    ) -> Result<Option<B>, Error> {
-        let Some(found) = self.find_label_bucket(v, LabelBucketKey { label, direction })? else {
-            return Ok(None);
-        };
-        Ok(self.visit_values_in(&found.bucket, label, order, &mut f))
-    }
-
-    /// Calls `f` with the value of every position of `bucket` in `order`, until it breaks.
-    pub(super) fn visit_values_in<B>(
-        &self,
-        bucket: &LabelBucket,
-        label: Label,
-        order: Order,
-        f: &mut impl FnMut(Position, &[u8]) -> ControlFlow<B>,
-    ) -> Option<B> {
-        let width = self.widths.get(label)?;
-        let view = self.edges.pages();
-        let w = usize::from(width.get());
-        let mut ranges = live_ranges(&view, &bucket.slots);
-        if order == Order::Descending {
-            ranges.reverse();
-        }
-        let plane = bucket.values.map_or(values::Plane::Empty, |c| c.plane);
-        let descending = order == Order::Descending;
-        for (low, high) in ranges {
-            let flow = values::visit(
-                &view,
-                plane,
-                width,
-                (low, high, descending),
-                |first, bytes| {
-                    let cells = bytes.chunks_exact(w).enumerate();
-                    let mut emit =
-                        |(i, cell): (usize, &[u8])| f(Position::new(first + stored_u32(i)), cell);
-                    if descending {
-                        cells.rev().try_for_each(&mut emit)
-                    } else {
-                        cells.into_iter().try_for_each(&mut emit)
-                    }
-                },
-            );
-            if flow.is_some() {
-                return flow;
-            }
-        }
-        None
-    }
-
-    /// Calls `f` with each live edge of `v`'s `(label, direction)` bucket and its value, in
-    /// `order`, until it breaks.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnknownNode`].
-    pub fn visit_neighbors_with_values<B>(
-        &self,
-        v: NodeId,
-        (label, direction): (Label, Direction),
-        order: Order,
-        mut f: impl FnMut(Edge, &[u8]) -> ControlFlow<B>,
-    ) -> Result<Option<B>, Error> {
-        let Some(found) = self.find_label_bucket(v, LabelBucketKey { label, direction })? else {
-            return Ok(None);
-        };
-        let view = self.edges.pages();
-        let slots = found.bucket.slots;
-        let width = self.widths.get(label);
-        let plane = found
-            .bucket
-            .values
-            .map_or(values::Plane::Empty, |c| c.plane);
-        // A slot page's worth of positions at a time: its live edges, then its values in one read.
-        let mut windows: Vec<u32> = (0..slots.stored().div_ceil(PAGE_SLOTS)).collect();
-        if order == Order::Descending {
-            windows.reverse();
-        }
-        let mut join = Join {
-            view: &view,
-            slots: &slots,
-            plane,
-            width,
-            edges: Vec::new(),
-            cells: Vec::new(),
-        };
-        for k in windows {
-            let span = (k * PAGE_SLOTS, ((k + 1) * PAGE_SLOTS).min(slots.stored()));
-            if let ControlFlow::Break(done) = join.window(span, order, &mut f) {
-                return Ok(Some(done));
-            }
-        }
-        Ok(None)
-    }
-}
-
-/// A combined scan's state: a window's live edges, then its values in one read.
-pub(super) struct Join<'a, 'v, M: Memory> {
-    pub(super) view: &'a Pages<'v, M>,
-    pub(super) slots: &'a Descriptor,
-    pub(super) plane: values::Plane,
-    pub(super) width: Option<Width>,
-    pub(super) edges: Vec<Edge>,
-    pub(super) cells: Vec<u8>,
-}
-
-impl<M: Memory> Join<'_, '_, M> {
-    /// Calls `f` with each live edge of positions `low..high` and its value.
-    pub(super) fn window<B>(
-        &mut self,
-        (low, high): (u32, u32),
-        order: Order,
-        f: &mut impl FnMut(Edge, &[u8]) -> ControlFlow<B>,
-    ) -> ControlFlow<B> {
-        self.edges.clear();
-        let span = Span::new(low, high, order);
-        label_bucket::visit(self.slots, self.view, span, Window::Page, |e| {
-            self.edges.push(e);
-            ControlFlow::<()>::Continue(())
-        });
-        if self.edges.is_empty() {
-            return ControlFlow::Continue(());
-        }
-        self.cells.clear();
-        let w = self.width.map_or(0, |w| usize::from(w.get()));
-        if let Some(width) = self.width {
-            let cells = &mut self.cells;
-            values::visit(
-                self.view,
-                self.plane,
-                width,
-                (low, high, false),
-                |_, bytes| {
-                    cells.extend_from_slice(bytes);
-                    ControlFlow::<()>::Continue(())
-                },
-            );
-        }
-        for &e in &self.edges {
-            let at = usize::try_from(e.position().index() - low).unwrap_or(0) * w;
-            f(e, self.cells.get(at..at + w).unwrap_or(&[]))?;
-        }
-        ControlFlow::Continue(())
-    }
-}
-
-/// The position ranges of a bucket's slot pages that are not all dead: the whole bucket unless
-/// it is paged.
-fn live_ranges<M: Memory>(view: &Pages<'_, M>, slots: &Descriptor) -> Vec<(u32, u32)> {
-    let Descriptor::Paged(paged) = slots else {
-        return vec![(0, slots.stored())];
-    };
-    let mut ranges: Vec<(u32, u32)> = Vec::new();
-    for (number, leaf) in (0u32..).zip(paged::leaves(view, paged)) {
-        let first = number * PAGE_SLOTS;
-        let count = (paged.stored - first).min(PAGE_SLOTS);
-        if leaf.page.is_some() && u32::from(leaf.tombstones) < count {
-            match ranges.last_mut() {
-                Some(last) if last.1 == first => last.1 = first + count,
-                Some(_) | None => ranges.push((first, first + count)),
-            }
-        }
-    }
-    ranges
 }

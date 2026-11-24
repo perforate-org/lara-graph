@@ -39,7 +39,6 @@ fn sorted(mut halves: Vec<Halves>) -> Vec<Halves> {
 }
 
 #[test]
-#[expect(clippy::too_many_lines, reason = "one detach covers every half")]
 fn detaching_removes_every_edge_and_reports_its_true_halves() {
     let backing = Backing::default();
     let mut g = backing.create(5);
@@ -48,88 +47,70 @@ fn detaching_removes_every_edge_and_reports_its_true_halves() {
     // Parallel edges x→1 interleaved with 4→1, so the in halves at 1 sit at other positions.
     for _ in 0..3 {
         incident.push(
-            g.add_edge(
-                EdgeKind::Directed,
-                x,
-                l(0),
-                v(1),
-                Placement::ReuseHoles,
-                &[],
-            )
-            .unwrap(),
+            g.add_edge(NewEdge::directed(x, l(0), v(1), Placement::ReuseHoles, &[]))
+                .unwrap(),
         );
-        g.add_edge(
-            EdgeKind::Directed,
+        g.add_edge(NewEdge::directed(
             v(4),
             l(0),
             v(1),
             Placement::ReuseHoles,
             &[],
-        )
+        ))
         .unwrap();
     }
     let gone = incident.remove(0);
     g.remove_edge(gone.canonical()).unwrap();
     incident.push(
-        g.add_edge(
-            EdgeKind::Directed,
-            v(3),
-            l(0),
-            x,
-            Placement::ReuseHoles,
-            &[],
-        )
-        .unwrap(),
-    );
-    incident.push(
-        g.add_edge(EdgeKind::Directed, x, l(1), x, Placement::ReuseHoles, &[])
+        g.add_edge(NewEdge::directed(v(3), l(0), x, Placement::ReuseHoles, &[]))
             .unwrap(),
     );
     incident.push(
-        g.add_edge(EdgeKind::Directed, x, l(1), x, Placement::ReuseHoles, &[])
+        g.add_edge(NewEdge::directed(x, l(1), x, Placement::ReuseHoles, &[]))
             .unwrap(),
     );
     incident.push(
-        g.add_edge(
-            EdgeKind::Undirected,
+        g.add_edge(NewEdge::directed(x, l(1), x, Placement::ReuseHoles, &[]))
+            .unwrap(),
+    );
+    incident.push(
+        g.add_edge(NewEdge::undirected(
             v(2),
             l(1),
             x,
             Placement::ReuseHoles,
             &[],
-        )
+        ))
         .unwrap(),
     );
     incident.push(
-        g.add_edge(EdgeKind::Undirected, x, l(2), x, Placement::ReuseHoles, &[])
+        g.add_edge(NewEdge::undirected(x, l(2), x, Placement::ReuseHoles, &[]))
             .unwrap(),
     );
     let other = g
-        .add_edge(
-            EdgeKind::Directed,
+        .add_edge(NewEdge::directed(
             v(1),
             l(0),
             v(2),
             Placement::ReuseHoles,
             &[],
-        )
+        ))
         .unwrap();
     g.detach(x).unwrap();
     for (from, to) in [(x, v(1)), (v(1), x)] {
         assert_eq!(
-            g.add_edge(
-                EdgeKind::Directed,
+            g.add_edge(NewEdge::directed(
                 from,
                 l(0),
                 to,
                 Placement::ReuseHoles,
                 &[]
-            ),
+            )),
             Err(Error::Detaching(x))
         );
     }
     assert_eq!(
-        g.add_edge(EdgeKind::Undirected, x, l(9), x, Placement::ReuseHoles, &[]),
+        g.add_edge(NewEdge::undirected(x, l(9), x, Placement::ReuseHoles, &[])),
         Err(Error::Detaching(x))
     );
     let removed = detach_fully(&mut g, x, 1);
@@ -151,14 +132,7 @@ fn detaching_removes_every_edge_and_reports_its_true_halves() {
     // Deleted for good: no new edges, no second detach, and the id is not reused.
     assert_eq!(g.node_state(x), Ok(NodeState::Deleted));
     assert_eq!(
-        g.add_edge(
-            EdgeKind::Directed,
-            v(1),
-            l(0),
-            x,
-            Placement::ReuseHoles,
-            &[]
-        ),
+        g.add_edge(NewEdge::directed(v(1), l(0), x, Placement::ReuseHoles, &[])),
         Err(Error::Deleted(x))
     );
     assert_eq!(g.detach(x), Err(Error::Deleted(x)));
@@ -214,14 +188,13 @@ fn a_hub_detaches_in_bounded_steps_across_reopens() {
         // The mark survives a reopen.
         g = backing.open();
         assert_eq!(
-            g.add_edge(
-                EdgeKind::Directed,
+            g.add_edge(NewEdge::directed(
                 v(1),
                 l(0),
                 v(0),
                 Placement::ReuseHoles,
                 &[]
-            ),
+            )),
             Err(Error::Detaching(v(0)))
         );
     }
@@ -254,20 +227,19 @@ fn sweeping_a_shared_bucket_removes_the_detaching_nodes_edges() {
         for _ in 0..=i % 3 {
             edges.push((
                 s,
-                g.add_edge(EdgeKind::Directed, s, l(0), hub, Placement::Append, &value)
+                g.add_edge(NewEdge::directed(s, l(0), hub, Placement::Append, &value))
                     .unwrap(),
             ));
         }
     }
     // An edge out of the hub to a detaching node stays for that node's own detach.
-    g.add_edge(
-        EdgeKind::Directed,
+    g.add_edge(NewEdge::directed(
         hub,
         l(0),
         sources[3],
         Placement::Append,
         &[9, 9],
-    )
+    ))
     .unwrap();
     let gone: Vec<NodeId> = sources.iter().copied().step_by(4).collect();
     let live = *sources.get(1).unwrap();

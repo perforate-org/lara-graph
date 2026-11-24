@@ -27,14 +27,13 @@ fn hub(pool: u32, targets: impl Iterator<Item = u32>) -> (Graph<VecMemory>, Node
     let edges = targets
         .map(|t| {
             let leaf = leaves[usize::try_from(t).unwrap()];
-            g.add_edge(
-                EdgeKind::Directed,
+            g.add_edge(NewEdge::directed(
                 hub,
                 LABEL,
                 leaf,
                 Placement::ReuseHoles,
                 &[],
-            )
+            ))
             .unwrap()
         })
         .collect();

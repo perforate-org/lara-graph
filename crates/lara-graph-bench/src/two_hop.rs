@@ -6,7 +6,7 @@
 
 use core::ops::ControlFlow;
 use lara_graph::{
-    Direction, EdgeKind, Graph, Label, Memory, NodeId, NodeState, Order, Placement, ReadBatch,
+    Direction, Graph, Label, Memory, NewEdge, NodeId, NodeState, Order, Placement, ReadBatch,
 };
 
 /// Satellites around the hub: the first hop.
@@ -69,7 +69,7 @@ fn node<M: Memory>(g: &mut Graph<M>) -> NodeId {
 }
 
 fn edge<M: Memory>(g: &mut Graph<M>, from: NodeId, to: NodeId) {
-    g.add_edge(EdgeKind::Directed, from, LABEL, to, Placement::Append, &[])
+    g.add_edge(NewEdge::directed(from, LABEL, to, Placement::Append, &[]))
         .unwrap_or_else(|e| panic!("insert: {e}"));
 }
 

@@ -75,7 +75,7 @@ fn contains_edge_hub_to_satellite_1024() -> BenchResult {
 /// target's bucket of 1024 is the smaller end, read whole.
 #[bench(raw)]
 fn edges_between_parallel_65536() -> BenchResult {
-    let (g, last) = crate::parallel_hub();
+    let (g, last) = crate::lookup::parallel_hub();
     let (hub, target) = (last.canonical().node(), last.other().node());
     bench_fn(|| black_box(visit_all(&g, hub, target)))
 }

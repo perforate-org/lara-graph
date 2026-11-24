@@ -284,22 +284,22 @@ fn btree_two_hop_stable() -> BenchResult {
 
 #[bench(raw)]
 fn lara_vector_visit_1024() -> BenchResult {
-    crate::visit_hub(vector_graph(), 1024)
+    crate::scan::visit_hub(vector_graph(), 1024)
 }
 
 #[bench(raw)]
 fn lara_vector_visit_65536() -> BenchResult {
-    crate::visit_hub(vector_graph(), 65536)
+    crate::scan::visit_hub(vector_graph(), 65536)
 }
 
 #[bench(raw)]
 fn lara_vector_scan_1024() -> BenchResult {
-    crate::scan_hub(vector_graph(), 1024)
+    crate::scan::scan_hub(vector_graph(), 1024)
 }
 
 #[bench(raw)]
 fn lara_vector_scan_65536() -> BenchResult {
-    crate::scan_hub(vector_graph(), 65536)
+    crate::scan::scan_hub(vector_graph(), 65536)
 }
 
 #[bench(raw)]
@@ -311,27 +311,27 @@ fn lara_vector_two_hop() -> BenchResult {
 
 #[bench(raw)]
 fn lara_stable_visit_1024() -> BenchResult {
-    crate::visit_hub(crate::stable_graph(), 1024)
+    crate::scan::visit_hub(crate::stable_graph(), 1024)
 }
 
 #[bench(raw)]
 fn lara_stable_visit_65536() -> BenchResult {
-    crate::visit_hub(crate::stable_graph(), 65536)
+    crate::scan::visit_hub(crate::stable_graph(), 65536)
 }
 
 #[bench(raw)]
 fn lara_stable_scan_65536() -> BenchResult {
-    crate::scan_hub(crate::stable_graph(), 65536)
+    crate::scan::scan_hub(crate::stable_graph(), 65536)
 }
 
 #[bench(raw)]
 fn lara_stable_insert_1024() -> BenchResult {
-    crate::grow_hub(crate::stable_graph(), 1024)
+    crate::insert::grow_hub(crate::stable_graph(), 1024)
 }
 
 #[bench(raw)]
 fn lara_stable_insert_65536() -> BenchResult {
-    crate::grow_hub(crate::stable_graph(), 65536)
+    crate::insert::grow_hub(crate::stable_graph(), 65536)
 }
 
 #[cfg(test)]

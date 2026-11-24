@@ -17,14 +17,13 @@ fn valued_edges(g: &mut Graph<VecMemory>, label: Label, n: u32, width: usize) ->
     (0..n)
         .map(|i| {
             let value = val(u8::try_from(i % 251).unwrap(), width);
-            g.add_edge(
-                EdgeKind::Directed,
+            g.add_edge(NewEdge::directed(
                 v(0),
                 label,
                 v(1),
                 Placement::Append,
                 &value,
-            )
+            ))
             .unwrap()
             .canonical()
         })
@@ -114,24 +113,22 @@ fn values_have_the_labels_width_and_edges_before_it_read_as_zeros() {
     let backing = Backing::default();
     let mut g = backing.create(2);
     let early = g
-        .add_edge(
-            EdgeKind::Directed,
+        .add_edge(NewEdge::directed(
             v(0),
             l(0),
             v(1),
             Placement::ReuseHoles,
             &[],
-        )
+        ))
         .unwrap();
     assert_eq!(
-        g.add_edge(
-            EdgeKind::Directed,
+        g.add_edge(NewEdge::directed(
             v(0),
             l(0),
             v(1),
             Placement::ReuseHoles,
             &[1]
-        ),
+        )),
         Err(Error::WrongValueLength {
             label: l(0),
             expected: 0,
@@ -141,14 +138,13 @@ fn values_have_the_labels_width_and_edges_before_it_read_as_zeros() {
     g.declare_width(l(0), w(2)).unwrap();
     assert_eq!(g.edge_value(early.other()), Ok(Some(vec![0, 0])));
     assert_eq!(
-        g.add_edge(
-            EdgeKind::Directed,
+        g.add_edge(NewEdge::directed(
             v(0),
             l(0),
             v(1),
             Placement::ReuseHoles,
             &[]
-        ),
+        )),
         Err(Error::WrongValueLength {
             label: l(0),
             expected: 2,
@@ -162,14 +158,13 @@ fn values_have_the_labels_width_and_edges_before_it_read_as_zeros() {
     );
     assert_eq!(g.edge_value(early.other()), Ok(Some(vec![7, 8])));
     let late = g
-        .add_edge(
-            EdgeKind::Directed,
+        .add_edge(NewEdge::directed(
             v(0),
             l(0),
             v(1),
             Placement::ReuseHoles,
             &[9, 9],
-        )
+        ))
         .unwrap();
     assert_eq!(
         g.remove_edge(late.other()),
@@ -197,14 +192,13 @@ fn an_insert_with_a_value_that_runs_out_of_memory_changes_nothing() {
     while capacity - g.edges.minted() > 3 {
         held.push(g.edges.allocate(ByteClass::PAGE).unwrap());
     }
-    let error = g.add_edge(
-        EdgeKind::Directed,
+    let error = g.add_edge(NewEdge::directed(
         v(0),
         l(0),
         v(1),
         Placement::Append,
         &val(1, 4096),
-    );
+    ));
     assert!(matches!(error, Err(Error::OutOfMemory(_))), "{error:?}");
     let after = (
         edges(&g, v(0), l(0)),
@@ -372,26 +366,24 @@ fn visit_values_each_matches_one_by_one() {
         .unwrap_or_else(|e| panic!("{e}"));
     for i in 0..4 {
         let value = val(i, 2);
-        g.add_edge(
-            EdgeKind::Directed,
+        g.add_edge(NewEdge::directed(
             v(0),
             l(0),
             v(1),
             Placement::Append,
             &value,
-        )
+        ))
         .unwrap();
     }
     for i in 4..6 {
         let value = val(i, 2);
-        g.add_edge(
-            EdgeKind::Directed,
+        g.add_edge(NewEdge::directed(
             v(2),
             l(0),
             v(1),
             Placement::Append,
             &value,
-        )
+        ))
         .unwrap();
     }
     let nodes = [v(0), v(2), v(1)];

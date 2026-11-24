@@ -1,32 +1,26 @@
 //! Building a graph from an edge list in one pass.
 
-use super::{Direction, EdgeKind, Error, Graph, LabelBucketKey};
-use crate::corrupt::corrupt;
-use crate::descriptor::{Descriptor, PAGE_SLOTS, Paged, Run, Slot, TINY_SLOTS, Tiny};
-use crate::id::{EdgeRef, Halves, NodeId, NodeState, Position};
-use crate::label_bucket;
-use crate::label_bucket_list::{self, Lookup};
+mod bucket;
+mod halves;
+
+use super::{Error, Graph, LabelBucketKey, NewEdge};
+use crate::id::{Halves, NodeId, NodeState};
+use crate::label_bucket_list::{self, LabelBucketList, Lookup};
 use crate::memory::Memory;
 use crate::node::Record;
-use crate::page_store::{ByteClass, PageStore};
-use crate::paged::{self, Leaf};
-use crate::stored::{Index, LabelBucket, Stored, Values};
-use crate::targets::{self, BLOCK, Change};
-use crate::units::ByteOffset;
-use crate::values::{self, Plane};
+use crate::page_store::PageStore;
+use crate::stored::Stored;
 use alloc::vec::Vec;
+use halves::Half;
 
 /// Node records written per line while bulk load flushes them.
 const RECORDS_PER_LINE_USIZE: usize = 8;
 
-/// One half of an input edge before positions are assigned.
-struct Half {
-    node: NodeId,
-    key: LabelBucketKey,
-    target: NodeId,
-    edge: u32,
-    slot: u8,
-}
+/// Single-bucket nodes whose label bucket lists are built in one batch.
+const SINGLES_PER_BATCH: usize = 1024;
+
+/// Nodes with one label bucket, waiting for their lists to be built in a batch.
+type Singles = Vec<(NodeId, LabelBucketKey, Stored)>;
 
 impl<M: Memory> Graph<M> {
     /// Builds the graph from `edges` in one pass. The graph must have its nodes and width
@@ -40,175 +34,107 @@ impl<M: Memory> Graph<M> {
     /// [`Error::UnknownNode`], [`Error::Detaching`], [`Error::Deleted`],
     /// [`Error::WrongValueLength`], [`Error::TooManyLabelBuckets`], [`Error::AddressSpaceExhausted`],
     /// [`Error::OutOfMemory`], or [`Error::NotEmpty`].
-    #[expect(
-        clippy::too_many_lines,
-        clippy::indexing_slicing,
-        reason = "one bulk pass owns these bounds"
-    )]
-    pub fn bulk_load(&mut self, edges: &[super::NewEdge<'_>]) -> Result<Vec<Halves>, Error> {
+    pub fn bulk_load(&mut self, edges: &[NewEdge<'_>]) -> Result<Vec<Halves>, Error> {
+        self.check_bulk_empty()?;
+        for edge in edges {
+            self.check_bulk_edge(edge)?;
+        }
+        if edges.is_empty() {
+            return Ok(Vec::new());
+        }
+        let halves = halves::split(edges);
+        let positions = halves::positions(&halves, edges.len());
+        let records = self.build_lists(&halves, edges)?;
+        self.write_records(&records);
+        Ok(halves::edge_halves(edges, &positions))
+    }
+
+    /// Fails with [`Error::NotEmpty`] when any node has edges.
+    fn check_bulk_empty(&self) -> Result<(), Error> {
         for v in 0..self.node_count() {
             if self.label_bucket_list(NodeId::new(v))?.is_some() {
                 return Err(Error::NotEmpty);
             }
         }
-        for edge in edges {
-            self.check(edge.from())?;
-            self.check(edge.to())?;
-            for v in [edge.from(), edge.to()] {
-                match self.record(v)?.state {
-                    NodeState::Live => {}
-                    NodeState::Detaching => return Err(Error::Detaching(v)),
-                    NodeState::Deleted => return Err(Error::Deleted(v)),
-                }
-            }
-            self.value_width(edge.label(), edge.value())?;
-        }
-        if edges.is_empty() {
-            return Ok(Vec::new());
-        }
+        Ok(())
+    }
 
-        let mut positions = alloc::vec![[u32::MAX; 2]; edges.len()];
-        let mut halves: Vec<Half> = Vec::with_capacity(edges.len() * 2);
-        for (edge_index, edge) in edges.iter().enumerate() {
-            match edge.kind() {
-                EdgeKind::Directed => {
-                    let out = Half {
-                        node: edge.from(),
-                        key: LabelBucketKey {
-                            label: edge.label(),
-                            direction: Direction::Outgoing,
-                        },
-                        target: edge.to(),
-                        edge: u32::try_from(edge_index).unwrap_or(u32::MAX),
-                        slot: 0,
-                    };
-                    let into = Half {
-                        node: edge.to(),
-                        key: LabelBucketKey {
-                            label: edge.label(),
-                            direction: Direction::Incoming,
-                        },
-                        target: edge.from(),
-                        edge: u32::try_from(edge_index).unwrap_or(u32::MAX),
-                        slot: 1,
-                    };
-                    halves.push(out);
-                    halves.push(into);
-                }
-                EdgeKind::Undirected => {
-                    let (low, high) = (edge.from().min(edge.to()), edge.from().max(edge.to()));
-                    let high_half = Half {
-                        node: high,
-                        key: LabelBucketKey {
-                            label: edge.label(),
-                            direction: Direction::Undirected,
-                        },
-                        target: low,
-                        edge: u32::try_from(edge_index).unwrap_or(u32::MAX),
-                        slot: 0,
-                    };
-                    if low == high {
-                        halves.push(high_half);
-                    } else {
-                        let low_half = Half {
-                            node: low,
-                            key: LabelBucketKey {
-                                label: edge.label(),
-                                direction: Direction::Undirected,
-                            },
-                            target: high,
-                            edge: u32::try_from(edge_index).unwrap_or(u32::MAX),
-                            slot: 1,
-                        };
-                        halves.push(high_half);
-                        halves.push(low_half);
-                    }
-                }
+    /// Checks that both ends of `edge` are live and its value fits its label.
+    fn check_bulk_edge(&self, edge: &NewEdge<'_>) -> Result<(), Error> {
+        self.check(edge.from())?;
+        self.check(edge.to())?;
+        for v in [edge.from(), edge.to()] {
+            match self.record(v)?.state {
+                NodeState::Live => {}
+                NodeState::Detaching => return Err(Error::Detaching(v)),
+                NodeState::Deleted => return Err(Error::Deleted(v)),
             }
         }
-        halves.sort_by_key(|half| (half.node, half.key));
+        self.value_width(edge.label(), edge.value())?;
+        Ok(())
+    }
 
-        let mut start = 0;
-        while start < halves.len() {
-            let mut end = start + 1;
-            while end < halves.len()
-                && halves[end].node == halves[start].node
-                && halves[end].key == halves[start].key
-            {
-                end += 1;
-            }
-            for (offset, half) in halves[start..end].iter_mut().enumerate() {
-                let at = u32::try_from(offset).unwrap_or(u32::MAX);
-                positions[usize::try_from(half.edge).unwrap_or(0)][usize::from(half.slot)] = at;
-            }
-            start = end;
-        }
-
+    /// Builds every node's buckets and label bucket list, returning the encoded node records.
+    fn build_lists(
+        &mut self,
+        halves: &[Half],
+        edges: &[NewEdge<'_>],
+    ) -> Result<Vec<[u8; 8]>, Error> {
         let mut records = alloc::vec![[0u8; 8]; usize::try_from(self.node_count()).unwrap_or(0)];
-        let mut singles: Vec<(NodeId, LabelBucketKey, Stored)> = Vec::with_capacity(1024);
-        let mut start = 0;
-        while start < halves.len() {
-            let node = halves[start].node;
-            let mut node_end = start + 1;
-            while node_end < halves.len() && halves[node_end].node == node {
-                node_end += 1;
-            }
-            let mut groups = 0;
-            let mut cursor = start;
-            while cursor < node_end {
-                let key = halves[cursor].key;
-                while cursor < node_end && halves[cursor].key == key {
-                    cursor += 1;
-                }
-                groups += 1;
-            }
-            if groups == 1 {
-                let stored = self.build_bucket(&halves[start..node_end], edges)?;
-                singles.push((node, halves[start].key, stored));
-                if singles.len() == 1024 {
+        let mut singles: Singles = Vec::with_capacity(SINGLES_PER_BATCH);
+        for node_halves in halves.chunk_by(|a, b| a.node == b.node) {
+            let (Some(head), Some(tail)) = (node_halves.first(), node_halves.last()) else {
+                continue;
+            };
+            // Halves are sorted by key within a node, so equal ends mean one bucket.
+            if head.key == tail.key {
+                let stored = self.build_bucket(node_halves, edges)?;
+                singles.push((head.node, head.key, stored));
+                if singles.len() == SINGLES_PER_BATCH {
                     flush_singles(&mut self.label_bucket_lists, &mut singles, &mut records)?;
                 }
             } else {
-                let mut list: Option<label_bucket_list::LabelBucketList> = None;
-                cursor = start;
-                while cursor < node_end {
-                    let key = halves[cursor].key;
-                    let mut end = cursor + 1;
-                    while end < node_end && halves[end].key == key {
-                        end += 1;
-                    }
-                    let stored = self.build_bucket(&halves[cursor..end], edges)?;
-                    let pages = self.label_bucket_lists.pages();
-                    let gap = match label_bucket_list::lookup(&pages, list, key) {
-                        Lookup::Present { .. } => return Err(Error::TooManyLabelBuckets(node)),
-                        Lookup::Absent { gap } => gap,
-                    };
-                    self.label_bucket_lists
-                        .reserve(label_bucket_list::PAGES_PER_ADD)?;
-                    list = Some(label_bucket_list::add(
-                        &mut self.label_bucket_lists,
-                        list,
-                        gap,
-                        key,
-                        &stored,
-                    )?);
-                    cursor = end;
-                }
-                if let Some(list) = list
-                    && let Some(record) =
-                        records.get_mut(usize::try_from(node.index()).unwrap_or(0))
-                {
-                    *record = Record {
-                        list: Some(list),
-                        ..Record::NEW
-                    }
-                    .encode();
-                }
+                let list = self.build_list(head.node, node_halves, edges)?;
+                set_record(&mut records, head.node, list);
             }
-            start = node_end;
         }
         flush_singles(&mut self.label_bucket_lists, &mut singles, &mut records)?;
+        Ok(records)
+    }
 
+    /// Builds the buckets of a node with several and adds them to its label bucket list.
+    fn build_list(
+        &mut self,
+        node: NodeId,
+        node_halves: &[Half],
+        edges: &[NewEdge<'_>],
+    ) -> Result<Option<LabelBucketList>, Error> {
+        let mut list: Option<LabelBucketList> = None;
+        for bucket in node_halves.chunk_by(|a, b| a.key == b.key) {
+            let Some(key) = bucket.first().map(|half| half.key) else {
+                continue;
+            };
+            let stored = self.build_bucket(bucket, edges)?;
+            let pages = self.label_bucket_lists.pages();
+            let gap = match label_bucket_list::lookup(&pages, list, key) {
+                Lookup::Present { .. } => return Err(Error::TooManyLabelBuckets(node)),
+                Lookup::Absent { gap } => gap,
+            };
+            self.label_bucket_lists
+                .reserve(label_bucket_list::PAGES_PER_ADD)?;
+            list = Some(label_bucket_list::add(
+                &mut self.label_bucket_lists,
+                list,
+                gap,
+                key,
+                &stored,
+            )?);
+        }
+        Ok(list)
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "each line covers records in range")]
+    fn write_records(&self, records: &[[u8; 8]]) {
         for base in (0..records.len()).step_by(RECORDS_PER_LINE_USIZE) {
             let end = (base + RECORDS_PER_LINE_USIZE).min(records.len());
             let mut line = [0u8; 64];
@@ -221,154 +147,12 @@ impl<M: Memory> Graph<M> {
                 &line[..(end - base) * 8],
             );
         }
-
-        for (edge_index, edge) in edges.iter().enumerate() {
-            if edge.kind() == EdgeKind::Undirected && edge.from() == edge.to() {
-                positions[edge_index][1] = positions[edge_index][0];
-            }
-        }
-
-        let mut out = Vec::with_capacity(edges.len());
-        for (edge_index, edge) in edges.iter().enumerate() {
-            let first = if positions[edge_index][0] == u32::MAX {
-                corrupt("a bulk edge without its canonical half")
-            } else {
-                Position::new(positions[edge_index][0])
-            };
-            let second = if positions[edge_index][1] == u32::MAX {
-                corrupt("a bulk edge without its other half")
-            } else {
-                Position::new(positions[edge_index][1])
-            };
-            let (which, other) = match edge.kind() {
-                EdgeKind::Directed => (
-                    EdgeRef::new(edge.from(), edge.label(), Direction::Outgoing, first),
-                    EdgeRef::new(edge.to(), edge.label(), Direction::Incoming, second),
-                ),
-                EdgeKind::Undirected => {
-                    let (low, high) = (edge.from().min(edge.to()), edge.from().max(edge.to()));
-                    (
-                        EdgeRef::new(high, edge.label(), Direction::Undirected, first),
-                        EdgeRef::new(low, edge.label(), Direction::Undirected, second),
-                    )
-                }
-            };
-            out.push(Halves::new(which, other));
-        }
-        Ok(out)
-    }
-
-    #[expect(clippy::indexing_slicing, reason = "the group is non-empty")]
-    fn build_bucket(
-        &mut self,
-        halves: &[Half],
-        edges: &[super::NewEdge<'_>],
-    ) -> Result<Stored, Error> {
-        let label = halves[0].key.label;
-        let width = self.widths.get(label);
-        let count = u32::try_from(halves.len()).map_err(|_| Error::AddressSpaceExhausted)?;
-        let tiny_slots = u32::try_from(TINY_SLOTS).unwrap_or(3);
-        if width.is_none() && count <= tiny_slots {
-            let mut tiny = Tiny::EMPTY;
-            for half in halves {
-                tiny = tiny.push(Slot::Live(half.target));
-            }
-            return Ok(LabelBucket::plain(Descriptor::Tiny(tiny)).stored());
-        }
-        let mut bucket = if count <= PAGE_SLOTS {
-            let extent = self.edges.allocate(label_bucket::run_class(count))?;
-            write_halves(&self.edges, extent.offset(), halves);
-            LabelBucket::plain(Descriptor::Run(Run {
-                extent,
-                stored: label_bucket::narrow(count),
-                live: label_bucket::narrow(count),
-            }))
-        } else {
-            let paged = self.build_paged(halves)?;
-            LabelBucket::plain(Descriptor::Paged(paged))
-        };
-        if let Some(width) = width {
-            let mut plane = Plane::Empty;
-            for (position, half) in halves.iter().enumerate() {
-                plane = values::write(
-                    &mut self.edges,
-                    plane,
-                    width,
-                    u32::try_from(position).map_err(|_| Error::AddressSpaceExhausted)?,
-                    edges[usize::try_from(half.edge).unwrap_or(0)].value(),
-                )?;
-            }
-            bucket.values = Some(Values { plane, width });
-        }
-        if matches!(bucket.slots, Descriptor::Paged(_)) {
-            let end = count / BLOCK * BLOCK;
-            if end > 0 {
-                let changes: Vec<Change> = (0..end)
-                    .map(|at| Change {
-                        key: (
-                            halves[usize::try_from(at).unwrap_or(0)].target.index(),
-                            at / BLOCK,
-                        ),
-                        delta: 1,
-                    })
-                    .collect();
-                let plan = targets::plan(&self.edges.pages(), None, &changes);
-                self.edges.reserve(plan.pages())?;
-                bucket.index = Index::of(targets::commit(&mut self.edges, plan)?);
-            }
-        }
-        if bucket.extended() {
-            bucket.header = Some(self.edges.allocate(crate::stored::HEADER_CLASS)?);
-            bucket.write_header(&self.edges);
-        }
-        Ok(bucket.stored())
-    }
-
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "page ranges come from the slot count"
-    )]
-    fn build_paged(&mut self, halves: &[Half]) -> Result<Paged, Error> {
-        let count = u32::try_from(halves.len()).map_err(|_| Error::AddressSpaceExhausted)?;
-        let page_slots = usize::try_from(PAGE_SLOTS).unwrap_or(1024);
-        let first = self.edges.allocate(ByteClass::PAGE)?.page();
-        let (mut index, second) =
-            paged::start(&mut self.edges, Leaf::data(first, 0, paged::NO_HOLE))?;
-        write_halves(&self.edges, first.offset(), &halves[..page_slots]);
-        write_halves(
-            &self.edges,
-            second.offset(),
-            &halves
-                [page_slots..usize::try_from(count.min(2 * PAGE_SLOTS)).unwrap_or(2 * page_slots)],
-        );
-        let page_count = paged::data_pages(count);
-        for page in 2..page_count {
-            let before = page * PAGE_SLOTS;
-            let paged = Paged {
-                index,
-                stored: before,
-                live: before,
-            };
-            let (next, data) = paged::append_page(&mut self.edges, &paged)?;
-            write_halves(
-                &self.edges,
-                data.offset(),
-                &halves[usize::try_from(before).unwrap_or(0)
-                    ..usize::try_from(count.min(before + PAGE_SLOTS)).unwrap_or(0)],
-            );
-            index = next;
-        }
-        Ok(Paged {
-            index,
-            stored: count,
-            live: count,
-        })
     }
 }
 
 fn flush_singles<M: Memory>(
     store: &mut PageStore<M>,
-    singles: &mut Vec<(NodeId, LabelBucketKey, Stored)>,
+    singles: &mut Singles,
     records: &mut [[u8; 8]],
 ) -> Result<(), Error> {
     if singles.is_empty() {
@@ -380,27 +164,22 @@ fn flush_singles<M: Memory>(
         .collect();
     let built = label_bucket_list::one_batch(store, &entries)?;
     for (&(node, _, _), list) in singles.iter().zip(built) {
-        if let Some(record) = records.get_mut(usize::try_from(node.index()).unwrap_or(0)) {
-            *record = Record {
-                list: Some(list),
-                ..Record::NEW
-            }
-            .encode();
-        }
+        set_record(records, node, Some(list));
     }
     singles.clear();
     Ok(())
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "one page of slots bounds the slice"
-)]
-fn write_halves<M: Memory>(store: &PageStore<M>, at: ByteOffset, halves: &[Half]) {
-    let mut bytes = [0u8; 4096];
-    let len = halves.len() * 4;
-    for (dst, half) in bytes[..len].as_chunks_mut::<4>().0.iter_mut().zip(halves) {
-        *dst = Slot::Live(half.target).encode();
+/// Encodes `node`'s record with `list`; a node without a list keeps its empty record.
+#[inline]
+fn set_record(records: &mut [[u8; 8]], node: NodeId, list: Option<LabelBucketList>) {
+    if let Some(list) = list
+        && let Some(record) = records.get_mut(usize::try_from(node.index()).unwrap_or(0))
+    {
+        *record = Record {
+            list: Some(list),
+            ..Record::NEW
+        }
+        .encode();
     }
-    store.write(at, &bytes[..len]);
 }

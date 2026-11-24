@@ -349,6 +349,82 @@ impl<M: Memory> PageStore<M> {
                 class,
             });
         }
+        let mut chunk = self.open_chunk(class)?;
+        let index =
+            u16::try_from(chunk.bitmap.trailing_ones()).unwrap_or_else(|_| corrupt("bitmap"));
+        if index >= class.per_page() {
+            corrupt("partial chunk has no free slot");
+        }
+        chunk.used += 1;
+        chunk.bitmap |= 1 << index;
+        self.store_chunk(class, &chunk);
+        if chunk.used == class.per_page() {
+            self.unlink_partial(class, chunk.page);
+        }
+        Ok(Extent {
+            page: chunk.page,
+            index,
+            class,
+        })
+    }
+
+    /// Allocates up to `count` extents of `class`, batching the chunk-page bitmap updates.
+    pub(crate) fn allocate_many(
+        &mut self,
+        class: ByteClass,
+        count: u32,
+    ) -> Result<Vec<Extent>, WriteError> {
+        let mut out = Vec::with_capacity(usize::try_from(count).unwrap_or(0));
+        if class.is_page() {
+            for _ in 0..count {
+                out.push(self.allocate(class)?);
+            }
+            return Ok(out);
+        }
+        while below(&out, count) {
+            self.fill_chunk(class, count, &mut out)?;
+        }
+        Ok(out)
+    }
+
+    /// Takes free extents of one partial (or fresh) chunk page into `out` until it holds `count`
+    /// or the page is full, writing the page's record once.
+    fn fill_chunk(
+        &mut self,
+        class: ByteClass,
+        count: u32,
+        out: &mut Vec<Extent>,
+    ) -> Result<(), WriteError> {
+        let mut chunk = self.open_chunk(class)?;
+        let page = chunk.page;
+        let mut free = !chunk.bitmap;
+        let mut taken = 0u32;
+        while free != 0 && below(out, count) {
+            let index = free.trailing_zeros();
+            free &= free - 1;
+            chunk.bitmap |= 1u128 << index;
+            out.push(Extent {
+                page,
+                index: u16::try_from(index).unwrap_or_else(|_| corrupt("chunk index")),
+                class,
+            });
+            taken += 1;
+        }
+        chunk.used += u16::try_from(taken).unwrap_or_else(|_| corrupt("chunk used"));
+        self.store_chunk(class, &chunk);
+        if chunk.used >= class.per_page() {
+            self.unlink_partial(class, page);
+        }
+        if taken == 0 {
+            corrupt("chunk page without a free extent");
+        }
+        Ok(())
+    }
+
+    /// The head of `class`'s partial list, or a fresh empty chunk page pushed onto it, with its
+    /// record read.
+    #[inline]
+    fn open_chunk(&mut self, class: ByteClass) -> Result<OpenChunk, WriteError> {
         let page = if let Some(page) = self.partial_head(class) {
             page
         } else {
@@ -374,100 +450,28 @@ impl<M: Memory> PageStore<M> {
         else {
             corrupt("partial list holds a page that is not a chunk")
         };
-        let index = u16::try_from(bitmap.trailing_ones()).unwrap_or_else(|_| corrupt("bitmap"));
-        if index >= class.per_page() {
-            corrupt("partial chunk has no free slot");
-        }
-        let used = used + 1;
-        self.set_record(
+        Ok(OpenChunk {
             page,
-            PageRecord::Chunk {
-                class,
-                used,
-                prev,
-                next,
-                bitmap: bitmap | (1 << index),
-            },
-        );
-        if used == class.per_page() {
-            self.unlink_partial(class, page);
-        }
-        Ok(Extent { page, index, class })
+            used,
+            prev,
+            next,
+            bitmap,
+        })
     }
 
-    /// Allocates up to `count` extents of `class`, batching the chunk-page bitmap updates.
-    pub(crate) fn allocate_many(
-        &mut self,
-        class: ByteClass,
-        count: u32,
-    ) -> Result<Vec<Extent>, WriteError> {
-        if class.is_page() {
-            let mut out = Vec::with_capacity(usize::try_from(count).unwrap_or(0));
-            for _ in 0..count {
-                out.push(self.allocate(class)?);
-            }
-            return Ok(out);
-        }
-        let mut out = Vec::with_capacity(usize::try_from(count).unwrap_or(0));
-        while u32::try_from(out.len()).unwrap_or(u32::MAX) < count {
-            let page = if let Some(page) = self.partial_head(class) {
-                page
-            } else {
-                let page = self.take_page()?;
-                let chunk = PageRecord::Chunk {
-                    class,
-                    used: 0,
-                    prev: None,
-                    next: None,
-                    bitmap: 0,
-                };
-                self.set_record(page, chunk);
-                self.push_partial(class, page);
-                page
-            };
-            let PageRecord::Chunk {
-                used,
-                bitmap,
-                prev,
-                next,
-                ..
-            } = self.record(page)
-            else {
-                corrupt("partial list holds a page that is not a chunk")
-            };
-            let mut free = !bitmap;
-            let mut bitmap = bitmap;
-            let mut taken = 0u32;
-            while free != 0 && u32::try_from(out.len()).unwrap_or(u32::MAX) < count {
-                let index = free.trailing_zeros();
-                free &= free - 1;
-                bitmap |= 1u128 << index;
-                out.push(Extent {
-                    page,
-                    index: u16::try_from(index).unwrap_or_else(|_| corrupt("chunk index")),
-                    class,
-                });
-                taken += 1;
-            }
-            let used = used + u16::try_from(taken).unwrap_or_else(|_| corrupt("chunk used"));
-            self.set_record(
-                page,
-                PageRecord::Chunk {
-                    class,
-                    used,
-                    prev,
-                    next,
-                    bitmap,
-                },
-            );
-            if used >= class.per_page() {
-                self.unlink_partial(class, page);
-            }
-            if taken == 0 {
-                corrupt("chunk page without a free extent");
-            }
-        }
-        Ok(out)
+    /// Writes back the record of a chunk page opened by [`Self::open_chunk`].
+    #[inline]
+    fn store_chunk(&self, class: ByteClass, chunk: &OpenChunk) {
+        self.set_record(
+            chunk.page,
+            PageRecord::Chunk {
+                class,
+                used: chunk.used,
+                prev: chunk.prev,
+                next: chunk.next,
+                bitmap: chunk.bitmap,
+            },
+        );
     }
 
     /// Grows both memories so that `pages` more pages can be taken without growing them: after
@@ -731,6 +735,20 @@ pub(crate) fn header<M: Memory>(memory: &M, magic: [u8; 3]) -> Option<u8> {
 
 fn record_at(page: PageId) -> ByteOffset {
     ByteOffset::new(RECORDS_START + u64::from(page.0) * RECORD_BYTES)
+}
+
+/// A chunk page's record while extents are taken from it.
+struct OpenChunk {
+    page: PageId,
+    used: u16,
+    prev: Option<PageId>,
+    next: Option<PageId>,
+    bitmap: u128,
+}
+
+/// Whether `out` holds fewer than `count` extents.
+fn below(out: &[Extent], count: u32) -> bool {
+    u32::try_from(out.len()).unwrap_or(u32::MAX) < count
 }
 
 fn partial_head_at(lane: u64) -> ByteOffset {

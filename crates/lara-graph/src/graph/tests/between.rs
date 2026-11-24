@@ -61,13 +61,13 @@ fn edges_between_two_nodes_match_a_filter_of_either_end() {
     for i in 0..3000u32 {
         let t = rest[usize::try_from(i % 7).unwrap()];
         halves.push(
-            g.add_edge(EdgeKind::Directed, hub, l(0), t, Placement::Append, &[])
+            g.add_edge(NewEdge::directed(hub, l(0), t, Placement::Append, &[]))
                 .unwrap(),
         );
     }
     for &t in &rest[7..] {
         halves.push(
-            g.add_edge(EdgeKind::Directed, hub, l(0), t, Placement::Append, &[])
+            g.add_edge(NewEdge::directed(hub, l(0), t, Placement::Append, &[]))
                 .unwrap(),
         );
     }
@@ -76,30 +76,30 @@ fn edges_between_two_nodes_match_a_filter_of_either_end() {
         let (a, b) = (w[0], w[1]);
         for _ in 0..=i % 3 {
             halves.push(
-                g.add_edge(EdgeKind::Directed, a, l(0), b, Placement::Append, &[])
+                g.add_edge(NewEdge::directed(a, l(0), b, Placement::Append, &[]))
                     .unwrap(),
             );
             halves.push(
-                g.add_edge(EdgeKind::Undirected, a, l(1), b, Placement::Append, &[])
+                g.add_edge(NewEdge::undirected(a, l(1), b, Placement::Append, &[]))
                     .unwrap(),
             );
         }
         halves.push(
-            g.add_edge(EdgeKind::Directed, b, l(0), a, Placement::Append, &[])
+            g.add_edge(NewEdge::directed(b, l(0), a, Placement::Append, &[]))
                 .unwrap(),
         );
     }
     for &a in rest.iter().step_by(5) {
         halves.push(
-            g.add_edge(EdgeKind::Directed, a, l(0), a, Placement::Append, &[])
+            g.add_edge(NewEdge::directed(a, l(0), a, Placement::Append, &[]))
                 .unwrap(),
         );
         halves.push(
-            g.add_edge(EdgeKind::Undirected, a, l(1), a, Placement::Append, &[])
+            g.add_edge(NewEdge::undirected(a, l(1), a, Placement::Append, &[]))
                 .unwrap(),
         );
         halves.push(
-            g.add_edge(EdgeKind::Directed, hub, l(0), a, Placement::Append, &[])
+            g.add_edge(NewEdge::directed(hub, l(0), a, Placement::Append, &[]))
                 .unwrap(),
         );
     }
@@ -113,7 +113,7 @@ fn edges_between_two_nodes_match_a_filter_of_either_end() {
             rest[usize::try_from(i % 30).unwrap()]
         };
         halves.push(
-            g.add_edge(EdgeKind::Directed, from, l(0), hub2, Placement::Append, &[])
+            g.add_edge(NewEdge::directed(from, l(0), hub2, Placement::Append, &[]))
                 .unwrap(),
         );
     }
