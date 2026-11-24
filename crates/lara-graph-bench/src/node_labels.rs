@@ -80,3 +80,30 @@ fn expand_label_filter_1024_stable() -> BenchResult {
         black_box(kept)
     })
 }
+
+/// Labels 1024 nodes with one label each, in stable memory.
+#[bench(raw)]
+fn set_node_labels_1024_stable() -> BenchResult {
+    let mut g = stable_graph();
+    let all = nodes(&mut g, 1024);
+    bench_fn(|| {
+        for &x in &all {
+            g.set_node_labels(x, &[Label::new(3)])
+                .unwrap_or_else(|e| panic!("labels: {e}"));
+        }
+    })
+}
+
+/// Labels 1024 nodes with eight labels each: a spilled set per node.
+#[bench(raw)]
+fn set_node_labels_spilled_1024_stable() -> BenchResult {
+    let mut g = stable_graph();
+    let all = nodes(&mut g, 1024);
+    let labels: Vec<Label> = (0..8).map(Label::new).collect();
+    bench_fn(|| {
+        for &x in &all {
+            g.set_node_labels(x, &labels)
+                .unwrap_or_else(|e| panic!("labels: {e}"));
+        }
+    })
+}
