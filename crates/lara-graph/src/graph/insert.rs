@@ -126,7 +126,7 @@ impl<M: Memory> Graph<M> {
             self.check(edge.from)
                 .and_then(|()| self.check(edge.to))
                 .and_then(|()| self.value_width(edge.label, edge.value))
-                .map_err(|error| BatchError::new(index, error))?;
+                .map_err(|error| BatchError::unchanged(index, error))?;
         }
         let all_directed = edges.iter().all(|edge| edge.kind == EdgeKind::Directed);
         if all_directed && repeated_targets(edges) {
@@ -143,7 +143,7 @@ impl<M: Memory> Graph<M> {
         for (index, edge) in edges.iter().enumerate() {
             if edge.kind == EdgeKind::Undirected {
                 self.add_undirected_batch_edge(edge, &mut out)
-                    .map_err(|error| BatchError::new(index, error))?;
+                    .map_err(|error| BatchError::after_prefix(index, error))?;
                 cache = None;
                 continue;
             }
@@ -168,7 +168,7 @@ impl<M: Memory> Graph<M> {
             );
             let (halves, updated) = self
                 .insert_halves_cached([from, to], edge.value, cached)
-                .map_err(|error| BatchError::new(index, error))?;
+                .map_err(|error| BatchError::after_prefix(index, error))?;
             let [canonical, other] = halves;
             out.push(Halves::new(canonical, other));
             cache = updated
@@ -208,7 +208,7 @@ impl<M: Memory> Graph<M> {
                     ];
                     let (halves, updated) = self
                         .insert_halves_with([from, to], edge.value, &ManyCache(cached))
-                        .map_err(|error| BatchError::new(index, error))?;
+                        .map_err(|error| BatchError::after_prefix(index, error))?;
                     remember_halves(&mut cache, [from, to], updated);
                     let [canonical, other] = halves;
                     out.push(Halves::new(canonical, other));
@@ -225,7 +225,7 @@ impl<M: Memory> Graph<M> {
                         let cached = [cached_place(&cache, at_high.node, at_high.key)];
                         let (halves, updated) = self
                             .insert_halves_with([at_high], edge.value, &ManyCache(cached))
-                            .map_err(|error| BatchError::new(index, error))?;
+                            .map_err(|error| BatchError::after_prefix(index, error))?;
                         remember_halves(&mut cache, [at_high], updated);
                         let [half] = halves;
                         out.push(Halves::new(half, half));
@@ -243,7 +243,7 @@ impl<M: Memory> Graph<M> {
                     ];
                     let (halves, updated) = self
                         .insert_halves_with([at_high, at_low], edge.value, &ManyCache(cached))
-                        .map_err(|error| BatchError::new(index, error))?;
+                        .map_err(|error| BatchError::after_prefix(index, error))?;
                     remember_halves(&mut cache, [at_high, at_low], updated);
                     let [canonical, other] = halves;
                     out.push(Halves::new(canonical, other));
@@ -276,7 +276,7 @@ impl<M: Memory> Graph<M> {
             if low == high {
                 let (halves, updated) = self
                     .insert_halves_two([at_high], edge.value, [cache_high])
-                    .map_err(|error| BatchError::new(index, error))?;
+                    .map_err(|error| BatchError::after_prefix(index, error))?;
                 let [half] = halves;
                 out.push(Halves::new(half, half));
                 if let Some(place) = updated.first().and_then(|place| *place) {
@@ -295,7 +295,7 @@ impl<M: Memory> Graph<M> {
             );
             let (halves, updated) = self
                 .insert_halves_two([at_high, at_low], edge.value, [cache_high, cache_low])
-                .map_err(|error| BatchError::new(index, error))?;
+                .map_err(|error| BatchError::after_prefix(index, error))?;
             let [canonical, other] = halves;
             out.push(Halves::new(canonical, other));
             if updated.first().and_then(|place| *place).is_none() {
@@ -399,7 +399,7 @@ impl<M: Memory> Graph<M> {
                     cache_from.map(|place| (0, place)),
                 )
             }
-            .map_err(|error| BatchError::new(index, error))?;
+            .map_err(|error| BatchError::after_prefix(index, error))?;
             let [canonical, other] = halves;
             out.push(Halves::new(canonical, other));
             if self_loop {

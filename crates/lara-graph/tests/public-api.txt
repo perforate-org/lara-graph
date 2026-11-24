@@ -1,4 +1,18 @@
 pub mod lara_graph
+pub enum lara_graph::BatchError
+pub lara_graph::BatchError::PartiallyApplied
+pub lara_graph::BatchError::PartiallyApplied::error: lara_graph::Error
+pub lara_graph::BatchError::PartiallyApplied::index: usize
+pub lara_graph::BatchError::Unchanged
+pub lara_graph::BatchError::Unchanged::error: lara_graph::Error
+pub lara_graph::BatchError::Unchanged::index: usize
+impl lara_graph::BatchError
+pub const fn lara_graph::BatchError::error(&self) -> &lara_graph::Error
+pub const fn lara_graph::BatchError::index(&self) -> usize
+pub const fn lara_graph::BatchError::into_error(self) -> lara_graph::Error
+impl core::error::Error for lara_graph::BatchError
+impl core::fmt::Display for lara_graph::BatchError
+pub fn lara_graph::BatchError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum lara_graph::Direction
 pub lara_graph::Direction::Incoming
 pub lara_graph::Direction::Outgoing
@@ -65,14 +79,6 @@ pub lara_graph::Progress::Remaining
 pub enum lara_graph::Removal
 pub lara_graph::Removal::Absent
 pub lara_graph::Removal::Removed(lara_graph::RemovedEdge)
-pub struct lara_graph::BatchError
-impl lara_graph::BatchError
-pub const fn lara_graph::BatchError::error(&self) -> &lara_graph::Error
-pub const fn lara_graph::BatchError::index(&self) -> usize
-pub const fn lara_graph::BatchError::into_error(self) -> lara_graph::Error
-impl core::error::Error for lara_graph::BatchError
-impl core::fmt::Display for lara_graph::BatchError
-pub fn lara_graph::BatchError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct lara_graph::Cursor
 impl lara_graph::Cursor
 pub const fn lara_graph::Cursor::at(lara_graph::Order, lara_graph::Position, core::num::nonzero::NonZeroU32) -> Self

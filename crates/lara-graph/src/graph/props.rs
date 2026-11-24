@@ -95,7 +95,7 @@ impl<M: Memory> Graph<M> {
         for (index, edge) in values.iter().enumerate() {
             self.check(edge.half.node())
                 .and_then(|()| self.value_width(edge.half.label(), edge.value))
-                .map_err(|error| BatchError::new(index, error))?;
+                .map_err(|error| BatchError::unchanged(index, error))?;
         }
         let mut out = Vec::with_capacity(values.len());
         let mut own_cache: Option<(NodeId, LabelBucketKey, Option<Found>)> = None;
@@ -109,7 +109,7 @@ impl<M: Memory> Graph<M> {
                 _ => {
                     let found = self
                         .find_label_bucket(node, key)
-                        .map_err(|error| BatchError::new(index, error))?;
+                        .map_err(|error| BatchError::after_prefix(index, error))?;
                     own_cache = Some((node, key, found));
                     found
                 }
@@ -148,7 +148,7 @@ impl<M: Memory> Graph<M> {
             };
             let Some(width) = self
                 .value_width(half.label(), edge.value)
-                .map_err(|error| BatchError::new(index, error))?
+                .map_err(|error| BatchError::after_prefix(index, error))?
             else {
                 out.push(Some(old));
                 continue;
@@ -157,7 +157,7 @@ impl<M: Memory> Graph<M> {
             let count = if pair.other == half { 1 } else { 2 };
             self.edges
                 .reserve((2 + values::PAGES_PER_WRITE) * u32::try_from(count).unwrap_or(2))
-                .map_err(|error| BatchError::new(index, error.into()))?;
+                .map_err(|error| BatchError::after_prefix(index, error.into()))?;
             for (h, found) in targets.iter_mut().take(count) {
                 let updated = self.write_value(*found, (width, h.position()), edge.value);
                 if *h == half {

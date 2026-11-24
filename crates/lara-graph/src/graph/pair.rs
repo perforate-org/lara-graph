@@ -40,9 +40,10 @@ impl<M: Memory> Graph<M> {
         Ok(removal)
     }
 
-    /// Removes every edge identified by `halves`, in order. Each edge is all-or-none, but the
-    /// batch is not atomic: an error leaves the edges before it removed. A half whose edge is
-    /// already gone yields [`Removal::Absent`].
+    /// Removes every edge identified by `halves`, in order. All halves are checked before the
+    /// first removal; if a check fails, the graph is unchanged, so the batch is all-or-none.
+    /// Once the checks pass, no removal can fail. A half whose edge is already gone yields
+    /// [`Removal::Absent`].
     ///
     /// Consecutive halves in the same bucket reuse its `Found`, and parallel edges reuse the
     /// opposite bucket.
@@ -53,7 +54,7 @@ impl<M: Memory> Graph<M> {
     pub fn remove_edges(&mut self, halves: &[EdgeRef]) -> Result<Vec<Removal>, BatchError> {
         for (index, half) in halves.iter().enumerate() {
             self.check(half.node())
-                .map_err(|error| BatchError::new(index, error))?;
+                .map_err(|error| BatchError::unchanged(index, error))?;
         }
         let mut out = Vec::with_capacity(halves.len());
         let mut own_cache: Option<(NodeId, LabelBucketKey, Found)> = None;
@@ -72,7 +73,7 @@ impl<M: Memory> Graph<M> {
                 }
                 _ => self
                     .find_label_bucket(node, key)
-                    .map_err(|error| BatchError::new(index, error))?,
+                    .map_err(|error| BatchError::after_prefix(index, error))?,
             };
             let Some(own) = own else {
                 out.push(Removal::Absent);

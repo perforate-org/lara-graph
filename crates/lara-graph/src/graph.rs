@@ -108,40 +108,70 @@ pub enum Error {
     },
 }
 
-/// A batch operation failed at `index`. Edges before it were applied; edges after it were not.
+/// A batch operation failed at `index`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BatchError {
-    index: usize,
-    error: Error,
+pub enum BatchError {
+    /// Nothing before `index` was applied; the graph is unchanged.
+    Unchanged {
+        /// The failing element.
+        index: usize,
+        /// The failure itself.
+        error: Error,
+    },
+    /// Elements before `index` were applied; `index` itself is all-or-none.
+    PartiallyApplied {
+        /// The failing element.
+        index: usize,
+        /// The failure itself.
+        error: Error,
+    },
 }
 
 impl BatchError {
-    pub(crate) const fn new(index: usize, error: Error) -> Self {
-        Self { index, error }
+    pub(crate) const fn unchanged(index: usize, error: Error) -> Self {
+        Self::Unchanged { index, error }
+    }
+
+    pub(crate) const fn after_prefix(index: usize, error: Error) -> Self {
+        if index == 0 {
+            Self::Unchanged { index, error }
+        } else {
+            Self::PartiallyApplied { index, error }
+        }
     }
 
     /// Where in the batch the failure happened.
     #[must_use]
     pub const fn index(&self) -> usize {
-        self.index
+        match *self {
+            Self::Unchanged { index, .. } | Self::PartiallyApplied { index, .. } => index,
+        }
     }
 
     /// The failure itself.
     #[must_use]
     pub const fn error(&self) -> &Error {
-        &self.error
+        match self {
+            Self::Unchanged { error, .. } | Self::PartiallyApplied { error, .. } => error,
+        }
     }
 
     /// The failure itself, without the batch position.
     #[must_use]
     pub const fn into_error(self) -> Error {
-        self.error
+        match self {
+            Self::Unchanged { error, .. } | Self::PartiallyApplied { error, .. } => error,
+        }
     }
 }
 
 impl fmt::Display for BatchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "batch edge {}: {}", self.index, self.error)
+        let state = match self {
+            Self::Unchanged { .. } => "nothing applied",
+            Self::PartiallyApplied { .. } => "earlier elements applied",
+        };
+        write!(f, "batch edge {}: {} ({state})", self.index(), self.error())
     }
 }
 
