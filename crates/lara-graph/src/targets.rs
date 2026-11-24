@@ -20,7 +20,7 @@ mod tree;
 pub(crate) use tree::extents;
 pub(crate) use tree::{
     Change, InPlace, Merged, Nth, Plan, Root, apply_reserved, commit, last_block, lower,
-    merge_step, nth, plan, raise, rank, release,
+    merge_step, nth, plan, raise, rank, release, visit_blocks,
 };
 #[cfg(test)]
 pub(crate) use tree::{count_before, postings, select, zeros_per_segment};

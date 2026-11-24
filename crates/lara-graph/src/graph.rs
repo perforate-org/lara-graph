@@ -608,6 +608,7 @@ impl fmt::Display for InitError {
 impl core::error::Error for Error {}
 impl core::error::Error for InitError {}
 
+mod between;
 mod bulk;
 mod compaction;
 mod detach;

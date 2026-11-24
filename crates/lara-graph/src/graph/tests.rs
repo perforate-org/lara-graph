@@ -1403,6 +1403,7 @@ fn init_new_and_load_follow_ic_stable_structures() {
     ));
 }
 
+mod between;
 mod compaction;
 mod invariants;
 

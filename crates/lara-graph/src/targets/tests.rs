@@ -105,6 +105,14 @@ fn check_target(
         last,
         "last block of {target}"
     );
+    let mut blocks = Vec::new();
+    visit_blocks(view, root, target, |b| blocks.push(b));
+    let want: Vec<u32> = model
+        .range((target, 0)..=(target, u32::MAX))
+        .filter(|(_, count)| **count > 0)
+        .map(|(&(_, block), _)| block)
+        .collect();
+    assert_eq!(blocks, want, "blocks of {target}");
 }
 
 /// The deepest root seen, to show the test reaches several levels.

@@ -303,6 +303,14 @@ skipping dead pages.
 - **`targets_at`** returns the targets at chosen positions, in the order given. It reads each
   touched run or page once, from its first wanted position to its last. Gleaph uses this for the
   second phase of property-first expansion.
+- **`visit_edges_between`** and **`contains_edge`** find the edges between two given nodes. Every
+  edge has a half at each end, so they read the smaller of `u`'s bucket and `v`'s opposite one:
+  the cost follows the smaller end. A bucket without an index is read whole; an indexed one only
+  in the blocks its index lists for the other end (`targets::visit_blocks`, one descent per leaf),
+  adjacent blocks merged into one read. Each edge comes as the half at the end that was read.
+  Measured: about 3.5K instructions per `contains_edge` between small buckets, present or not;
+  1024 parallel edges listed for 39K; 256 edges between two hubs for 120K, as much as reading the
+  sender's whole bucket since the target is in every block (`crates/lara-graph-bench/src/between.rs`).
 
 ## Target index
 

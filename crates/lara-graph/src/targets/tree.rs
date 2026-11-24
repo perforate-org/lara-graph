@@ -26,6 +26,7 @@
 //! ----------------------------------------
 //! ```
 
+mod blocks;
 mod commit;
 mod lookup;
 mod merge;
@@ -36,6 +37,7 @@ use crate::corrupt::corrupt;
 use crate::memory::{Memory, WriteError};
 use crate::page_store::{PageId, PageStore, Pages};
 use alloc::vec::Vec;
+pub(crate) use blocks::visit_blocks;
 use commit::{Body, Fresh, Kept, Kid, Top, Work, shifted};
 pub(crate) use commit::{Plan, commit};
 #[cfg(test)]

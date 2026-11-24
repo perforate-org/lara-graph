@@ -17,6 +17,7 @@ use lara_graph::{
     NewEdge, NodeId, Order, Placement, Position, Progress, VecMemory, Width,
 };
 
+mod between;
 mod btree;
 mod locality;
 pub mod two_hop;

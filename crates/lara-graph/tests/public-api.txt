@@ -125,6 +125,9 @@ pub fn lara_graph::Graph<M>::bulk_load(&mut self, &[lara_graph::NewEdge<'_>]) ->
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::compact(&mut self, lara_graph::NodeId, lara_graph::Label, lara_graph::Direction) -> core::result::Result<lara_graph::Compaction, lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
+pub fn lara_graph::Graph<M>::contains_edge(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), lara_graph::NodeId) -> core::result::Result<bool, lara_graph::Error>
+pub fn lara_graph::Graph<M>::visit_edges_between<B>(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), lara_graph::NodeId, lara_graph::Order, impl core::ops::function::FnMut(lara_graph::EdgeRef) -> core::ops::control_flow::ControlFlow<B>) -> core::result::Result<core::option::Option<B>, lara_graph::Error>
+impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::counterpart(&self, lara_graph::EdgeRef) -> core::result::Result<core::option::Option<lara_graph::EdgeRef>, lara_graph::Error>
 pub fn lara_graph::Graph<M>::remove_edge(&mut self, lara_graph::EdgeRef) -> core::result::Result<lara_graph::Removal, lara_graph::Error>
 pub fn lara_graph::Graph<M>::remove_edges(&mut self, &[lara_graph::EdgeRef]) -> core::result::Result<alloc::vec::Vec<lara_graph::Removal>, lara_graph::BatchError>
