@@ -16,6 +16,9 @@ use crate::units::ByteOffset;
 use crate::values::{self, Plane};
 use alloc::vec::Vec;
 
+/// Node records written per line while bulk load flushes them.
+const RECORDS_PER_LINE_USIZE: usize = 8;
+
 /// One half of an input edge before positions are assigned.
 struct Half<'a> {
     node: NodeId,
@@ -152,6 +155,8 @@ impl<M: Memory> Graph<M> {
             start = end;
         }
 
+        let mut lists: Vec<Option<label_bucket_list::LabelBucketList>> =
+            alloc::vec![None; usize::try_from(self.node_count()).unwrap_or(0)];
         let mut start = 0;
         while start < halves.len() {
             let node = halves[start].node;
@@ -175,13 +180,9 @@ impl<M: Memory> Graph<M> {
                     halves[start].key,
                     &stored,
                 )?;
-                self.write_record(
-                    node,
-                    Record {
-                        list: Some(list),
-                        ..Record::NEW
-                    },
-                );
+                if let Some(slot) = lists.get_mut(usize::try_from(node.index()).unwrap_or(0)) {
+                    *slot = Some(list);
+                }
             } else {
                 let mut list: Option<label_bucket_list::LabelBucketList> = None;
                 cursor = start;
@@ -208,17 +209,34 @@ impl<M: Memory> Graph<M> {
                     )?);
                     cursor = end;
                 }
-                if let Some(list) = list {
-                    self.write_record(
-                        node,
-                        Record {
-                            list: Some(list),
-                            ..Record::NEW
-                        },
-                    );
+                if let Some(list) = list
+                    && let Some(slot) = lists.get_mut(usize::try_from(node.index()).unwrap_or(0))
+                {
+                    *slot = Some(list);
                 }
             }
             start = node_end;
+        }
+
+        let mut line = [0u8; 64];
+        for base in (0..lists.len()).step_by(RECORDS_PER_LINE_USIZE) {
+            let mut used = 0usize;
+            for offset in 0..RECORDS_PER_LINE_USIZE {
+                let Some(list) = lists.get(base + offset).copied() else {
+                    break;
+                };
+                let record = Record {
+                    list,
+                    ..Record::NEW
+                };
+                let start = offset * 8;
+                line[start..start + 8].copy_from_slice(&record.encode());
+                used = start + 8;
+            }
+            self.region().overwrite(
+                super::record_at(NodeId::new(u32::try_from(base).unwrap_or(0))),
+                &line[..used],
+            );
         }
 
         for (edge_index, edge) in edges.iter().enumerate() {
