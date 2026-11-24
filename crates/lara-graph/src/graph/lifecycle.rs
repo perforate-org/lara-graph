@@ -4,7 +4,7 @@
 //! install or an upgrade.
 
 use super::widths::AT_WIDTHS;
-use super::{AT_COUNT, Graph, InitError, LABELS_MAGIC, MAGIC, VERSION};
+use super::{AT_COUNT, AT_POSTINGS, Graph, InitError, LABELS_MAGIC, MAGIC, VERSION};
 use crate::memories::Memories;
 use crate::memory::{Memory, Region, WriteError};
 use crate::page_store::{self, PageStore, header};
@@ -69,9 +69,15 @@ impl<M: Memory> Graph<M> {
         // No label width table yet.
         region.overwrite(ByteOffset::new(AT_WIDTHS), &[0; 8]);
         let [l0, l1, l2] = LABELS_MAGIC;
-        Region::new(&node_labels)
+        let labels_region = Region::new(&node_labels);
+        labels_region
             .write(ByteOffset::new(0), &[l0, l1, l2, VERSION])
             .map_err(init_error)?;
+        // No label postings yet.
+        labels_region.overwrite(
+            ByteOffset::new(AT_POSTINGS),
+            &crate::values::Plane::Empty.encode(),
+        );
         Ok(Self::assemble(
             (nodes, node_labels),
             edges,

@@ -62,21 +62,37 @@ fn node_labels_hold_sets_of_any_size() {
     check(&g);
 }
 
+/// Listed and bitmap sets at their edges, up to every label, swapped for one another without
+/// leaking pages.
 #[test]
-fn node_labels_check_their_node_and_their_count() {
+fn node_labels_take_any_set_of_labels() {
     let backing = Backing::default();
     let mut g = backing.create(2);
     assert_eq!(g.has_node_label(v(9), l(0)), Err(Error::UnknownNode(v(9))));
     assert_eq!(g.set_node_labels(v(9), &[]), Err(Error::UnknownNode(v(9))));
-    let most: Vec<Label> = (0..2047).map(l).collect();
-    g.set_node_labels(v(0), &most).unwrap();
-    let too_many: Vec<Label> = (0..2048).map(l).collect();
-    assert_eq!(
-        g.set_node_labels(v(0), &too_many),
-        Err(Error::TooManyNodeLabels(v(0)))
-    );
-    assert_eq!(labels_of(&g, v(0)).len(), 2047);
-    assert!(g.has_node_label(v(0), l(2046)).unwrap());
+    let every: Vec<Label> = (0..=u16::MAX).rev().map(l).collect();
+    let evens: Vec<Label> = (0..=u16::MAX).step_by(2).map(l).collect();
+    for set in [
+        (0..2047).map(l).collect::<Vec<_>>(),
+        (0..2048).map(l).collect(),
+        every.clone(),
+        evens.clone(),
+        (100..103).map(l).collect(),
+    ] {
+        g.set_node_labels(v(0), &set).unwrap();
+        check(&g);
+        let mut want: Vec<u16> = set.iter().map(|x| x.get()).collect();
+        want.sort_unstable();
+        assert_eq!(labels_of(&g, v(0)), want);
+        for probe in [0, 1, 2046, 2047, 32_767, 32_768, 65_534, u16::MAX] {
+            assert_eq!(
+                g.has_node_label(v(0), l(probe)).unwrap(),
+                want.binary_search(&probe).is_ok()
+            );
+        }
+    }
+    g.set_node_labels(v(1), &every).unwrap();
+    g.set_node_labels(v(1), &[]).unwrap();
     check(&g);
 }
 
@@ -111,4 +127,69 @@ fn node_labels_survive_bulk_load_and_go_with_deletion() {
         g.set_node_labels(v(3), &set(&[1])),
         Err(Error::Deleted(v(3)))
     );
+}
+
+/// Each label's nodes come back in id order across chunks of 65,536 ids, through a list that
+/// becomes a bitmap and back to empty, resuming after any node.
+#[test]
+fn nodes_with_a_label_come_back_in_id_order() {
+    let backing = Backing::default();
+    let mut g = backing.create(0);
+    g.add_nodes(NonZeroU32::new(70_000).unwrap()).unwrap();
+    let nodes_with = |g: &Graph<VecMemory>, label: u16, after: Option<NodeId>| {
+        let mut out = Vec::new();
+        g.visit_nodes_with_label(l(label), after, |x| {
+            out.push(x.index());
+            ControlFlow::<()>::Continue(())
+        });
+        out
+    };
+    // Every third node gets label 1 (a bitmap in the first chunk, a list in the second), every
+    // thousandth label 2 too; labelled from the top down, so lists take inserts at the front.
+    let mut want1 = Vec::new();
+    let mut want2 = Vec::new();
+    for i in (0..70_000u32).rev().filter(|i| i % 3 == 0) {
+        let labels = if i % 1000 == 0 {
+            set(&[1, 2])
+        } else {
+            set(&[1])
+        };
+        g.set_node_labels(v(i), &labels).unwrap();
+        want1.push(i);
+        if i % 1000 == 0 {
+            want2.push(i);
+        }
+    }
+    want1.reverse();
+    want2.reverse();
+    check(&g);
+    assert_eq!(nodes_with(&g, 1, None), want1);
+    assert_eq!(nodes_with(&g, 2, None), want2);
+    assert_eq!(
+        g.node_label_count(l(1)),
+        u32::try_from(want1.len()).unwrap()
+    );
+    assert_eq!(nodes_with(&g, 3, None), Vec::<u32>::new());
+    let resumed: Vec<u32> = want1.iter().copied().filter(|&i| i > 65_535).collect();
+    assert_eq!(nodes_with(&g, 1, Some(v(65_535))), resumed);
+    // A break stops the walk at once.
+    let mut seen = 0;
+    let stopped = g.visit_nodes_with_label(l(1), None, |_| {
+        seen += 1;
+        if seen == 5 {
+            ControlFlow::Break(seen)
+        } else {
+            ControlFlow::Continue(())
+        }
+    });
+    assert_eq!(stopped, Some(5));
+    // Losing label 1 everywhere empties the bitmap and the list, and frees them.
+    for i in want1.clone() {
+        let keep = if i % 1000 == 0 { set(&[2]) } else { Vec::new() };
+        g.set_node_labels(v(i), &keep).unwrap();
+    }
+    check(&g);
+    assert_eq!(nodes_with(&g, 1, None), Vec::<u32>::new());
+    assert_eq!(g.node_label_count(l(1)), 0);
+    assert_eq!(nodes_with(&g, 2, None), want2);
 }

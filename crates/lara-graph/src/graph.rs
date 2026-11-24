@@ -34,7 +34,11 @@
 //! Magic "LGL"                     ↕ 3 bytes
 //! ----------------------------------------
 //! Layout version (1)              ↕ 1 byte
-//! ---------------------------------------- <- Address 4 (LABEL_CELLS_START)
+//! ---------------------------------------- <- Address 4 (AT_POSTINGS)
+//! Label postings directory root   ↕ 6 bytes       (a value plane root, see `label_postings`)
+//! ----------------------------------------
+//! Reserved space                  ↕ 6 bytes
+//! ---------------------------------------- <- Address 16 (LABEL_CELLS_START)
 //! Labels of node 0                ↕ 5 bytes       (see `node_labels`)
 //! ----------------------------------------
 //! ...
@@ -69,7 +73,8 @@ const AT_COUNT: u64 = 4;
 const RECORDS_START: u64 = 16;
 /// The node labels memory's magic: "lara graph labels".
 const LABELS_MAGIC: [u8; 3] = *b"LGL";
-const LABEL_CELLS_START: u64 = 4;
+const AT_POSTINGS: u64 = 4;
+const LABEL_CELLS_START: u64 = 16;
 
 /// A multigraph with dense node ids and labeled edges, directed or undirected.
 ///
@@ -95,6 +100,8 @@ pub struct Graph<M: Memory> {
     count: u32,
     /// Mirrors the label width table.
     widths: Widths,
+    /// Mirrors the label postings directory's root, in the node labels memory's header.
+    postings: crate::values::Plane,
 }
 
 /// An operation failed; the graph is unchanged.
@@ -125,8 +132,6 @@ pub enum Error {
     },
     /// 1023 labels already have a width.
     TooManyWidths,
-    /// More labels than a node can have (2047).
-    TooManyNodeLabels(NodeId),
     /// A value's length is not its label's width (0 for a label without one).
     WrongValueLength {
         /// The label.
@@ -300,6 +305,9 @@ impl<M: Memory> Graph<M> {
     ) -> Self {
         let count = u32::from_le_bytes(Region::new(&nodes).read_array(ByteOffset::new(AT_COUNT)));
         let widths = Widths::load(&nodes, &label_bucket_lists);
+        let postings = crate::values::Plane::decode(
+            Region::new(&node_labels).read_array(ByteOffset::new(AT_POSTINGS)),
+        );
         Self {
             nodes,
             node_labels,
@@ -307,6 +315,7 @@ impl<M: Memory> Graph<M> {
             label_bucket_lists,
             count,
             widths,
+            postings,
         }
     }
 
@@ -646,7 +655,6 @@ impl fmt::Display for Error {
                 declared.get()
             ),
             Self::TooManyWidths => f.write_str("too many labels with a width"),
-            Self::TooManyNodeLabels(v) => write!(f, "node {} has too many labels", v.index()),
             Self::WrongValueLength {
                 label,
                 expected,

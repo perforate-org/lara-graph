@@ -18,6 +18,7 @@ pub(super) fn check<M: Memory>(g: &Graph<M>) {
             "width table shared"
         );
     }
+    check_postings(g, &mut seen);
     check_pairs(&seen.halves);
     let allocated: BTreeSet<_> = g.edges.allocated().into_iter().map(key).collect();
     assert_eq!(allocated, seen.edges, "edge extents: none leaked or shared");
@@ -46,11 +47,47 @@ fn check_node_labels<M: Memory>(g: &Graph<M>, i: u32, seen: &mut Seen) {
     if g.node_state(v(i)).unwrap() == NodeState::Deleted {
         assert_eq!(cell, NodeLabels::None, "deleted node {i} keeps labels");
     }
-    if let NodeLabels::Spilled(extent) = cell {
+    if matches!(cell, NodeLabels::Spilled(_)) {
         assert!(labels.len() > 2, "node {i} spills two labels or fewer");
+    }
+    for extent in cell.extents(&g.label_bucket_lists.pages()) {
         assert!(
             seen.label_bucket_lists.insert(key(extent)),
             "node label extent shared"
+        );
+    }
+}
+
+/// The label postings are exactly the inverse of the nodes' label sets, and own their extents
+/// once.
+fn check_postings<M: Memory>(g: &Graph<M>, seen: &mut Seen) {
+    let mut want: BTreeMap<Label, Vec<NodeId>> = BTreeMap::new();
+    for i in 0..g.node_count() {
+        let mut labels = Vec::new();
+        g.node_labels(v(i), &mut labels).unwrap();
+        for label in labels {
+            want.entry(label).or_default().push(v(i));
+        }
+    }
+    let view = g.label_bucket_lists.pages();
+    let listed: Vec<(Label, u32)> = crate::label_postings::labels(&view, g.postings);
+    let counts: Vec<(Label, u32)> = want
+        .iter()
+        .map(|(&l, nodes)| (l, u32::try_from(nodes.len()).unwrap()))
+        .collect();
+    assert_eq!(listed, counts, "postings count each label's nodes");
+    for (&label, nodes) in &want {
+        let mut got = Vec::new();
+        g.visit_nodes_with_label(label, None, |x| {
+            got.push(x);
+            ControlFlow::<()>::Continue(())
+        });
+        assert_eq!(&got, nodes, "postings of {label:?}");
+    }
+    for extent in crate::label_postings::extents(&view, g.postings, g.node_count()) {
+        assert!(
+            seen.label_bucket_lists.insert(key(extent)),
+            "label postings extent shared"
         );
     }
 }

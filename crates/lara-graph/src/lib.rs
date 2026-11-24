@@ -30,6 +30,7 @@ mod graph;
 mod id;
 mod label_bucket;
 mod label_bucket_list;
+mod label_postings;
 mod memories;
 mod memory;
 mod page_store;

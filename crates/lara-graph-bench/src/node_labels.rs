@@ -107,3 +107,38 @@ fn set_node_labels_spilled_1024_stable() -> BenchResult {
         }
     })
 }
+
+/// 10,000 nodes, the first `rare` with label 1 and the rest with label 0, as Gleaph's
+/// `node_scan` benches lay them out.
+fn scan_fixture<M: Memory>(g: &mut Graph<M>, rare: u32) {
+    for (i, x) in (0..).zip(nodes(g, 10_000)) {
+        let label = Label::new(u16::from(i < rare));
+        g.set_node_labels(x, &[label])
+            .unwrap_or_else(|e| panic!("labels: {e}"));
+    }
+}
+
+fn scan(g: &Graph<impl Memory>, label: Label) -> u32 {
+    let mut n = 0;
+    g.visit_nodes_with_label(label, None, |_| {
+        n += 1;
+        ControlFlow::<()>::Continue(())
+    });
+    n
+}
+
+/// The nodes of a label 16 of 10,000 nodes have, in stable memory: Gleaph's rare-label scan.
+#[bench(raw)]
+fn nodes_with_label_rare_10k_stable() -> BenchResult {
+    let mut g = stable_graph();
+    scan_fixture(&mut g, 16);
+    bench_fn(|| black_box(scan(&g, Label::new(1))))
+}
+
+/// The nodes of a label 9,984 of 10,000 nodes have: Gleaph's common-label scan.
+#[bench(raw)]
+fn nodes_with_label_common_10k_stable() -> BenchResult {
+    let mut g = stable_graph();
+    scan_fixture(&mut g, 16);
+    bench_fn(|| black_box(scan(&g, Label::new(0))))
+}

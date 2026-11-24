@@ -28,7 +28,6 @@ pub lara_graph::Error::NotDetaching(lara_graph::NodeId)
 pub lara_graph::Error::NotEmpty
 pub lara_graph::Error::OutOfMemory(lara_graph::GrowFailed)
 pub lara_graph::Error::TooManyLabelBuckets(lara_graph::NodeId)
-pub lara_graph::Error::TooManyNodeLabels(lara_graph::NodeId)
 pub lara_graph::Error::TooManyWidths
 pub lara_graph::Error::UnknownNode(lara_graph::NodeId)
 pub lara_graph::Error::WidthConflict
@@ -150,8 +149,10 @@ pub fn lara_graph::Graph<M>::set_edge_values(&mut self, &[lara_graph::EdgeValue<
 pub fn lara_graph::Graph<M>::values_at(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), &[lara_graph::Position], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::has_node_label(&self, lara_graph::NodeId, lara_graph::Label) -> core::result::Result<bool, lara_graph::Error>
+pub fn lara_graph::Graph<M>::node_label_count(&self, lara_graph::Label) -> u32
 pub fn lara_graph::Graph<M>::node_labels(&self, lara_graph::NodeId, &mut alloc::vec::Vec<lara_graph::Label>) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::Graph<M>::set_node_labels(&mut self, lara_graph::NodeId, &[lara_graph::Label]) -> core::result::Result<(), lara_graph::Error>
+pub fn lara_graph::Graph<M>::visit_nodes_with_label<B>(&self, lara_graph::Label, core::option::Option<lara_graph::NodeId>, impl core::ops::function::FnMut(lara_graph::NodeId) -> core::ops::control_flow::ControlFlow<B>) -> core::option::Option<B>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::init(lara_graph::Memories<M>) -> Self
 pub fn lara_graph::Graph<M>::into_memories(self) -> lara_graph::Memories<M>
