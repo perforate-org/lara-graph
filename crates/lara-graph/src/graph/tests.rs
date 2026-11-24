@@ -589,7 +589,9 @@ fn remove_edges_checks_all_nodes_before_writing() {
     insert(&mut g, v(0), l(0), v(1));
     insert(&mut g, v(0), l(0), v(2));
     let halves = [out_ref(v(0), l(0), p(0)), out_ref(v(9), l(0), p(0))];
-    assert_eq!(g.remove_edges(&halves), Err(Error::UnknownNode(v(9))));
+    let error = g.remove_edges(&halves).unwrap_err();
+    assert_eq!(error.index(), 1);
+    assert_eq!(*error.error(), Error::UnknownNode(v(9)));
     assert_eq!(g.degree(v(0), l(0), Direction::Outgoing), Ok(2));
     assert_eq!(g.degree(v(1), l(0), Direction::Incoming), Ok(1));
     check(&g);
@@ -699,7 +701,9 @@ fn add_edges_checks_all_endpoints_before_writing() {
         NewEdge::directed(v(0), l(0), v(1), Placement::ReuseHoles, &[]),
         NewEdge::directed(v(0), l(0), v(9), Placement::ReuseHoles, &[]),
     ];
-    assert_eq!(g.add_edges(&specs), Err(Error::UnknownNode(v(9))));
+    let error = g.add_edges(&specs).unwrap_err();
+    assert_eq!(error.index(), 1);
+    assert_eq!(*error.error(), Error::UnknownNode(v(9)));
     assert_eq!(g.degree(v(0), l(0), Direction::Outgoing).unwrap(), 0);
     assert_eq!(g.degree(v(1), l(0), Direction::Incoming).unwrap(), 0);
 }
@@ -713,10 +717,9 @@ fn add_edges_checks_value_lengths_before_writing() {
         NewEdge::directed(v(0), l(0), v(1), Placement::ReuseHoles, &[1, 2]),
         NewEdge::directed(v(0), l(0), v(1), Placement::ReuseHoles, &[1]),
     ];
-    assert!(matches!(
-        g.add_edges(&specs),
-        Err(Error::WrongValueLength { .. })
-    ));
+    let error = g.add_edges(&specs).unwrap_err();
+    assert_eq!(error.index(), 1);
+    assert!(matches!(error.error(), Error::WrongValueLength { .. }));
     assert_eq!(g.degree(v(0), l(0), Direction::Outgoing).unwrap(), 0);
 }
 

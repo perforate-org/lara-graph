@@ -1,7 +1,7 @@
 //! Finding and removing both halves of an edge.
 
 use super::index::indexed;
-use super::{Error, Graph, Removal, reserved};
+use super::{BatchError, Error, Graph, Removal, reserved};
 use crate::corrupt::corrupt;
 use crate::descriptor::Descriptor;
 use crate::id::{Direction, EdgeRef, Halves, NodeId, Position, RemovedEdge};
@@ -48,21 +48,24 @@ impl<M: Memory> Graph<M> {
     /// # Errors
     ///
     /// [`Error::UnknownNode`] for any half at or past [`Graph::node_count`].
-    pub fn remove_edges(&mut self, halves: &[EdgeRef]) -> Result<Vec<Removal>, Error> {
-        for half in halves {
-            self.check(half.node())?;
+    pub fn remove_edges(&mut self, halves: &[EdgeRef]) -> Result<Vec<Removal>, BatchError> {
+        for (index, half) in halves.iter().enumerate() {
+            self.check(half.node())
+                .map_err(|error| BatchError::new(index, error))?;
         }
         let mut out = Vec::with_capacity(halves.len());
         let mut own_cache: Option<(NodeId, LabelBucketKey, Found)> = None;
         let mut theirs_cache: Option<(NodeId, LabelBucketKey, Found)> = None;
-        for &half in halves {
+        for (index, &half) in halves.iter().enumerate() {
             let node = half.node();
             let key = key_of(half);
             let own = match own_cache {
                 Some((last_node, last_key, found)) if last_node == node && last_key == key => {
                     Some(found)
                 }
-                _ => self.find_label_bucket(node, key)?,
+                _ => self
+                    .find_label_bucket(node, key)
+                    .map_err(|error| BatchError::new(index, error))?,
             };
             let Some(own) = own else {
                 out.push(Removal::Absent);

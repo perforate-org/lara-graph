@@ -108,6 +108,45 @@ pub enum Error {
     },
 }
 
+/// A batch operation failed at `index`. Edges before it were applied; edges after it were not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchError {
+    index: usize,
+    error: Error,
+}
+
+impl BatchError {
+    pub(crate) const fn new(index: usize, error: Error) -> Self {
+        Self { index, error }
+    }
+
+    /// Where in the batch the failure happened.
+    #[must_use]
+    pub const fn index(&self) -> usize {
+        self.index
+    }
+
+    /// The failure itself.
+    #[must_use]
+    pub const fn error(&self) -> &Error {
+        &self.error
+    }
+
+    /// The failure itself, without the batch position.
+    #[must_use]
+    pub const fn into_error(self) -> Error {
+        self.error
+    }
+}
+
+impl fmt::Display for BatchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "batch edge {}: {}", self.index, self.error)
+    }
+}
+
+impl core::error::Error for BatchError {}
+
 /// A graph could not be made or opened ([`Graph::try_new`], [`Graph::try_load`],
 /// [`Graph::try_init`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

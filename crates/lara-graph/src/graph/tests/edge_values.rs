@@ -358,7 +358,9 @@ fn set_edge_values_checks_all_nodes_before_writing() {
             &[8, 8],
         ),
     ];
-    assert_eq!(g.set_edge_values(&writes), Err(Error::UnknownNode(v(9))));
+    let error = g.set_edge_values(&writes).unwrap_err();
+    assert_eq!(error.index(), 1);
+    assert_eq!(*error.error(), Error::UnknownNode(v(9)));
     assert_eq!(g.edge_value(half).unwrap().as_deref(), Some(&[9, 9][..]));
 }
 

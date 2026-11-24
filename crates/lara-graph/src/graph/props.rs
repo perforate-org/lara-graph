@@ -1,7 +1,7 @@
 //! Edge values: writing, point and batch reads, values-first scans and combined scans.
 
 use super::pair::{Found, key_of, opposite};
-use super::{Error, Graph, reserved};
+use super::{BatchError, Error, Graph, reserved};
 use crate::descriptor::{Descriptor, PAGE_SLOTS};
 use crate::id::{Direction, Edge, EdgeRef, Label, NodeId, Order, Position, Width};
 use crate::label_bucket::{self, Span, Window, stored_u32};
@@ -91,22 +91,25 @@ impl<M: Memory> Graph<M> {
     pub fn set_edge_values(
         &mut self,
         values: &[EdgeValue<'_>],
-    ) -> Result<Vec<Option<Vec<u8>>>, Error> {
-        for edge in values {
-            self.check(edge.half.node())?;
-            self.value_width(edge.half.label(), edge.value)?;
+    ) -> Result<Vec<Option<Vec<u8>>>, BatchError> {
+        for (index, edge) in values.iter().enumerate() {
+            self.check(edge.half.node())
+                .and_then(|()| self.value_width(edge.half.label(), edge.value))
+                .map_err(|error| BatchError::new(index, error))?;
         }
         let mut out = Vec::with_capacity(values.len());
         let mut own_cache: Option<(NodeId, LabelBucketKey, Option<Found>)> = None;
         let mut theirs_cache: Option<(NodeId, LabelBucketKey, Found)> = None;
-        for edge in values {
+        for (index, edge) in values.iter().enumerate() {
             let half = edge.half;
             let node = half.node();
             let key = key_of(half);
             let own = match own_cache {
                 Some((last_node, last_key, found)) if last_node == node && last_key == key => found,
                 _ => {
-                    let found = self.find_label_bucket(node, key)?;
+                    let found = self
+                        .find_label_bucket(node, key)
+                        .map_err(|error| BatchError::new(index, error))?;
                     own_cache = Some((node, key, found));
                     found
                 }
@@ -143,14 +146,18 @@ impl<M: Memory> Graph<M> {
             } else {
                 self.read_value(&pair.theirs, pair.other.label(), pair.other.position())
             };
-            let Some(width) = self.value_width(half.label(), edge.value)? else {
+            let Some(width) = self
+                .value_width(half.label(), edge.value)
+                .map_err(|error| BatchError::new(index, error))?
+            else {
                 out.push(Some(old));
                 continue;
             };
             let mut targets = [(half, pair.own), (pair.other, pair.theirs)];
             let count = if pair.other == half { 1 } else { 2 };
             self.edges
-                .reserve((2 + values::PAGES_PER_WRITE) * u32::try_from(count).unwrap_or(2))?;
+                .reserve((2 + values::PAGES_PER_WRITE) * u32::try_from(count).unwrap_or(2))
+                .map_err(|error| BatchError::new(index, error.into()))?;
             for (h, found) in targets.iter_mut().take(count) {
                 let updated = self.write_value(*found, (width, h.position()), edge.value);
                 if *h == half {
