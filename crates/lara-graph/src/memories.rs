@@ -3,7 +3,7 @@
 /// What one of a graph's memories holds. Each memory must be used by one graph only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MemoryRole {
-    /// One 8-byte record per node.
+    /// One 6-byte record per node.
     Nodes,
     /// The pages holding label buckets: edges, their values and target indexes.
     EdgePages,
@@ -13,6 +13,8 @@ pub enum MemoryRole {
     LabelBucketListPages,
     /// One record per label bucket list page.
     LabelBucketListDirectory,
+    /// One 5-byte label cell per node.
+    NodeLabels,
 }
 
 impl MemoryRole {
@@ -25,16 +27,18 @@ impl MemoryRole {
             Self::EdgeDirectory => 2,
             Self::LabelBucketListPages => 3,
             Self::LabelBucketListDirectory => 4,
+            Self::NodeLabels => 5,
         }
     }
 
     /// Every role, in order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Nodes,
         Self::EdgePages,
         Self::EdgeDirectory,
         Self::LabelBucketListPages,
         Self::LabelBucketListDirectory,
+        Self::NodeLabels,
     ];
 }
 
@@ -46,6 +50,7 @@ pub struct Memories<M> {
     edge_directory: M,
     label_bucket_list_pages: M,
     label_bucket_list_directory: M,
+    node_labels: M,
 }
 
 impl<M> Memories<M> {
@@ -60,6 +65,7 @@ impl<M> Memories<M> {
             edge_directory: memory(MemoryRole::EdgeDirectory),
             label_bucket_list_pages: memory(MemoryRole::LabelBucketListPages),
             label_bucket_list_directory: memory(MemoryRole::LabelBucketListDirectory),
+            node_labels: memory(MemoryRole::NodeLabels),
         }
     }
 
@@ -67,11 +73,11 @@ impl<M> Memories<M> {
         &self.nodes
     }
 
-    /// The nodes memory, then the edge store's pages and directory, then the label bucket list
-    /// store's.
-    pub(crate) fn into_parts(self) -> (M, [M; 2], [M; 2]) {
+    /// The nodes and node labels memories, then the edge store's pages and directory, then the
+    /// label bucket list store's.
+    pub(crate) fn into_parts(self) -> ((M, M), [M; 2], [M; 2]) {
         (
-            self.nodes,
+            (self.nodes, self.node_labels),
             [self.edge_pages, self.edge_directory],
             [
                 self.label_bucket_list_pages,
@@ -81,7 +87,7 @@ impl<M> Memories<M> {
     }
 
     pub(crate) fn from_parts(
-        nodes: M,
+        (nodes, node_labels): (M, M),
         [edge_pages, edge_directory]: [M; 2],
         [label_bucket_list_pages, label_bucket_list_directory]: [M; 2],
     ) -> Self {
@@ -91,13 +97,14 @@ impl<M> Memories<M> {
             edge_directory,
             label_bucket_list_pages,
             label_bucket_list_directory,
+            node_labels,
         }
     }
 }
 
 impl<M> IntoIterator for Memories<M> {
     type Item = (MemoryRole, M);
-    type IntoIter = core::array::IntoIter<(MemoryRole, M), 5>;
+    type IntoIter = core::array::IntoIter<(MemoryRole, M), 6>;
 
     /// Each memory with its role, in the order of [`MemoryRole::ALL`].
     fn into_iter(self) -> Self::IntoIter {
@@ -113,6 +120,7 @@ impl<M> IntoIterator for Memories<M> {
                 MemoryRole::LabelBucketListDirectory,
                 self.label_bucket_list_directory,
             ),
+            (MemoryRole::NodeLabels, self.node_labels),
         ]
         .into_iter()
     }

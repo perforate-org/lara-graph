@@ -1,4 +1,4 @@
-//! The graph: label buckets of edge halves per node and direction, over five memories.
+//! The graph: label buckets of edge halves per node and direction, over six memories.
 //!
 //! # Nodes memory
 //!
@@ -21,6 +21,25 @@
 //! ...
 //! ----------------------------------------
 //! Record of node N - 1            ↕ 6 bytes
+//! ----------------------------------------
+//! Unallocated space
+//! ```
+//!
+//! # Node labels memory
+//!
+//! Apart from the records, so that a batch's line of eight records stays 48 bytes.
+//!
+//! ```text
+//! ---------------------------------------- <- Address 0
+//! Magic "LGL"                     ↕ 3 bytes
+//! ----------------------------------------
+//! Layout version (1)              ↕ 1 byte
+//! ---------------------------------------- <- Address 4 (LABEL_CELLS_START)
+//! Labels of node 0                ↕ 5 bytes       (see `node_labels`)
+//! ----------------------------------------
+//! ...
+//! ----------------------------------------
+//! Labels of node N - 1            ↕ 5 bytes
 //! ----------------------------------------
 //! Unallocated space
 //! ```
@@ -48,6 +67,9 @@ const MAGIC: [u8; 3] = *b"LGN";
 const VERSION: u8 = 1;
 const AT_COUNT: u64 = 4;
 const RECORDS_START: u64 = 16;
+/// The node labels memory's magic: "lara graph labels".
+const LABELS_MAGIC: [u8; 3] = *b"LGL";
+const LABEL_CELLS_START: u64 = 4;
 
 /// A multigraph with dense node ids and labeled edges, directed or undirected.
 ///
@@ -66,6 +88,7 @@ const RECORDS_START: u64 = 16;
 /// index.
 pub struct Graph<M: Memory> {
     nodes: M,
+    node_labels: M,
     edges: PageStore<M>,
     label_bucket_lists: PageStore<M>,
     /// Mirrors the node count in the header: the graph owns its memories.
@@ -102,6 +125,8 @@ pub enum Error {
     },
     /// 1023 labels already have a width.
     TooManyWidths,
+    /// More labels than a node can have (2047).
+    TooManyNodeLabels(NodeId),
     /// A value's length is not its label's width (0 for a label without one).
     WrongValueLength {
         /// The label.
@@ -268,11 +293,16 @@ pub enum Removal {
 
 impl<M: Memory> Graph<M> {
     /// A graph over formatted memories, with its header mirrors loaded.
-    fn assemble(nodes: M, edges: PageStore<M>, label_bucket_lists: PageStore<M>) -> Self {
+    fn assemble(
+        (nodes, node_labels): (M, M),
+        edges: PageStore<M>,
+        label_bucket_lists: PageStore<M>,
+    ) -> Self {
         let count = u32::from_le_bytes(Region::new(&nodes).read_array(ByteOffset::new(AT_COUNT)));
         let widths = Widths::load(&nodes, &label_bucket_lists);
         Self {
             nodes,
+            node_labels,
             edges,
             label_bucket_lists,
             count,
@@ -300,6 +330,8 @@ impl<M: Memory> Graph<M> {
             .ok_or(Error::AddressSpaceExhausted)?;
         // Checked first, so that the id needs no check of its own.
         let id = NodeId::new(count);
+        // Labels first: a new node's cell is zeros (no labels), so growing the memory makes it.
+        Region::new(&self.node_labels).reserve(label_cell_end(next))?;
         self.region().write(record_at(id), &Record::NEW.encode())?;
         self.region()
             .overwrite(ByteOffset::new(AT_COUNT), &next.to_le_bytes());
@@ -322,6 +354,7 @@ impl<M: Memory> Graph<M> {
             .ok_or(Error::AddressSpaceExhausted)?;
         let id = NodeId::new(first);
         let end = record_at_index(next);
+        Region::new(&self.node_labels).reserve(label_cell_end(next))?;
         self.region().reserve(end)?;
         // A line of new records at a time: one write per eight nodes.
         let line: [u8; RECORD_LINE_BYTES] = core::array::from_fn(|i| {
@@ -528,6 +561,17 @@ fn record_at_index(index: u32) -> ByteOffset {
     ByteOffset::new(RECORDS_START + u64::from(index) * u64::try_from(RECORD_BYTES).unwrap_or(8))
 }
 
+/// Where `v`'s label cell is in the node labels memory.
+fn label_cell_at(v: NodeId) -> ByteOffset {
+    label_cell_end(v.index())
+}
+
+/// Where node `index`'s label cell starts, and so where the cells before it end.
+fn label_cell_end(index: u32) -> ByteOffset {
+    let cell = u64::try_from(crate::node_labels::CELL_BYTES).unwrap_or(5);
+    ByteOffset::new(LABEL_CELLS_START + u64::from(index) * cell)
+}
+
 /// Eight node records: 48 bytes, read at once.
 const RECORDS_PER_LINE: u32 = 8;
 const RECORD_LINE_BYTES: usize = RECORD_BYTES * 8;
@@ -602,6 +646,7 @@ impl fmt::Display for Error {
                 declared.get()
             ),
             Self::TooManyWidths => f.write_str("too many labels with a width"),
+            Self::TooManyNodeLabels(v) => write!(f, "node {} has too many labels", v.index()),
             Self::WrongValueLength {
                 label,
                 expected,
@@ -637,6 +682,7 @@ mod insert;
 
 pub use insert::{EdgeKind, NewEdge};
 mod lifecycle;
+mod node_labels;
 mod pair;
 mod props;
 

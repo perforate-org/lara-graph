@@ -19,6 +19,7 @@ mod btree;
 mod detach;
 mod insert;
 mod locality;
+mod node_labels;
 mod lookup;
 mod remove;
 mod scan;
@@ -28,13 +29,13 @@ mod values;
 
 const LABEL: Label = Label::new(2);
 
-/// A graph in five heap memories.
+/// A graph in six heap memories.
 #[must_use]
 pub fn heap_graph() -> Graph<VecMemory> {
     Graph::new(Memories::from_fn(|_| VecMemory::new()))
 }
 
-/// A graph in five virtual stable memories (ids 0..5), as a canister wires it.
+/// A graph in six virtual stable memories (ids 0..6), as a canister wires it.
 fn stable_graph() -> Graph<VirtualMemory<DefaultMemoryImpl>> {
     let manager = MemoryManager::init(DefaultMemoryImpl::default());
     Graph::init(Memories::from_fn(|role| {

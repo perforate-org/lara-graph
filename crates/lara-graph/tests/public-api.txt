@@ -28,6 +28,7 @@ pub lara_graph::Error::NotDetaching(lara_graph::NodeId)
 pub lara_graph::Error::NotEmpty
 pub lara_graph::Error::OutOfMemory(lara_graph::GrowFailed)
 pub lara_graph::Error::TooManyLabelBuckets(lara_graph::NodeId)
+pub lara_graph::Error::TooManyNodeLabels(lara_graph::NodeId)
 pub lara_graph::Error::TooManyWidths
 pub lara_graph::Error::UnknownNode(lara_graph::NodeId)
 pub lara_graph::Error::WidthConflict
@@ -60,9 +61,10 @@ pub lara_graph::MemoryRole::EdgeDirectory
 pub lara_graph::MemoryRole::EdgePages
 pub lara_graph::MemoryRole::LabelBucketListDirectory
 pub lara_graph::MemoryRole::LabelBucketListPages
+pub lara_graph::MemoryRole::NodeLabels
 pub lara_graph::MemoryRole::Nodes
 impl lara_graph::MemoryRole
-pub const lara_graph::MemoryRole::ALL: [Self; 5]
+pub const lara_graph::MemoryRole::ALL: [Self; 6]
 pub const fn lara_graph::MemoryRole::index(self) -> u8
 pub enum lara_graph::NodeState
 pub lara_graph::NodeState::Deleted
@@ -147,6 +149,10 @@ pub fn lara_graph::Graph<M>::set_edge_value(&mut self, lara_graph::EdgeRef, &[u8
 pub fn lara_graph::Graph<M>::set_edge_values(&mut self, &[lara_graph::EdgeValue<'_>]) -> core::result::Result<alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>, lara_graph::BatchError>
 pub fn lara_graph::Graph<M>::values_at(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), &[lara_graph::Position], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
+pub fn lara_graph::Graph<M>::has_node_label(&self, lara_graph::NodeId, lara_graph::Label) -> core::result::Result<bool, lara_graph::Error>
+pub fn lara_graph::Graph<M>::node_labels(&self, lara_graph::NodeId, &mut alloc::vec::Vec<lara_graph::Label>) -> core::result::Result<(), lara_graph::Error>
+pub fn lara_graph::Graph<M>::set_node_labels(&mut self, lara_graph::NodeId, &[lara_graph::Label]) -> core::result::Result<(), lara_graph::Error>
+impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::init(lara_graph::Memories<M>) -> Self
 pub fn lara_graph::Graph<M>::into_memories(self) -> lara_graph::Memories<M>
 pub fn lara_graph::Graph<M>::load(lara_graph::Memories<M>) -> Self
@@ -179,7 +185,7 @@ pub struct lara_graph::Memories<M>
 impl<M> lara_graph::Memories<M>
 pub fn lara_graph::Memories<M>::from_fn(impl core::ops::function::FnMut(lara_graph::MemoryRole) -> M) -> Self
 impl<M> core::iter::traits::collect::IntoIterator for lara_graph::Memories<M>
-pub type lara_graph::Memories<M>::IntoIter = core::array::iter::IntoIter<(lara_graph::MemoryRole, M), 5>
+pub type lara_graph::Memories<M>::IntoIter = core::array::iter::IntoIter<(lara_graph::MemoryRole, M), 6>
 pub type lara_graph::Memories<M>::Item = (lara_graph::MemoryRole, M)
 pub fn lara_graph::Memories<M>::into_iter(self) -> Self::IntoIter
 pub struct lara_graph::Move

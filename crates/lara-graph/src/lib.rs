@@ -41,6 +41,7 @@ mod targets;
 
 mod detaching_set;
 mod node;
+mod node_labels;
 mod txn;
 mod units;
 mod values;

@@ -4,7 +4,7 @@
 //! install or an upgrade.
 
 use super::widths::AT_WIDTHS;
-use super::{AT_COUNT, Graph, InitError, MAGIC, VERSION};
+use super::{AT_COUNT, Graph, InitError, LABELS_MAGIC, MAGIC, VERSION};
 use crate::memories::Memories;
 use crate::memory::{Memory, Region, WriteError};
 use crate::page_store::{self, PageStore, header};
@@ -52,7 +52,7 @@ impl<M: Memory> Graph<M> {
     /// [`InitError::OutOfMemory`].
     pub fn try_new(memories: Memories<M>) -> Result<Self, InitError> {
         let (
-            nodes,
+            (nodes, node_labels),
             [edge_pages, edge_directory],
             [label_bucket_list_pages, label_bucket_list_directory],
         ) = memories.into_parts();
@@ -68,7 +68,15 @@ impl<M: Memory> Graph<M> {
         region.overwrite(ByteOffset::new(AT_COUNT), &0u32.to_le_bytes());
         // No label width table yet.
         region.overwrite(ByteOffset::new(AT_WIDTHS), &[0; 8]);
-        Ok(Self::assemble(nodes, edges, label_bucket_lists))
+        let [l0, l1, l2] = LABELS_MAGIC;
+        Region::new(&node_labels)
+            .write(ByteOffset::new(0), &[l0, l1, l2, VERSION])
+            .map_err(init_error)?;
+        Ok(Self::assemble(
+            (nodes, node_labels),
+            edges,
+            label_bucket_lists,
+        ))
     }
 
     /// [`Self::load`], returning the error.
@@ -78,7 +86,7 @@ impl<M: Memory> Graph<M> {
     /// [`InitError::NotAGraph`] or [`InitError::UnsupportedVersion`].
     pub fn try_load(memories: Memories<M>) -> Result<Self, InitError> {
         let (
-            nodes,
+            (nodes, node_labels),
             [edge_pages, edge_directory],
             [label_bucket_list_pages, label_bucket_list_directory],
         ) = memories.into_parts();
@@ -87,11 +95,20 @@ impl<M: Memory> Graph<M> {
             Some(VERSION) => {}
             Some(version) => return Err(InitError::UnsupportedVersion(version)),
         }
+        match header(&node_labels, LABELS_MAGIC) {
+            None => return Err(InitError::NotAGraph),
+            Some(VERSION) => {}
+            Some(version) => return Err(InitError::UnsupportedVersion(version)),
+        }
         let edges = PageStore::open(edge_pages, edge_directory).map_err(open_error)?;
         let label_bucket_lists =
             PageStore::open(label_bucket_list_pages, label_bucket_list_directory)
                 .map_err(open_error)?;
-        Ok(Self::assemble(nodes, edges, label_bucket_lists))
+        Ok(Self::assemble(
+            (nodes, node_labels),
+            edges,
+            label_bucket_lists,
+        ))
     }
 
     /// [`Self::init`], returning the error.
@@ -115,7 +132,7 @@ impl<M: Memory> Graph<M> {
         let (label_bucket_list_pages, label_bucket_list_directory) =
             self.label_bucket_lists.into_memories();
         Memories::from_parts(
-            self.nodes,
+            (self.nodes, self.node_labels),
             [edge_pages, edge_directory],
             [label_bucket_list_pages, label_bucket_list_directory],
         )

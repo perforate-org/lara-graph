@@ -17,7 +17,7 @@ an edge's two halves and refilling holes never scan them. The crate is `no_std` 
 
 ## Use in a canister
 
-Enable the `ic-stable-structures` feature, give the graph five memories from a `MemoryManager`,
+Enable the `ic-stable-structures` feature, give the graph six memories from a `MemoryManager`,
 and open it with `init`, as ic-stable-structures' own structures are opened. `init` formats empty
 memories and reopens a graph written before an upgrade, so one call serves `#[init]` and
 `#[post_upgrade]`.
@@ -35,7 +35,7 @@ thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
         RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()));
 
-    // Memory ids 0 to 4, one per role.
+    // Memory ids 0 to 5, one per role.
     static GRAPH: RefCell<Graph<Memory>> = RefCell::new(Graph::init(Memories::from_fn(|role| {
         MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(role.index())))
     })));

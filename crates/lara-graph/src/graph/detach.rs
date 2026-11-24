@@ -148,6 +148,7 @@ impl<M: Memory> Graph<M> {
             self.publish(found.entry, found.bucket);
         }
         let progress = if self.label_bucket_list(v)?.is_none() {
+            self.clear_node_labels(v);
             self.write_record(
                 v,
                 Record {

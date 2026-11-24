@@ -1,6 +1,7 @@
 //! The structural invariants every graph test checks.
 
 use super::*;
+use crate::node_labels::NodeLabels;
 
 /// Every structural invariant: sorted bucket keys, consistent counts, per-page tombstone counts,
 /// paired halves, and exactly the extents the label buckets and label bucket lists own are
@@ -9,6 +10,7 @@ pub(super) fn check<M: Memory>(g: &Graph<M>) {
     let mut seen = Seen::default();
     for i in 0..g.node_count() {
         check_node(g, i, &mut seen);
+        check_node_labels(g, i, &mut seen);
     }
     if let Some(extent) = g.widths_extent() {
         assert!(
@@ -29,6 +31,28 @@ pub(super) fn check<M: Memory>(g: &Graph<M>) {
         allocated, seen.label_bucket_lists,
         "label bucket list extents: none leaked or shared"
     );
+}
+
+/// A node's labels are sorted and distinct, kept inline when two or fewer, own their extent
+/// once when spilled, and are gone once the node is deleted.
+fn check_node_labels<M: Memory>(g: &Graph<M>, i: u32, seen: &mut Seen) {
+    let cell = g.node_labels_cell(v(i));
+    let mut labels = Vec::new();
+    g.node_labels(v(i), &mut labels).unwrap();
+    assert!(
+        labels.is_sorted() && labels.windows(2).all(|w| w[0] != w[1]),
+        "node {i} labels"
+    );
+    if g.node_state(v(i)).unwrap() == NodeState::Deleted {
+        assert_eq!(cell, NodeLabels::None, "deleted node {i} keeps labels");
+    }
+    if let NodeLabels::Spilled(extent) = cell {
+        assert!(labels.len() > 2, "node {i} spills two labels or fewer");
+        assert!(
+            seen.label_bucket_lists.insert(key(extent)),
+            "node label extent shared"
+        );
+    }
 }
 
 /// What [`check`] has seen so far.
