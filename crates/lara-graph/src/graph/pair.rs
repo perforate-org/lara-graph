@@ -287,6 +287,22 @@ impl<M: Memory> Graph<M> {
     }
 }
 
+impl<M: Memory> Graph<M> {
+    /// `v`'s bucket `key` for a read: without the list entry's position, which only an update
+    /// needs.
+    pub(super) fn read_label_bucket(
+        &self,
+        v: NodeId,
+        key: LabelBucketKey,
+    ) -> Result<Option<LabelBucket>, Error> {
+        let list = self.label_bucket_list(v)?;
+        Ok(
+            label_bucket_list::lookup_stored(&self.label_bucket_lists.pages(), list, key)
+                .map(|stored| LabelBucket::resolve(&self.edges.pages(), stored)),
+        )
+    }
+}
+
 /// A label bucket found in its node's label bucket list.
 #[derive(Clone, Copy)]
 pub(super) struct Found {

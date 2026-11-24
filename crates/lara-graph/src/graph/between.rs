@@ -7,12 +7,13 @@
 //! (their halves pair by rank), so either end lists them in the same order.
 
 use super::index::indexed;
-use super::pair::{Found, opposite};
+use super::pair::opposite;
 use super::{Error, Graph};
 use crate::id::{Direction, EdgeRef, Label, NodeId, Order, Position};
 use crate::label_bucket::{self, Span, Window};
 use crate::label_bucket_list::LabelBucketKey;
 use crate::memory::Memory;
+use crate::stored::LabelBucket;
 use crate::targets::{self, BLOCK};
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
@@ -41,13 +42,13 @@ impl<M: Memory> Graph<M> {
             node,
             direction,
             other,
-            found,
+            bucket,
         }) = self.smaller_end(u, (label, direction), v)?
         else {
             return Ok(None);
         };
         let half = |at: Position| EdgeRef::new(node, label, direction, at);
-        let slots = &found.bucket.slots;
+        let slots = &bucket.slots;
         let view = self.edges.pages();
         let mut visit_span = |&(low, high): &(u32, u32)| {
             label_bucket::visit(
@@ -65,7 +66,7 @@ impl<M: Memory> Graph<M> {
             )
         };
         // A bucket without an index is one span, read with no list of spans.
-        let Some(spans) = self.indexed_spans_to(&found, other) else {
+        let Some(spans) = self.indexed_spans_to(&bucket, other) else {
             return Ok(visit_span(&(0, slots.stored())));
         };
         Ok(match order {
@@ -103,22 +104,22 @@ impl<M: Memory> Graph<M> {
         (label, direction): (Label, Direction),
         v: NodeId,
     ) -> Result<Option<End>, Error> {
-        let own_end = |found| End {
+        let own_end = |bucket| End {
             node: u,
             direction,
             other: v,
-            found,
+            bucket,
         };
-        let own = self.find_label_bucket(u, LabelBucketKey { label, direction })?;
+        let own = self.read_label_bucket(u, LabelBucketKey { label, direction })?;
         let own = match own {
-            Some(own) if own.bucket.slots.stored() > READ_AS_IS => own,
+            Some(own) if own.slots.stored() > READ_AS_IS => own,
             tiny_or_none => {
                 self.check(v)?;
                 return Ok(tiny_or_none.map(own_end));
             }
         };
         let theirs_direction = opposite(direction);
-        let theirs = self.find_label_bucket(
+        let theirs = self.read_label_bucket(
             v,
             LabelBucketKey {
                 label,
@@ -126,12 +127,12 @@ impl<M: Memory> Graph<M> {
             },
         )?;
         Ok(theirs.map(|theirs| {
-            if theirs.bucket.slots.stored() < own.bucket.slots.stored() {
+            if theirs.slots.stored() < own.slots.stored() {
                 End {
                     node: v,
                     direction: theirs_direction,
                     other: u,
-                    found: theirs,
+                    bucket: theirs,
                 }
             } else {
                 own_end(own)
@@ -142,9 +143,9 @@ impl<M: Memory> Graph<M> {
     /// The position ranges of an indexed bucket that can hold entries to `t`, ascending: the
     /// blocks its index lists for `t`, adjacent ones merged so that each range is read in one
     /// pass, and the unindexed last block; `None` for a bucket without an index.
-    fn indexed_spans_to(&self, found: &Found, t: NodeId) -> Option<Vec<(u32, u32)>> {
-        let stored = found.bucket.slots.stored();
-        let (Some(end), Some(root)) = (indexed(&found.bucket), found.bucket.index.tree()) else {
+    fn indexed_spans_to(&self, bucket: &LabelBucket, t: NodeId) -> Option<Vec<(u32, u32)>> {
+        let stored = bucket.slots.stored();
+        let (Some(end), Some(root)) = (indexed(bucket), bucket.index.tree()) else {
             return None;
         };
         let mut spans: Vec<(u32, u32)> = Vec::new();
@@ -171,5 +172,5 @@ struct End {
     node: NodeId,
     direction: Direction,
     other: NodeId,
-    found: Found,
+    bucket: LabelBucket,
 }

@@ -13,9 +13,14 @@ use alloc::vec::Vec;
 const SMALL_READ: usize = 128;
 const _: () = assert!(SMALL_READ >= 32 * 4);
 
+/// Bytes of a smaller stack buffer for the shortest reads (a run of up to eight slots, the values
+/// of a few edges): zeroing it costs a quarter of zeroing the small one.
+const SHORT_READ: usize = 32;
+
 /// Where reads land: a small stack buffer, zeroed when first used, else one heap buffer sized by
 /// the first read that needs it and never zeroed again.
 pub(crate) struct ReadBuf {
+    short: Option<[u8; SHORT_READ]>,
     small: Option<[u8; SMALL_READ]>,
     heap: Vec<u8>,
 }
@@ -23,6 +28,7 @@ pub(crate) struct ReadBuf {
 impl ReadBuf {
     pub(crate) const fn new() -> Self {
         Self {
+            short: None,
             small: None,
             heap: Vec::new(),
         }
@@ -30,7 +36,10 @@ impl ReadBuf {
 
     /// `len` bytes to read into, holding whatever an earlier read left there.
     pub(crate) fn take(&mut self, len: usize) -> &mut [u8] {
-        if len <= SMALL_READ {
+        if len <= SHORT_READ {
+            let short = self.short.get_or_insert([0; SHORT_READ]);
+            short.get_mut(..len).unwrap_or(&mut [])
+        } else if len <= SMALL_READ {
             let small = self.small.get_or_insert([0; SMALL_READ]);
             small.get_mut(..len).unwrap_or(&mut [])
         } else {

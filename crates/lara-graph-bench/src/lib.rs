@@ -22,6 +22,7 @@ mod locality;
 mod lookup;
 mod remove;
 mod scan;
+mod shortest;
 pub mod two_hop;
 mod values;
 

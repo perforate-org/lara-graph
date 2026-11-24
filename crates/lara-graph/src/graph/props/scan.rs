@@ -30,10 +30,10 @@ impl<M: Memory> Graph<M> {
         order: Order,
         mut f: impl FnMut(Position, &[u8]) -> ControlFlow<B>,
     ) -> Result<Option<B>, Error> {
-        let Some(found) = self.find_label_bucket(v, LabelBucketKey { label, direction })? else {
+        let Some(bucket) = self.read_label_bucket(v, LabelBucketKey { label, direction })? else {
             return Ok(None);
         };
-        Ok(self.visit_values_in(&found.bucket, label, order, &mut f))
+        Ok(self.visit_values_in(&bucket, label, order, &mut f))
     }
 
     /// Calls `f` with the value of every position of `bucket` in `order`, until it breaks.
@@ -90,13 +90,13 @@ impl<M: Memory> Graph<M> {
         order: Order,
         mut f: impl FnMut(Edge, &[u8]) -> ControlFlow<B>,
     ) -> Result<Option<B>, Error> {
-        let Some(found) = self.find_label_bucket(v, LabelBucketKey { label, direction })? else {
+        let Some(bucket) = self.read_label_bucket(v, LabelBucketKey { label, direction })? else {
             return Ok(None);
         };
         let width = self.widths.get(label);
         Ok(visit_joined(
             &self.edges.pages(),
-            &found.bucket,
+            &bucket,
             width,
             order,
             &mut f,
