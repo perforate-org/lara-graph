@@ -1,7 +1,7 @@
 //! Per-node label bucket lists: which `(label, direction)` label buckets a node has, and their
 //! descriptors.
 //!
-//! Entries are 19 bytes (label, direction, 16-byte descriptor), sorted by key. A list starts
+//! Entries are 16 bytes (label, direction, 13-byte descriptor), sorted by key. A list starts
 //! **flat**: one extent in its own page store, read whole and searched in memory; adding a bucket
 //! shifts entries in place or moves the list to the next class. A flat list that would outgrow a
 //! page becomes **tiered** (`tiered`): a small top extent lists leaf pages with their first key and
@@ -24,11 +24,11 @@
 //!
 //! ```text
 //! ---------------------------------------- <- Extent start
-//! Entry 0                         ↕ 19 bytes
+//! Entry 0                         ↕ 16 bytes
 //! ----------------------------------------
 //! ...
 //! ----------------------------------------
-//! Entry count - 1                 ↕ 19 bytes
+//! Entry count - 1                 ↕ 16 bytes
 //! ----------------------------------------
 //! Unused space
 //! ```
@@ -43,7 +43,7 @@
 //! ----------------------------------------
 //! Direction: 0 out, 1 in, 2 undir.↕ 1 byte
 //! ----------------------------------------
-//! Stored: descriptor or header ref↕ 16 bytes
+//! Stored: descriptor or header ref↕ 13 bytes
 //! ----------------------------------------
 //! ```
 
@@ -61,8 +61,9 @@ use core::ops::ControlFlow;
 
 /// Bytes per list entry.
 const ENTRY_BYTES: usize = 3 + DESCRIPTOR_BYTES;
-/// Entries a flat list or a leaf holds: one page. Tests use a handful so that lists tier early.
-const LEAF_ENTRIES: usize = crate::scale::Scale::pick(8, 4096 / ENTRY_BYTES);
+/// Entries a flat list or a leaf holds: a page's, but for the two counts a count byte cannot
+/// take (256, and [`TIERED`]). Tests use a handful so that lists tier early.
+const LEAF_ENTRIES: usize = crate::scale::Scale::pick(8, 4096 / ENTRY_BYTES - 2);
 const _: () = assert!(crate::page_store::PAGE_BYTES == 4096);
 /// Pages one [`add`] can take from the store: tiering takes two leaves and a top.
 pub(crate) const PAGES_PER_ADD: u32 = 3;
@@ -489,26 +490,9 @@ fn decode_entry(entry: [u8; ENTRY_BYTES]) -> (LabelBucketKey, Stored) {
 /// slow code on the IC (a 32-byte directory record cost about 1,500 instructions that way).
 fn encode_entry(key: LabelBucketKey, d: &Stored) -> [u8; ENTRY_BYTES] {
     let [k0, k1, k2] = key.encode();
-    let [
-        s0,
-        s1,
-        s2,
-        s3,
-        s4,
-        s5,
-        s6,
-        s7,
-        s8,
-        s9,
-        s10,
-        s11,
-        s12,
-        s13,
-        s14,
-        s15,
-    ] = d.encode();
+    let [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12] = d.encode();
     [
-        k0, k1, k2, s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15,
+        k0, k1, k2, s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12,
     ]
 }
 

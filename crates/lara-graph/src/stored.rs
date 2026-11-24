@@ -1,7 +1,7 @@
 //! How a label bucket is stored in its label bucket list entry: a plain descriptor, or a header
 //! for a bucket with more to it.
 //!
-//! The 16-byte list entry holds a [`Descriptor`] for a plain bucket, including a run that keeps
+//! A list entry's 13 bytes after its key hold a [`Descriptor`] for a plain bucket, including a run that keeps
 //! its values beside its slots (see `descriptor`). A bucket whose values are in a value plane (a
 //! paged one, a run too large for its values beside it, or one of a label with wide values; never
 //! tiny: three inline slots leave no room for them), or a paged bucket with its target index (or
@@ -13,11 +13,10 @@
 //!
 //! ```text
 //! ---------------------------------------- <- Offset 0
-//! Kind (4)                        ↕ 1 byte
+//! Reserved space                  ↕ 8 bytes
 //! ----------------------------------------
-//! Header extent                   ↕ 5 bytes
-//! ----------------------------------------
-//! Reserved space                  ↕ 10 bytes
+//! Header extent, kind 3 in its    ↕ 5 bytes
+//!   spare bits
 //! ----------------------------------------
 //! ```
 //!
@@ -27,30 +26,28 @@
 //!
 //! ```text
 //! ---------------------------------------- <- Offset 0
-//! Slot descriptor                 ↕ 16 bytes
-//! ---------------------------------------- <- Offset 16
+//! Slot descriptor                 ↕ 13 bytes
+//! ---------------------------------------- <- Offset 13
 //! Value plane root                ↕ 6 bytes
-//! ---------------------------------------- <- Offset 22
+//! ---------------------------------------- <- Offset 19
 //! Value width; 0 for none         ↕ 2 bytes
 //! ----------------------------------------
 //! Target index root page          ↕ 4 bytes       (u32::MAX none, u32::MAX - 1 dropped)
 //! ----------------------------------------
 //! Target index depth              ↕ 1 byte
 //! ----------------------------------------
-//! Reserved space                  ↕ 3 bytes
+//! Reserved space                  ↕ 6 bytes
 //! ----------------------------------------
 //! ```
 
 use crate::corrupt::corrupt;
-use crate::descriptor::{DESCRIPTOR_BYTES, Descriptor};
+use crate::descriptor::{DESCRIPTOR_BYTES, Descriptor, KIND_HEADER, KIND_SHIFT, kind_of};
 use crate::id::Width;
 use crate::memory::Memory;
 use crate::page_store::{ByteClass, EXTENT_BYTES, Extent, PageId, PageStore, Pages};
 use crate::targets::Root;
 use crate::values::{Plane, ROOT_BYTES};
 
-/// The descriptor kind byte of a header reference; descriptor kinds are 1 to 3.
-const KIND_EXTENDED: u8 = 4;
 /// Bytes of a header: descriptor, plane root, width (0 for none), index root page (`u32::MAX`
 /// for none) and depth.
 const HEADER_BYTES: usize = DESCRIPTOR_BYTES + ROOT_BYTES + 2 + 4 + 1;
@@ -60,7 +57,7 @@ const DROPPED_INDEX: u32 = u32::MAX - 1;
 pub(crate) const HEADER_CLASS: ByteClass = ByteClass::SMALLEST;
 const _: () = assert!(HEADER_BYTES <= 32);
 
-/// A list entry's 16 bytes.
+/// A list entry's 13 bytes after its key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Stored {
     Plain(Descriptor),
@@ -73,15 +70,15 @@ impl Stored {
             Self::Plain(d) => d.encode(),
             Self::Extended(header) => {
                 let [e0, e1, e2, e3, e4] = header.encode();
-                let kind = KIND_EXTENDED;
-                [kind, e0, e1, e2, e3, e4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                let last = e4 | (KIND_HEADER << KIND_SHIFT);
+                [0, 0, 0, 0, 0, 0, 0, 0, e0, e1, e2, e3, last]
             }
         }
     }
 
     pub(crate) fn decode(bytes: [u8; DESCRIPTOR_BYTES]) -> Self {
-        let [kind, e0, e1, e2, e3, e4, ..] = bytes;
-        if kind == KIND_EXTENDED {
+        if kind_of(&bytes) == KIND_HEADER {
+            let [.., e0, e1, e2, e3, e4] = bytes;
             Self::Extended(Extent::decode([e0, e1, e2, e3, e4]))
         } else {
             Self::Plain(Descriptor::decode(bytes))

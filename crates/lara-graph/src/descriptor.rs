@@ -1,4 +1,4 @@
-//! A bucket's descriptor (16 bytes): where its edges live. The only place that knows its wire
+//! A bucket's descriptor (13 bytes): where its edges live. The only place that knows its wire
 //! layout.
 //!
 //! Positions count tombstones: a bucket's `stored` positions are `0..stored`, `live` of them hold
@@ -6,41 +6,35 @@
 //!
 //! # Layouts
 //!
-//! Each is 16 bytes. A slot is a node id's complement (`!index`), 0 for a tombstone.
+//! Each is 13 bytes (104 bits): the largest, a paged bucket, takes them all. The kind is the top
+//! two bits of the last byte, where an extent's spare bits fall, and every extent sits in the last
+//! five bytes. A slot is a node id's complement (`!index`), 0 for a tombstone; all zeros is an
+//! empty tiny bucket.
 //!
 //! ```text
-//! ---------------------------------------- <- Tiny
-//! Kind (1)                        ↕ 1 byte
-//! ----------------------------------------
-//! Slots in use                    ↕ 1 byte
-//! ----------------------------------------
-//! Reserved space                  ↕ 2 bytes
-//! ----------------------------------------
+//! ---------------------------------------- <- Tiny (kind 0)
 //! Slot 0, 1, 2                    ↕ 3 × 4 bytes
-//! ---------------------------------------- <- Run: slots at the front of one extent
-//! Kind (2)                        ↕ 1 byte
 //! ----------------------------------------
-//! Stored positions                ↕ 2 bytes
+//! Reserved                        ↕ 4 bits
+//! Slots in use (0 to 3)           ↕ 2 bits
+//! Kind                            ↕ 2 bits
+//! ---------------------------------------- <- Run (kind 1): slots at the front of one extent
+//! Stored positions                ↕ 11 bits
+//! Live positions                  ↕ 11 bits
+//! Value width beside the slots    ↕ 13 bits       (0 for none)
+//! Reserved                        ↕ 29 bits
 //! ----------------------------------------
-//! Live positions                  ↕ 2 bytes
-//! ----------------------------------------
-//! Extent                          ↕ 5 bytes
-//! ----------------------------------------
-//! Value width beside the slots    ↕ 2 bytes       (0 for none)
-//! ----------------------------------------
-//! Reserved space                  ↕ 4 bytes
-//! ---------------------------------------- <- Paged: 1024 slots per data page
-//! Kind (3)                        ↕ 1 byte
-//! ----------------------------------------
+//! Extent, kind in its spare bits  ↕ 5 bytes
+//! ---------------------------------------- <- Paged (kind 2): 1024 slots per data page
 //! Stored positions                ↕ 4 bytes
 //! ----------------------------------------
 //! Live positions                  ↕ 4 bytes
 //! ----------------------------------------
-//! Page index top extent           ↕ 5 bytes
-//! ----------------------------------------
-//! Reserved space                  ↕ 2 bytes
+//! Page index top extent, kind     ↕ 5 bytes
 //! ----------------------------------------
 //! ```
+//!
+//! A list entry's kind 3 refers to a header instead (see `stored`).
 
 use crate::corrupt::corrupt;
 use crate::id::{NodeId, Width};
@@ -49,7 +43,7 @@ use crate::units::ByteOffset;
 use core::num::NonZeroU32;
 
 /// Bytes per descriptor.
-pub(crate) const DESCRIPTOR_BYTES: usize = 16;
+pub(crate) const DESCRIPTOR_BYTES: usize = 13;
 /// Slots stored inline in a tiny descriptor.
 pub(crate) const TINY_SLOTS: usize = 3;
 /// Slots in a page, and in the largest run.
@@ -203,9 +197,24 @@ impl Tiny {
     }
 }
 
-const KIND_TINY: u8 = 1;
-const KIND_RUN: u8 = 2;
-const KIND_PAGED: u8 = 3;
+const KIND_TINY: u8 = 0;
+const KIND_RUN: u8 = 1;
+const KIND_PAGED: u8 = 2;
+/// A list entry's reference to a header (`stored`): never a descriptor's kind.
+pub(crate) const KIND_HEADER: u8 = 3;
+/// Where a descriptor's kind sits: the top two bits of its last byte.
+pub(crate) const KIND_SHIFT: u32 = 6;
+const LAST: usize = DESCRIPTOR_BYTES - 1;
+/// Bits of a run's stored and live counts (at most a page of slots, 1024) and of its width.
+const RUN_COUNT_BITS: u32 = 11;
+const RUN_WIDTH_BITS: u32 = 13;
+const _: () = assert!(PAGE_SLOTS < 1 << RUN_COUNT_BITS);
+const _: () = assert!(4096 < 1 << RUN_WIDTH_BITS);
+
+/// The kind of an encoded descriptor or list entry.
+pub(crate) const fn kind_of(bytes: &[u8; DESCRIPTOR_BYTES]) -> u8 {
+    bytes[LAST] >> KIND_SHIFT
+}
 
 impl Descriptor {
     pub(crate) const EMPTY: Self = Self::Tiny(Tiny::EMPTY);
@@ -241,17 +250,29 @@ impl Descriptor {
             Self::Tiny(tiny) => {
                 let [[s0, s1, s2, s3], [s4, s5, s6, s7], [s8, s9, s10, s11]] =
                     tiny.slots.map(Slot::encode);
-                [
-                    KIND_TINY, tiny.len, 0, 0, s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11,
-                ]
+                let last = (tiny.len << 4) | (KIND_TINY << KIND_SHIFT);
+                [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, last]
             }
             Self::Run(run) => {
-                let [s0, s1] = run.stored.to_le_bytes();
-                let [l0, l1] = run.live.to_le_bytes();
+                let counts = u64::from(run.stored)
+                    | (u64::from(run.live) << RUN_COUNT_BITS)
+                    | (u64::from(run.values.map_or(0, Width::get)) << (2 * RUN_COUNT_BITS));
+                let [c0, c1, c2, c3, c4, ..] = counts.to_le_bytes();
                 let [e0, e1, e2, e3, e4] = run.extent.encode();
-                let [w0, w1] = run.values.map_or(0, Width::get).to_le_bytes();
                 [
-                    KIND_RUN, s0, s1, l0, l1, e0, e1, e2, e3, e4, w0, w1, 0, 0, 0, 0,
+                    c0,
+                    c1,
+                    c2,
+                    c3,
+                    c4,
+                    0,
+                    0,
+                    0,
+                    e0,
+                    e1,
+                    e2,
+                    e3,
+                    e4 | (KIND_RUN << KIND_SHIFT),
                 ]
             }
             Self::Paged(paged) => {
@@ -259,59 +280,58 @@ impl Descriptor {
                 let [l0, l1, l2, l3] = paged.live.to_le_bytes();
                 let [e0, e1, e2, e3, e4] = paged.index.encode();
                 [
-                    KIND_PAGED, s0, s1, s2, s3, l0, l1, l2, l3, e0, e1, e2, e3, e4, 0, 0,
+                    s0,
+                    s1,
+                    s2,
+                    s3,
+                    l0,
+                    l1,
+                    l2,
+                    l3,
+                    e0,
+                    e1,
+                    e2,
+                    e3,
+                    e4 | (KIND_PAGED << KIND_SHIFT),
                 ]
             }
         }
     }
 
+    /// Shifts and masks only, as every bucket lookup goes through here.
     pub(crate) fn decode(bytes: [u8; DESCRIPTOR_BYTES]) -> Self {
-        let [
-            kind,
-            b1,
-            b2,
-            b3,
-            b4,
-            b5,
-            b6,
-            b7,
-            b8,
-            b9,
-            b10,
-            b11,
-            b12,
-            b13,
-            b14,
-            b15,
-        ] = bytes;
-        match kind {
+        let [b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12] = bytes;
+        match b12 >> KIND_SHIFT {
             KIND_TINY => {
-                let words = [[b4, b5, b6, b7], [b8, b9, b10, b11], [b12, b13, b14, b15]];
-                if usize::from(b1) > TINY_SLOTS {
-                    corrupt("tiny length");
-                }
+                let words = [[b0, b1, b2, b3], [b4, b5, b6, b7], [b8, b9, b10, b11]];
                 Self::Tiny(Tiny {
-                    len: b1,
+                    len: (b12 >> 4) & 0b11,
                     slots: words.map(Slot::decode),
                 })
             }
-            KIND_RUN => Self::Run(Run {
-                stored: u16::from_le_bytes([b1, b2]),
-                live: u16::from_le_bytes([b3, b4]),
-                extent: Extent::decode([b5, b6, b7, b8, b9]),
-                values: Width::stored(u16::from_le_bytes([b10, b11])),
-            }),
+            KIND_RUN => {
+                let counts = u64::from_le_bytes([b0, b1, b2, b3, b4, 0, 0, 0]);
+                let field = |shift: u32, width: u32| (counts >> shift) & ((1 << width) - 1);
+                Self::Run(Run {
+                    stored: u16::try_from(field(0, RUN_COUNT_BITS)).unwrap_or(0),
+                    live: u16::try_from(field(RUN_COUNT_BITS, RUN_COUNT_BITS)).unwrap_or(0),
+                    extent: Extent::decode([b8, b9, b10, b11, b12]),
+                    values: Width::stored(
+                        u16::try_from(field(2 * RUN_COUNT_BITS, RUN_WIDTH_BITS)).unwrap_or(0),
+                    ),
+                })
+            }
             KIND_PAGED => Self::Paged(Paged {
-                stored: u32::from_le_bytes([b1, b2, b3, b4]),
-                live: u32::from_le_bytes([b5, b6, b7, b8]),
-                index: Extent::decode([b9, b10, b11, b12, b13]),
+                stored: u32::from_le_bytes([b0, b1, b2, b3]),
+                live: u32::from_le_bytes([b4, b5, b6, b7]),
+                index: Extent::decode([b8, b9, b10, b11, b12]),
             }),
-            _ => corrupt("descriptor kind"),
+            _ => corrupt("a header reference where a descriptor belongs"),
         }
     }
 }
 
-const _: () = assert!(1 + 4 + 4 + EXTENT_BYTES <= DESCRIPTOR_BYTES);
+const _: () = assert!(4 + 4 + EXTENT_BYTES == DESCRIPTOR_BYTES);
 
 #[cfg(test)]
 mod tests {
@@ -350,9 +370,36 @@ mod tests {
         assert_eq!(Descriptor::Tiny(tiny).live(), 1);
     }
 
+    /// Every field round-trips at its largest value, and the kind bits never disturb the extent.
     #[test]
-    #[should_panic(expected = "descriptor kind")]
-    fn an_unwritten_descriptor_is_corruption() {
-        Descriptor::decode([0; DESCRIPTOR_BYTES]);
+    fn descriptors_round_trip_at_their_limits() {
+        let last = PageId::new(crate::page_store::MAX_PAGES - 1);
+        let extent = Extent::new(last, 127, ByteClass::SMALLEST);
+        let full = Tiny::EMPTY
+            .push(Slot::Live(NodeId::new(u32::MAX - 1)))
+            .push(Slot::Tombstone)
+            .push(Slot::Live(NodeId::new(0)));
+        for d in [
+            Descriptor::Tiny(full),
+            Descriptor::Run(Run {
+                extent,
+                stored: 1024,
+                live: 1024,
+                values: Width::new(Width::MAX),
+            }),
+            Descriptor::Paged(Paged {
+                index: Extent::whole(last),
+                stored: u32::MAX,
+                live: u32::MAX,
+            }),
+        ] {
+            assert_eq!(Descriptor::decode(d.encode()), d);
+        }
+    }
+
+    #[test]
+    fn an_unwritten_descriptor_is_an_empty_tiny_bucket() {
+        assert_eq!(Descriptor::decode([0; DESCRIPTOR_BYTES]), Descriptor::EMPTY);
+        assert_eq!(Descriptor::EMPTY.encode(), [0; DESCRIPTOR_BYTES]);
     }
 }
