@@ -38,6 +38,7 @@ use crate::stored::{LabelBucket, Stored};
 use crate::units::{ByteOffset, Overflow};
 use alloc::vec::Vec;
 use core::fmt;
+use core::num::NonZeroU32;
 use core::ops::ControlFlow;
 
 /// The nodes memory's magic: "lara graph nodes".
@@ -290,6 +291,32 @@ impl<M: Memory> Graph<M> {
             .filter(|&n| n < u32::MAX)
             .ok_or(Error::AddressSpaceExhausted)?;
         self.region().write(record_at(id), &Record::NEW.encode())?;
+        self.region()
+            .overwrite(ByteOffset::new(AT_COUNT), &next.to_le_bytes());
+        self.count = next;
+        Ok(id)
+    }
+
+    /// Adds `count` nodes and returns the first new id. Ids are consecutive: the new nodes are
+    /// `first.index()..first.index() + count`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::AddressSpaceExhausted`] when the ids would not fit, or [`Error::OutOfMemory`]
+    /// when the records cannot be grown. On error no node is visible.
+    pub fn add_nodes(&mut self, count: NonZeroU32) -> Result<NodeId, Error> {
+        let id = NodeId::new(self.node_count());
+        let next = id
+            .index()
+            .checked_add(count.get())
+            .filter(|&n| n < u32::MAX)
+            .ok_or(Error::AddressSpaceExhausted)?;
+        let end = record_at(NodeId::new(next));
+        self.region().reserve(end)?;
+        for index in id.index()..next {
+            self.region()
+                .overwrite(record_at(NodeId::new(index)), &Record::NEW.encode());
+        }
         self.region()
             .overwrite(ByteOffset::new(AT_COUNT), &next.to_le_bytes());
         self.count = next;

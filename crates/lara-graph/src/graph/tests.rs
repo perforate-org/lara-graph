@@ -611,6 +611,31 @@ fn remove_edges_reports_an_already_removed_edge_as_absent() {
 }
 
 #[test]
+fn add_nodes_adds_consecutive_ids() {
+    let backing = Backing::default();
+    let mut g = backing.create(1);
+    let first = g.add_nodes(NonZeroU32::new(3).unwrap()).unwrap();
+    assert_eq!(first, v(1));
+    assert_eq!(g.node_count(), 4);
+    for node in 1..=3 {
+        assert_eq!(g.node_state(v(node)).unwrap(), NodeState::Live);
+    }
+    insert(&mut g, v(3), l(0), v(1));
+    assert_eq!(g.degree(v(3), l(0), Direction::Outgoing).unwrap(), 1);
+}
+
+#[test]
+fn add_nodes_rejects_an_id_overflow_without_adding() {
+    let backing = Backing::default();
+    let mut g = backing.create(0);
+    assert_eq!(
+        g.add_nodes(NonZeroU32::MAX),
+        Err(Error::AddressSpaceExhausted)
+    );
+    assert_eq!(g.node_count(), 0);
+}
+
+#[test]
 fn add_edges_inserts_each_directed_edge() {
     let backing = Backing::default();
     let mut g = backing.create(5);

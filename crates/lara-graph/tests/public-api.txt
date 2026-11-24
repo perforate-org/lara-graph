@@ -110,6 +110,7 @@ pub fn lara_graph::Graph<M>::add_edge(&mut self, lara_graph::EdgeKind, lara_grap
 pub fn lara_graph::Graph<M>::add_edges(&mut self, &[lara_graph::NewEdge<'_>]) -> core::result::Result<alloc::vec::Vec<lara_graph::Halves>, lara_graph::BatchError>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::add_node(&mut self) -> core::result::Result<lara_graph::NodeId, lara_graph::Error>
+pub fn lara_graph::Graph<M>::add_nodes(&mut self, core::num::nonzero::NonZeroU32) -> core::result::Result<lara_graph::NodeId, lara_graph::Error>
 pub fn lara_graph::Graph<M>::degree(&self, lara_graph::NodeId, lara_graph::Label, lara_graph::Direction) -> core::result::Result<u32, lara_graph::Error>
 pub fn lara_graph::Graph<M>::edge_target(&self, lara_graph::EdgeRef) -> core::result::Result<core::option::Option<lara_graph::NodeId>, lara_graph::Error>
 pub fn lara_graph::Graph<M>::has_edges(&self, lara_graph::NodeId) -> core::result::Result<bool, lara_graph::Error>
@@ -129,6 +130,7 @@ pub fn lara_graph::Graph<M>::declare_width(&mut self, lara_graph::Label, lara_gr
 pub fn lara_graph::Graph<M>::width(&self, lara_graph::Label) -> core::option::Option<lara_graph::Width>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::detach(&mut self, lara_graph::NodeId) -> core::result::Result<(), lara_graph::Error>
+pub fn lara_graph::Graph<M>::detach_many(&mut self, &[lara_graph::NodeId]) -> core::result::Result<(), lara_graph::BatchError>
 pub fn lara_graph::Graph<M>::detach_step(&mut self, lara_graph::NodeId, core::num::nonzero::NonZeroU32) -> core::result::Result<lara_graph::Detachment, lara_graph::Error>
 pub fn lara_graph::Graph<M>::detaching_set(&self, impl core::iter::traits::collect::IntoIterator<Item = lara_graph::NodeId>) -> core::result::Result<lara_graph::DetachingSet, lara_graph::Error>
 pub fn lara_graph::Graph<M>::sweep(&mut self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), (lara_graph::Position, core::num::nonzero::NonZeroU32), &lara_graph::DetachingSet) -> core::result::Result<lara_graph::Sweep, lara_graph::Error>

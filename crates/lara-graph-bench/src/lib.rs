@@ -83,6 +83,29 @@ fn grow_hub<M: Memory>(mut g: Graph<M>, degree: u32) -> BenchResult {
     })
 }
 
+/// 1024 nodes added one at a time.
+#[bench(raw)]
+fn add_nodes_1024_loop() -> BenchResult {
+    let mut g = heap_graph();
+    bench_fn(|| {
+        for _ in 0..1024 {
+            black_box(g.add_node().unwrap_or_else(|e| panic!("node: {e}")));
+        }
+    })
+}
+
+/// The same 1024 nodes through one `add_nodes`.
+#[bench(raw)]
+fn add_nodes_1024_batched() -> BenchResult {
+    let mut g = heap_graph();
+    bench_fn(|| {
+        black_box(
+            g.add_nodes(NonZeroU32::new(1024).unwrap_or(NonZeroU32::MIN))
+                .unwrap_or_else(|e| panic!("nodes: {e}")),
+        )
+    })
+}
+
 #[bench(raw)]
 fn hub_insert_1024() -> BenchResult {
     grow_hub(heap_graph(), 1024)

@@ -2,7 +2,7 @@
 
 use super::index::indexed;
 use super::pair::{Found, opposite, order};
-use super::{Detachment, Error, Graph, Step, Sweep};
+use super::{BatchError, Detachment, Error, Graph, Step, Sweep};
 use crate::corrupt::corrupt;
 use crate::detaching_set::DetachingSet;
 use crate::id::{
@@ -37,6 +37,38 @@ impl<M: Memory> Graph<M> {
                 ..record
             },
         );
+        Ok(())
+    }
+
+    /// Starts deleting every node in `nodes` (DETACH DELETE). All nodes are checked before the
+    /// first state change, so an unknown or already deleted node leaves the graph unchanged.
+    /// A node already detaching is left as it is.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`] or [`Error::Deleted`] at the first failing position, as
+    /// [`BatchError::Unchanged`].
+    pub fn detach_many(&mut self, nodes: &[NodeId]) -> Result<(), BatchError> {
+        for (index, &v) in nodes.iter().enumerate() {
+            let record = self
+                .record(v)
+                .map_err(|error| BatchError::unchanged(index, error))?;
+            if record.state == NodeState::Deleted {
+                return Err(BatchError::unchanged(index, Error::Deleted(v)));
+            }
+        }
+        for &v in nodes {
+            let record = self.record(v).unwrap_or_else(|_| corrupt("a checked node"));
+            if record.state == NodeState::Live {
+                self.write_record(
+                    v,
+                    Record {
+                        state: NodeState::Detaching,
+                        ..record
+                    },
+                );
+            }
+        }
         Ok(())
     }
 

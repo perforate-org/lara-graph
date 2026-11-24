@@ -316,3 +316,39 @@ fn sweeping_a_shared_bucket_removes_the_detaching_nodes_edges() {
     }
     check(&g);
 }
+
+#[test]
+fn detach_many_checks_every_node_before_marking_any() {
+    let backing = Backing::default();
+    let mut g = backing.create(3);
+    insert(&mut g, v(0), l(0), v(1));
+    insert(&mut g, v(2), l(0), v(0));
+    assert_eq!(
+        g.detach_many(&[v(0), v(9)]),
+        Err(BatchError::Unchanged {
+            index: 1,
+            error: Error::UnknownNode(v(9)),
+        })
+    );
+    assert_eq!(g.node_state(v(0)).unwrap(), NodeState::Live);
+    assert_eq!(g.node_state(v(2)).unwrap(), NodeState::Live);
+    g.detach_many(&[v(0), v(2)]).unwrap();
+    assert_eq!(g.node_state(v(0)).unwrap(), NodeState::Detaching);
+    assert_eq!(g.node_state(v(2)).unwrap(), NodeState::Detaching);
+    // Already detaching is fine and changes nothing.
+    g.detach_many(&[v(0)]).unwrap();
+}
+
+#[test]
+fn detach_many_rejects_a_deleted_node_without_changes() {
+    let backing = Backing::default();
+    let mut g = backing.create(2);
+    g.detach(v(1)).unwrap();
+    g.detach_step(v(1), NonZeroU32::MAX).unwrap();
+    assert_eq!(g.node_state(v(1)).unwrap(), NodeState::Deleted);
+    assert!(matches!(
+        g.detach_many(&[v(0), v(1)]),
+        Err(BatchError::Unchanged { index: 1, .. })
+    ));
+    assert_eq!(g.node_state(v(0)).unwrap(), NodeState::Live);
+}
