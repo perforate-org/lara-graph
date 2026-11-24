@@ -706,6 +706,28 @@ fn hub_remove_half_compact_65536() -> BenchResult {
     remove_half_then_compact(65536)
 }
 
+/// The same removal and compaction through `remove_edges` for the removal half.
+#[bench(raw)]
+fn hub_remove_half_compact_65536_batched() -> BenchResult {
+    let mut g = heap_graph();
+    let (hub, edges) = seed_hub(&mut g, 65536);
+    let halves: Vec<EdgeRef> = edges.iter().step_by(2).map(Halves::canonical).collect();
+    bench_fn(|| {
+        {
+            let _removals = canbench_rs::bench_scope("removals");
+            g.remove_edges(&halves)
+                .unwrap_or_else(|e| panic!("remove batch: {e}"));
+        }
+        let _compaction = canbench_rs::bench_scope("compaction");
+        while g
+            .compact(hub, LABEL, Direction::Outgoing)
+            .unwrap_or_else(|e| panic!("compact: {e}"))
+            .progress()
+            == Progress::Remaining
+        {}
+    })
+}
+
 /// Removes every other edge of a hub, then inserts as many edges reusing holes (Gleaph's
 /// `Unordered`): to fresh leaves, which take the holes from the front, or a second edge to each
 /// remaining leaf, which takes the first hole after that leaf's edge.
