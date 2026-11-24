@@ -142,8 +142,13 @@ fn edges_between_two_nodes_match_a_filter_of_either_end() {
             }
         }
     }
-    assert_eq!(
-        g.contains_edge(hub, (l(0), Direction::Outgoing), v(1000)),
-        Err(Error::UnknownNode(v(1000)))
-    );
+    // An unknown other end fails whether `a`'s bucket is a hub's, small or absent.
+    for key in [(l(0), Direction::Outgoing), (l(2), Direction::Outgoing)] {
+        for a in [hub, rest[0]] {
+            assert_eq!(
+                g.contains_edge(a, key, v(1000)),
+                Err(Error::UnknownNode(v(1000)))
+            );
+        }
+    }
 }

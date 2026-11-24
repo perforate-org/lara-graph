@@ -156,21 +156,21 @@ benches:
   contains_edge_absent_1024:
     total:
       calls: 1
-      instructions: 3605814
+      instructions: 2406710
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   contains_edge_hub_to_satellite_1024:
     total:
       calls: 1
-      instructions: 2690352
+      instructions: 2776368
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   contains_edge_small_1024:
     total:
       calls: 1
-      instructions: 3484982
+      instructions: 2285878
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -366,14 +366,14 @@ benches:
   edges_between_hubs_4096:
     total:
       calls: 1
-      instructions: 120029
+      instructions: 120109
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   edges_between_parallel_65536:
     total:
       calls: 1
-      instructions: 39141
+      instructions: 39221
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}

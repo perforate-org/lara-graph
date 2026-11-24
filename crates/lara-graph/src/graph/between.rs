@@ -95,27 +95,37 @@ impl<M: Memory> Graph<M> {
 
     /// The smaller of `u`'s `(label, direction)` bucket and `v`'s opposite one, as the end that
     /// holds it, the node its entries point to, and the bucket; `None` when either is absent, as
-    /// then no edge joins them.
+    /// then no edge joins them. A bucket at `u` of at most [`READ_AS_IS`] positions is taken as it
+    /// is, without looking up `v`'s.
     fn smaller_end(
         &self,
         u: NodeId,
         (label, direction): (Label, Direction),
         v: NodeId,
     ) -> Result<Option<End>, Error> {
-        let theirs_direction = opposite(direction);
-        let (Some(own), Some(theirs)) = (
-            self.find_label_bucket(u, LabelBucketKey { label, direction })?,
-            self.find_label_bucket(
-                v,
-                LabelBucketKey {
-                    label,
-                    direction: theirs_direction,
-                },
-            )?,
-        ) else {
-            return Ok(None);
+        let own_end = |found| End {
+            node: u,
+            direction,
+            other: v,
+            found,
         };
-        Ok(Some(
+        let own = self.find_label_bucket(u, LabelBucketKey { label, direction })?;
+        let own = match own {
+            Some(own) if own.bucket.slots.stored() > READ_AS_IS => own,
+            tiny_or_none => {
+                self.check(v)?;
+                return Ok(tiny_or_none.map(own_end));
+            }
+        };
+        let theirs_direction = opposite(direction);
+        let theirs = self.find_label_bucket(
+            v,
+            LabelBucketKey {
+                label,
+                direction: theirs_direction,
+            },
+        )?;
+        Ok(theirs.map(|theirs| {
             if theirs.bucket.slots.stored() < own.bucket.slots.stored() {
                 End {
                     node: v,
@@ -124,14 +134,9 @@ impl<M: Memory> Graph<M> {
                     found: theirs,
                 }
             } else {
-                End {
-                    node: u,
-                    direction,
-                    other: v,
-                    found: own,
-                }
-            },
-        ))
+                own_end(own)
+            }
+        }))
     }
 
     /// The position ranges of an indexed bucket that can hold entries to `t`, ascending: the
@@ -156,6 +161,10 @@ impl<M: Memory> Graph<M> {
         Some(spans)
     }
 }
+
+/// The most positions of `u`'s bucket that are read without looking up `v`'s: the lookup costs
+/// about as much as reading this many slots, so it cannot pay off below it.
+const READ_AS_IS: u32 = 32;
 
 /// The end of an edge set that is read: its node and bucket, and the node at the other end.
 struct End {
