@@ -155,8 +155,8 @@ impl<M: Memory> Graph<M> {
             start = end;
         }
 
-        let mut lists: Vec<Option<label_bucket_list::LabelBucketList>> =
-            alloc::vec![None; usize::try_from(self.node_count()).unwrap_or(0)];
+        let mut records = alloc::vec![[0u8; 8]; usize::try_from(self.node_count()).unwrap_or(0)];
+        let mut singles: Vec<(NodeId, LabelBucketKey, Stored)> = Vec::new();
         let mut start = 0;
         while start < halves.len() {
             let node = halves[start].node;
@@ -175,14 +175,7 @@ impl<M: Memory> Graph<M> {
             }
             if groups == 1 {
                 let stored = self.build_bucket(&halves[start..node_end])?;
-                let list = label_bucket_list::one(
-                    &mut self.label_bucket_lists,
-                    halves[start].key,
-                    &stored,
-                )?;
-                if let Some(slot) = lists.get_mut(usize::try_from(node.index()).unwrap_or(0)) {
-                    *slot = Some(list);
-                }
+                singles.push((node, halves[start].key, stored));
             } else {
                 let mut list: Option<label_bucket_list::LabelBucketList> = None;
                 cursor = start;
@@ -210,32 +203,45 @@ impl<M: Memory> Graph<M> {
                     cursor = end;
                 }
                 if let Some(list) = list
-                    && let Some(slot) = lists.get_mut(usize::try_from(node.index()).unwrap_or(0))
+                    && let Some(record) =
+                        records.get_mut(usize::try_from(node.index()).unwrap_or(0))
                 {
-                    *slot = Some(list);
+                    *record = Record {
+                        list: Some(list),
+                        ..Record::NEW
+                    }
+                    .encode();
                 }
             }
             start = node_end;
         }
+        for chunk in singles.chunks(1024) {
+            let entries: Vec<(LabelBucketKey, Stored)> = chunk
+                .iter()
+                .map(|&(_, key, stored)| (key, stored))
+                .collect();
+            let built = label_bucket_list::one_batch(&mut self.label_bucket_lists, &entries)?;
+            for (&(node, _, _), list) in chunk.iter().zip(built) {
+                if let Some(record) = records.get_mut(usize::try_from(node.index()).unwrap_or(0)) {
+                    *record = Record {
+                        list: Some(list),
+                        ..Record::NEW
+                    }
+                    .encode();
+                }
+            }
+        }
 
-        let mut line = [0u8; 64];
-        for base in (0..lists.len()).step_by(RECORDS_PER_LINE_USIZE) {
-            let mut used = 0usize;
-            for offset in 0..RECORDS_PER_LINE_USIZE {
-                let Some(list) = lists.get(base + offset).copied() else {
-                    break;
-                };
-                let record = Record {
-                    list,
-                    ..Record::NEW
-                };
+        for base in (0..records.len()).step_by(RECORDS_PER_LINE_USIZE) {
+            let end = (base + RECORDS_PER_LINE_USIZE).min(records.len());
+            let mut line = [0u8; 64];
+            for (offset, record) in records[base..end].iter().enumerate() {
                 let start = offset * 8;
-                line[start..start + 8].copy_from_slice(&record.encode());
-                used = start + 8;
+                line[start..start + 8].copy_from_slice(record);
             }
             self.region().overwrite(
-                super::record_at(NodeId::new(u32::try_from(base).unwrap_or(0))),
-                &line[..used],
+                super::record_at(NodeId::new(u32::try_from(base).unwrap_or(u32::MAX))),
+                &line[..(end - base) * 8],
             );
         }
 

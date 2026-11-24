@@ -395,6 +395,81 @@ impl<M: Memory> PageStore<M> {
         Ok(Extent { page, index, class })
     }
 
+    /// Allocates up to `count` extents of `class`, batching the chunk-page bitmap updates.
+    pub(crate) fn allocate_many(
+        &mut self,
+        class: ByteClass,
+        count: u32,
+    ) -> Result<Vec<Extent>, WriteError> {
+        if class.is_page() {
+            let mut out = Vec::with_capacity(usize::try_from(count).unwrap_or(0));
+            for _ in 0..count {
+                out.push(self.allocate(class)?);
+            }
+            return Ok(out);
+        }
+        let mut out = Vec::with_capacity(usize::try_from(count).unwrap_or(0));
+        while u32::try_from(out.len()).unwrap_or(u32::MAX) < count {
+            let page = if let Some(page) = self.partial_head(class) {
+                page
+            } else {
+                let page = self.take_page()?;
+                let chunk = PageRecord::Chunk {
+                    class,
+                    used: 0,
+                    prev: None,
+                    next: None,
+                    bitmap: 0,
+                };
+                self.set_record(page, chunk);
+                self.push_partial(class, page);
+                page
+            };
+            let PageRecord::Chunk {
+                used,
+                bitmap,
+                prev,
+                next,
+                ..
+            } = self.record(page)
+            else {
+                corrupt("partial list holds a page that is not a chunk")
+            };
+            let mut free = !bitmap;
+            let mut bitmap = bitmap;
+            let mut taken = 0u32;
+            while free != 0 && u32::try_from(out.len()).unwrap_or(u32::MAX) < count {
+                let index = free.trailing_zeros();
+                free &= free - 1;
+                bitmap |= 1u128 << index;
+                out.push(Extent {
+                    page,
+                    index: u16::try_from(index).unwrap_or_else(|_| corrupt("chunk index")),
+                    class,
+                });
+                taken += 1;
+            }
+            let used = used + u16::try_from(taken).unwrap_or_else(|_| corrupt("chunk used"));
+            self.set_record(
+                page,
+                PageRecord::Chunk {
+                    class,
+                    used,
+                    prev,
+                    next,
+                    bitmap,
+                },
+            );
+            if used >= class.per_page() {
+                self.unlink_partial(class, page);
+            }
+            if taken == 0 {
+                corrupt("chunk page without a free extent");
+            }
+        }
+        Ok(out)
+    }
+
     /// Grows both memories so that `pages` more pages can be taken without growing them: after
     /// this, allocations that take at most `pages` pages cannot fail. Changes no state.
     pub(crate) fn reserve(&mut self, pages: u32) -> Result<(), WriteError> {

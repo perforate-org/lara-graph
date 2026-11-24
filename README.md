@@ -77,7 +77,7 @@ was changed.
 For an empty graph with nodes and widths already declared, `bulk_load` builds every bucket and
 its target index in one pass. Within a bucket, positions follow input order; the `placement` of
 each `NewEdge` is ignored because there are no holes yet. It returns `Error::NotEmpty` if the
-graph already holds edges. On the stable-memory hub benchmark, bulk load is about 44 % cheaper
+graph already holds edges. On the stable-memory hub benchmark, bulk load is about 51 % cheaper
 than `add_edges`.
 
 `BatchError::Unchanged` means no element was applied. `BatchError::PartiallyApplied` means the

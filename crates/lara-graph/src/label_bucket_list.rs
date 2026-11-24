@@ -372,27 +372,47 @@ pub(crate) fn entries<M: Memory>(
     all
 }
 
-/// A flat list holding exactly one entry, written directly.
-pub(crate) fn one<M: Memory>(
+/// Writes one-entry flat lists for `entries`, allocating their extents in one batch.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "entry offsets stay inside the page"
+)]
+pub(crate) fn one_batch<M: Memory>(
     store: &mut PageStore<M>,
-    key: LabelBucketKey,
-    d: &Stored,
-) -> Result<LabelBucketList, WriteError> {
+    entries: &[(LabelBucketKey, Stored)],
+) -> Result<Vec<LabelBucketList>, WriteError> {
     let class = ByteClass::for_bytes(u32::try_from(ENTRY_BYTES).unwrap_or(u32::MAX))
         .unwrap_or_else(|| corrupt("bucket list entry class"));
-    let extent = store.allocate(class)?;
-    let [l0, l1] = key.label.get().to_le_bytes();
-    let direction = match key.direction {
-        Direction::Outgoing => DIRECTION_OUTGOING,
-        Direction::Incoming => DIRECTION_INCOMING,
-        Direction::Undirected => DIRECTION_UNDIRECTED,
-    };
-    let mut bytes = [0u8; ENTRY_BYTES];
-    bytes[..2].copy_from_slice(&[l0, l1]);
-    bytes[2] = direction;
-    bytes[3..].copy_from_slice(&d.encode());
-    store.write(extent.offset(), &bytes);
-    Ok(LabelBucketList(Shape::Flat { extent, count: 1 }))
+    let extents = store.allocate_many(class, u32::try_from(entries.len()).unwrap_or(u32::MAX))?;
+    let mut out = Vec::with_capacity(entries.len());
+    let mut page: Option<crate::page_store::PageId> = None;
+    let mut buffer = [0u8; 4096];
+    for (&extent, &(key, stored)) in extents.iter().zip(entries) {
+        if page != Some(extent.page()) {
+            if let Some(previous) = page {
+                store.write(previous.offset(), &buffer);
+            }
+            page = Some(extent.page());
+            store.pages().read_into(extent.page().offset(), &mut buffer);
+        }
+        let within = usize::try_from(extent.offset().get() - extent.page().offset().get())
+            .unwrap_or_else(|_| corrupt("bucket list offset"));
+        let [l0, l1] = key.label.get().to_le_bytes();
+        let direction = match key.direction {
+            Direction::Outgoing => DIRECTION_OUTGOING,
+            Direction::Incoming => DIRECTION_INCOMING,
+            Direction::Undirected => DIRECTION_UNDIRECTED,
+        };
+        buffer[within] = l0;
+        buffer[within + 1] = l1;
+        buffer[within + 2] = direction;
+        buffer[within + 3..within + ENTRY_BYTES].copy_from_slice(&stored.encode());
+        out.push(LabelBucketList(Shape::Flat { extent, count: 1 }));
+    }
+    if let Some(page) = page {
+        store.write(page.offset(), &buffer);
+    }
+    Ok(out)
 }
 
 fn read_entries<M: Memory>(
