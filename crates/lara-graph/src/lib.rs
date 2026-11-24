@@ -34,6 +34,7 @@ mod memories;
 mod memory;
 mod page_store;
 mod paged;
+mod read_buf;
 mod scale;
 mod stored;
 mod targets;

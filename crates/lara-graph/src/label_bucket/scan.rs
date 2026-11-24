@@ -6,6 +6,7 @@ use crate::id::{Edge, Order, Position};
 use crate::memory::Memory;
 use crate::page_store::Pages;
 use crate::paged::{self, Leaf};
+use crate::read_buf::ReadBuf;
 use crate::units::ByteOffset;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
@@ -289,47 +290,9 @@ impl<M: Memory> Reads<'_, '_, M> {
             };
             visit(
                 first + start,
-                buf.fill(self.view, slot_offset(at, start), n),
+                buf.fill(self.view, slot_offset(at, start), byte_len(n)),
             )?;
         }
         ControlFlow::Continue(())
-    }
-}
-
-/// Bytes of the stack buffer a scan reads into first: a run of up to 32 slots, or the first read
-/// of a short window. A visit of a small bucket then allocates nothing: on the IC a heap buffer
-/// for each visit cost about 250 instructions, a ninth of a node visit (`visit_run_1024`).
-const SMALL_READ: usize = 128;
-const _: () = assert!(SMALL_READ >= 32 * 4);
-
-/// Where a scan's reads land: a small stack buffer, zeroed when first used, else one heap buffer
-/// sized by the first read that needs it and never zeroed again.
-struct ReadBuf {
-    small: Option<[u8; SMALL_READ]>,
-    heap: Vec<u8>,
-}
-
-impl ReadBuf {
-    const fn new() -> Self {
-        Self {
-            small: None,
-            heap: Vec::new(),
-        }
-    }
-
-    /// Reads `count` slots at `at`.
-    fn fill<M: Memory>(&mut self, view: &Pages<'_, M>, at: ByteOffset, count: u32) -> &[u8] {
-        let len = byte_len(count);
-        let bytes = if len <= SMALL_READ {
-            let small = self.small.get_or_insert([0; SMALL_READ]);
-            small.get_mut(..len).unwrap_or(&mut [])
-        } else {
-            if self.heap.len() < len {
-                self.heap.resize(len, 0);
-            }
-            self.heap.get_mut(..len).unwrap_or(&mut [])
-        };
-        view.read_into(at, bytes);
-        bytes
     }
 }

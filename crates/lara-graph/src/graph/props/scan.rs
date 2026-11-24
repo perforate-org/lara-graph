@@ -105,7 +105,8 @@ impl<M: Memory> Graph<M> {
 }
 
 /// Calls `f` with each live edge of `bucket` (a bucket of a label of `width`) and its value, in
-/// `order`, until it breaks.
+/// `order`, until it breaks. Reads the values a value page at a time, and the slots of those
+/// positions while that page's bytes are at hand, so a value is never copied twice.
 pub(in crate::graph) fn visit_joined<M: Memory, B>(
     view: &Pages<'_, M>,
     bucket: &LabelBucket,
@@ -113,78 +114,42 @@ pub(in crate::graph) fn visit_joined<M: Memory, B>(
     order: Order,
     f: &mut impl FnMut(Edge, &[u8]) -> ControlFlow<B>,
 ) -> Option<B> {
-    let slots = bucket.slots;
-    let plane = bucket.values.map_or(values::Plane::Empty, |c| c.plane);
-    // A slot page's worth of positions at a time: its live edges, then its values in one read.
-    let mut windows: Vec<u32> = (0..slots.stored().div_ceil(PAGE_SLOTS)).collect();
-    if order == Order::Descending {
-        windows.reverse();
-    }
-    let mut join = Join {
-        view,
-        slots: &slots,
-        plane,
-        width,
-        edges: Vec::new(),
-        cells: Vec::new(),
-    };
-    for k in windows {
-        let span = (k * PAGE_SLOTS, ((k + 1) * PAGE_SLOTS).min(slots.stored()));
-        if let ControlFlow::Break(done) = join.window(span, order, f) {
-            return Some(done);
-        }
-    }
-    None
-}
-
-/// A combined scan's state: a window's live edges, then its values in one read.
-struct Join<'a, 'v, M: Memory> {
-    view: &'a Pages<'v, M>,
-    slots: &'a Descriptor,
-    plane: values::Plane,
-    width: Option<Width>,
-    edges: Vec<Edge>,
-    cells: Vec<u8>,
-}
-
-impl<M: Memory> Join<'_, '_, M> {
-    /// Calls `f` with each live edge of positions `low..high` and its value.
-    fn window<B>(
-        &mut self,
-        (low, high): (u32, u32),
-        order: Order,
-        f: &mut impl FnMut(Edge, &[u8]) -> ControlFlow<B>,
-    ) -> ControlFlow<B> {
-        self.edges.clear();
-        let span = Span::new(low, high, order);
-        label_bucket::visit(self.slots, self.view, span, Window::Page, |e| {
-            self.edges.push(e);
-            ControlFlow::<()>::Continue(())
+    let slots = &bucket.slots;
+    let Some(width) = width else {
+        return label_bucket::visit(slots, view, Span::all(slots, order), Window::Page, |e| {
+            f(e, &[])
         });
-        if self.edges.is_empty() {
-            return ControlFlow::Continue(());
-        }
-        self.cells.clear();
-        let w = self.width.map_or(0, |w| usize::from(w.get()));
-        if let Some(width) = self.width {
-            let cells = &mut self.cells;
-            values::visit(
-                self.view,
-                self.plane,
-                width,
-                (low, high, false),
-                |_, bytes| {
-                    cells.extend_from_slice(bytes);
-                    ControlFlow::<()>::Continue(())
-                },
-            );
-        }
-        for &e in &self.edges {
-            let at = usize::try_from(e.position().index() - low).unwrap_or(0) * w;
-            f(e, self.cells.get(at..at + w).unwrap_or(&[]))?;
-        }
-        ControlFlow::Continue(())
+    };
+    let plane = bucket.values.map_or(values::Plane::Empty, |c| c.plane);
+    let w = usize::from(width.get());
+    let descending = order == Order::Descending;
+    let mut visit_range = |(low, high): (u32, u32)| {
+        values::visit(
+            view,
+            plane,
+            width,
+            (low, high, descending),
+            |first, bytes| {
+                let span = Span::new(first, first + stored_u32(bytes.len() / w), order);
+                match label_bucket::visit(slots, view, span, Window::Page, |e| {
+                    let at = usize::try_from(e.position().index() - first).unwrap_or(0) * w;
+                    f(e, bytes.get(at..at + w).unwrap_or(&[]))
+                }) {
+                    Some(done) => ControlFlow::Break(done),
+                    None => ControlFlow::Continue(()),
+                }
+            },
+        )
+    };
+    // A paged bucket skips its all-dead slot pages' values too.
+    if !matches!(slots, Descriptor::Paged(_)) {
+        return visit_range((0, slots.stored()));
     }
+    let mut ranges = live_ranges(view, slots);
+    if descending {
+        ranges.reverse();
+    }
+    ranges.into_iter().find_map(visit_range)
 }
 
 /// The position ranges of a bucket's slot pages that are not all dead: the whole bucket unless

@@ -56,8 +56,10 @@ use crate::corrupt::corrupt;
 use crate::id::Width;
 use crate::memory::{Memory, WriteError};
 use crate::page_store::{ByteClass, EXTENT_BYTES, Extent, PAGE_BYTES, PageId, PageStore, Pages};
+use crate::read_buf::ReadBuf;
 use crate::units::ByteOffset;
 use alloc::vec;
+#[cfg(test)]
 use alloc::vec::Vec;
 
 mod table;
@@ -181,30 +183,22 @@ pub(crate) fn visit<M: Memory, B>(
 ) -> Option<B> {
     let cpp = cells_per_page(width);
     let w = width_len(width);
-    let mut chunks: Vec<(u32, u32)> = (low / cpp..high.div_ceil(cpp))
-        .map(|k| ((k * cpp).max(low), ((k + 1) * cpp).min(high)))
-        .filter(|(a, b)| a < b)
-        .collect();
-    if descending {
-        chunks.reverse();
-    }
-    let mut buf = Vec::new();
-    for (a, b) in chunks {
-        let len = usize::try_from(b - a).unwrap_or(0) * w;
-        if buf.len() < len {
-            buf.resize(len, 0);
+    let (first_page, end_page) = (low / cpp, high.div_ceil(cpp));
+    let mut buf = ReadBuf::new();
+    for step in 0..end_page.saturating_sub(first_page) {
+        let page = if descending {
+            end_page - 1 - step
+        } else {
+            first_page + step
+        };
+        let (a, b) = ((page * cpp).max(low), ((page + 1) * cpp).min(high));
+        if a >= b {
+            continue;
         }
-        let chunk = buf.get_mut(..len).unwrap_or(&mut []);
+        let chunk = buf.take(usize::try_from(b - a).unwrap_or(0) * w);
         // The cells with storage: a run may cover only the front of its chunk.
         let cell = cell_at(view, plane, width, a);
-        let stored = match (plane, cell) {
-            (_, None) | (Plane::Empty, _) => 0,
-            (Plane::Run(extent), Some(_)) => {
-                (extent.len() / u32::from(width.get())).saturating_sub(a)
-            }
-            (Plane::Table { .. }, Some(_)) => b - a,
-        }
-        .min(b - a);
+        let stored = stored_cells(plane, width, cell, (a, b));
         let (head, tail) = chunk.split_at_mut(usize::try_from(stored).unwrap_or(0) * w);
         if let Some(at) = cell.filter(|_| !head.is_empty()) {
             view.read_into(at, head);
@@ -215,6 +209,17 @@ pub(crate) fn visit<M: Memory, B>(
         }
     }
     None
+}
+
+/// How many of positions `a..b`, all on one value page (or in the run), have storage, given the
+/// first one's `cell`: none when it has none, and a run may cover only the front.
+fn stored_cells(plane: Plane, width: Width, cell: Option<ByteOffset>, (a, b): (u32, u32)) -> u32 {
+    match (plane, cell) {
+        (_, None) | (Plane::Empty, _) => 0,
+        (Plane::Run(extent), Some(_)) => (extent.len() / u32::from(width.get())).saturating_sub(a),
+        (Plane::Table { .. }, Some(_)) => b - a,
+    }
+    .min(b - a)
 }
 
 /// Writes `value` (one width long) at `position`, allocating at most [`PAGES_PER_WRITE`] pages,
