@@ -1445,3 +1445,19 @@ fn add_edges_large_batch_indexes_every_block() {
     g.add_edges(&specs).unwrap();
     check(&g);
 }
+
+#[test]
+fn add_edges_keeps_a_cache_per_from_node() {
+    let backing = Backing::default();
+    let mut g = backing.create(4);
+    let specs = [
+        NewEdge::directed(v(0), l(0), v(1), Placement::ReuseHoles, &[]),
+        NewEdge::directed(v(2), l(0), v(3), Placement::ReuseHoles, &[]),
+    ];
+    g.add_edges(&specs).unwrap();
+    assert_eq!(g.degree(v(0), l(0), Direction::Outgoing).unwrap(), 1);
+    assert_eq!(g.degree(v(2), l(0), Direction::Outgoing).unwrap(), 1);
+    assert_eq!(g.degree(v(1), l(0), Direction::Incoming).unwrap(), 1);
+    assert_eq!(g.degree(v(3), l(0), Direction::Incoming).unwrap(), 1);
+    check(&g);
+}

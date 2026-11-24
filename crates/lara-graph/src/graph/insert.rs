@@ -155,7 +155,7 @@ impl<M: Memory> Graph<M> {
             return self.add_edges_mixed(edges);
         }
         let mut out = Vec::with_capacity(edges.len());
-        let mut cache: Option<(LabelBucketKey, Place)> = None;
+        let mut cache: Option<(NodeId, LabelBucketKey, Place)> = None;
         let mut holes = HoleCursor::default();
         for (index, edge) in edges.iter().enumerate() {
             if edge.kind == EdgeKind::Undirected {
@@ -169,8 +169,8 @@ impl<M: Memory> Graph<M> {
                 direction: Direction::Outgoing,
             };
             let cached = cache
-                .filter(|(last, _)| *last == key)
-                .map(|(_, place)| (0, place));
+                .filter(|(last_node, last_key, _)| *last_node == edge.from && *last_key == key)
+                .map(|(_, _, place)| (0, place));
             let from = Half::new(
                 edge.from,
                 (edge.label, Direction::Outgoing),
@@ -191,7 +191,7 @@ impl<M: Memory> Graph<M> {
             cache = updated
                 .first()
                 .and_then(|place| *place)
-                .map(|place| (key, place));
+                .map(|place| (edge.from, key, place));
         }
         Ok(out)
     }
