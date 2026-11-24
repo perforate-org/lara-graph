@@ -89,7 +89,8 @@ impl<M: Memory> Graph<M> {
             let first =
                 label_bucket::find(&found.bucket.slots, &self.edges.pages(), from, |_| true);
             let Some(edge) = first else {
-                // All holes: compaction drops the bucket without moving anything.
+                // All holes: publish the pending bucket, then compaction drops it.
+                self.publish(found.entry, found.bucket);
                 self.compact(v, key.label, key.direction)?;
                 (cursor, hint) = (None, None);
                 continue;
@@ -110,6 +111,9 @@ impl<M: Memory> Graph<M> {
             removed.push(edge);
             drained = Some((found, key));
             theirs_cache = next_theirs.map(|theirs| (theirs_key, theirs));
+        }
+        if let Some((found, _)) = drained {
+            self.publish(found.entry, found.bucket);
         }
         let progress = if self.label_bucket_list(v)?.is_none() {
             self.write_record(
@@ -200,6 +204,9 @@ impl<M: Memory> Graph<M> {
             removed.push(pair);
             found = next;
         }
+        if !removed.is_empty() {
+            self.publish(found.entry, found.bucket);
+        }
         let next = (high < stored).then(|| Position::new(high));
         Ok(Sweep::new(removed, next))
     }
@@ -218,7 +225,7 @@ impl<M: Memory> Graph<M> {
             theirs
         };
         let value = self.read_value(&canonical, half.label(), halves.canonical().position());
-        let bucket = self.tombstone(found, half.position());
+        let (bucket, _) = self.remove_half(found, half.position());
         let next_theirs = if other == half {
             None
         } else {

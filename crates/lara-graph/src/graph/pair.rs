@@ -213,7 +213,7 @@ impl<M: Memory> Graph<M> {
     }
 
     /// Applies one tombstone to a bucket without publishing it yet.
-    fn remove_half(&mut self, found: Found, at: Position) -> (LabelBucket, NodeId) {
+    pub(super) fn remove_half(&mut self, found: Found, at: Position) -> (LabelBucket, NodeId) {
         let (next, target) = label_bucket::remove(found.bucket.slots, at, &self.edges)
             .unwrap_or_else(|| corrupt("live half not in its bucket"));
         let bucket = LabelBucket {
