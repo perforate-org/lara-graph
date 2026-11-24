@@ -35,7 +35,9 @@ impl<M: Memory> Graph<M> {
         let Some(pair) = self.pair(half)? else {
             return Ok(Removal::Absent);
         };
-        Ok(self.take_removal(half, pair).0)
+        let (removal, own_after, _) = self.take_removal(half, pair);
+        self.publish(own_after.entry, own_after.bucket);
+        Ok(removal)
     }
 
     /// Removes every edge identified by `halves`, in order. Each edge is all-or-none, but the
@@ -59,6 +61,11 @@ impl<M: Memory> Graph<M> {
         for (index, &half) in halves.iter().enumerate() {
             let node = half.node();
             let key = key_of(half);
+            if let Some((last_node, last_key, _)) = own_cache
+                && (last_node != node || last_key != key)
+            {
+                self.flush_pending(&mut own_cache);
+            }
             let own = match own_cache {
                 Some((last_node, last_key, found)) if last_node == node && last_key == key => {
                     Some(found)
@@ -99,7 +106,14 @@ impl<M: Memory> Graph<M> {
             theirs_cache = theirs_after.map(|found| (other, their_key, found));
             out.push(removal);
         }
+        self.flush_pending(&mut own_cache);
         Ok(out)
+    }
+
+    fn flush_pending(&mut self, cache: &mut Option<(NodeId, LabelBucketKey, Found)>) {
+        if let Some((_, _, found)) = cache.take() {
+            self.publish(found.entry, found.bucket);
+        }
     }
 
     /// Applies one found pair and returns the removal plus the updated own and opposite
@@ -121,7 +135,7 @@ impl<M: Memory> Graph<M> {
         } else {
             Vec::new()
         };
-        let own_bucket = self.tombstone(own, half.position());
+        let (own_bucket, _) = self.remove_half(own, half.position());
         let own_after = Found {
             entry: own.entry,
             bucket: own_bucket,
@@ -194,6 +208,12 @@ impl<M: Memory> Graph<M> {
     /// Tombstones the live half at `at` in `found` and takes it out of the target index. Writes
     /// no value and takes no memory.
     pub(super) fn tombstone(&mut self, found: Found, at: Position) -> LabelBucket {
+        let (bucket, _) = self.remove_half(found, at);
+        self.publish(found.entry, bucket)
+    }
+
+    /// Applies one tombstone to a bucket without publishing it yet.
+    fn remove_half(&mut self, found: Found, at: Position) -> (LabelBucket, NodeId) {
         let (next, target) = label_bucket::remove(found.bucket.slots, at, &self.edges)
             .unwrap_or_else(|| corrupt("live half not in its bucket"));
         let bucket = LabelBucket {
@@ -201,7 +221,7 @@ impl<M: Memory> Graph<M> {
             ..found.bucket
         };
         self.index_removed(&bucket, target, at);
-        self.publish(found.entry, bucket)
+        (bucket, target)
     }
 
     /// Publishes a bucket's new state: its header, and its list entry when it is plain or just
