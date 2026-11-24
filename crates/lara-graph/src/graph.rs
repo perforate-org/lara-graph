@@ -291,12 +291,13 @@ impl<M: Memory> Graph<M> {
     /// [`Error::OutOfMemory`], or [`Error::AddressSpaceExhausted`] past `u32::MAX - 1` nodes
     /// (the last id is reserved as the removed-edge marker).
     pub fn add_node(&mut self) -> Result<NodeId, Error> {
-        let id = NodeId::new(self.node_count());
-        let next = id
-            .index()
+        let count = self.node_count();
+        let next = count
             .checked_add(1)
             .filter(|&n| n < u32::MAX)
             .ok_or(Error::AddressSpaceExhausted)?;
+        // Checked first, so that the id needs no check of its own.
+        let id = NodeId::new(count);
         self.region().write(record_at(id), &Record::NEW.encode())?;
         self.region()
             .overwrite(ByteOffset::new(AT_COUNT), &next.to_le_bytes());
@@ -312,17 +313,17 @@ impl<M: Memory> Graph<M> {
     /// [`Error::AddressSpaceExhausted`] when the ids would not fit, or [`Error::OutOfMemory`]
     /// when the records cannot be grown. On error no node is visible.
     pub fn add_nodes(&mut self, count: NonZeroU32) -> Result<NodeId, Error> {
-        let id = NodeId::new(self.node_count());
-        let next = id
-            .index()
+        let first = self.node_count();
+        let next = first
             .checked_add(count.get())
             .filter(|&n| n < u32::MAX)
             .ok_or(Error::AddressSpaceExhausted)?;
-        let end = record_at(NodeId::new(next));
+        let id = NodeId::new(first);
+        let end = record_at_index(next);
         self.region().reserve(end)?;
         for index in id.index()..next {
             self.region()
-                .overwrite(record_at(NodeId::new(index)), &Record::NEW.encode());
+                .overwrite(record_at_index(index), &Record::NEW.encode());
         }
         self.region()
             .overwrite(ByteOffset::new(AT_COUNT), &next.to_le_bytes());
@@ -505,7 +506,12 @@ fn reserved<T>(result: Result<T, WriteError>) -> T {
 }
 
 fn record_at(v: NodeId) -> ByteOffset {
-    ByteOffset::new(RECORDS_START + u64::from(v.index()) * u64::try_from(RECORD_BYTES).unwrap_or(8))
+    record_at_index(v.index())
+}
+
+/// [`record_at`] by dense index, for a range of nodes not built one by one.
+fn record_at_index(index: u32) -> ByteOffset {
+    ByteOffset::new(RECORDS_START + u64::from(index) * u64::try_from(RECORD_BYTES).unwrap_or(8))
 }
 
 /// Eight node records: 64 bytes, one cache line on the IC's host as well.
@@ -538,7 +544,7 @@ impl RecordLines {
             return graph.record(v).unwrap_or_else(|_| corrupt("a known node"));
         }
         if base != self.base {
-            self.bytes = graph.region().read_array(record_at(NodeId::new(base)));
+            self.bytes = graph.region().read_array(record_at_index(base));
             self.base = base;
         }
         let offset = usize::try_from(v.index() - base).unwrap_or_else(|_| corrupt("record offset"))

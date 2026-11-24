@@ -143,7 +143,7 @@ impl<M: Memory> Graph<M> {
                 line[start..start + 8].copy_from_slice(record);
             }
             self.region().overwrite(
-                super::record_at(NodeId::new(u32::try_from(base).unwrap_or(u32::MAX))),
+                super::record_at_index(u32::try_from(base).unwrap_or(u32::MAX)),
                 &line[..(end - base) * 8],
             );
         }

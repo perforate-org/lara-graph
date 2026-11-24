@@ -195,6 +195,12 @@ pub struct lara_graph::NodeId(_)
 impl lara_graph::NodeId
 pub const fn lara_graph::NodeId::index(self) -> u32
 pub const fn lara_graph::NodeId::new(u32) -> Self
+impl core::cmp::Ord for lara_graph::NodeId
+pub fn lara_graph::NodeId::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialOrd for lara_graph::NodeId
+pub fn lara_graph::NodeId::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for lara_graph::NodeId
+pub fn lara_graph::NodeId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct lara_graph::Position(_)
 impl lara_graph::Position
 pub const fn lara_graph::Position::index(self) -> u32

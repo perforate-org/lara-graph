@@ -6,7 +6,7 @@
 //!
 //! # Layouts
 //!
-//! Each is 16 bytes. A slot is a node id, `u32::MAX` for a tombstone.
+//! Each is 16 bytes. A slot is a node id's complement (`!index`), 0 for a tombstone.
 //!
 //! ```text
 //! ---------------------------------------- <- Tiny
@@ -44,6 +44,7 @@ use crate::corrupt::corrupt;
 use crate::id::{NodeId, Width};
 use crate::page_store::{ByteClass, EXTENT_BYTES, Extent, PAGE_BYTES};
 use crate::units::ByteOffset;
+use core::num::NonZeroU32;
 
 /// Bytes per descriptor.
 pub(crate) const DESCRIPTOR_BYTES: usize = 16;
@@ -74,21 +75,22 @@ pub(crate) enum Slot {
     Tombstone,
 }
 
-/// The reserved slot value of a tombstone; never a node id.
-pub(crate) const TOMBSTONE: u32 = u32::MAX;
+/// The stored value of a tombstone: zero, the complement of no node's index (an edge stores its
+/// target's complement), so a slot decodes with one comparison and zeroed bytes read as holes.
+pub(crate) const TOMBSTONE: u32 = 0;
 
 impl Slot {
     pub(crate) fn encode(self) -> [u8; 4] {
         match self {
-            Self::Live(v) => v.index().to_le_bytes(),
+            Self::Live(v) => v.complement().get().to_le_bytes(),
             Self::Tombstone => TOMBSTONE.to_le_bytes(),
         }
     }
 
     pub(crate) fn decode(bytes: [u8; 4]) -> Self {
-        match u32::from_le_bytes(bytes) {
-            TOMBSTONE => Self::Tombstone,
-            raw => Self::Live(NodeId::new(raw)),
+        match NonZeroU32::new(u32::from_le_bytes(bytes)) {
+            Some(complement) => Self::Live(NodeId::from_complement(complement)),
+            None => Self::Tombstone,
         }
     }
 

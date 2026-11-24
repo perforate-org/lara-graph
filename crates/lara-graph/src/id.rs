@@ -1,22 +1,62 @@
 //! Public identifiers.
 
-use core::num::NonZeroU16;
+use core::cmp::Ordering;
+use core::fmt;
+use core::num::{NonZeroU16, NonZeroU32};
 
-/// A node. Nodes are dense: a graph with `n` nodes has ids `0..n`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NodeId(u32);
+/// A node. Nodes are dense: a graph with `n` nodes has ids `0..n`, below `u32::MAX`.
+///
+/// It holds its index's complement, which is never zero, so that `Option<NodeId>` and a slot
+/// (an edge or a tombstone) take four bytes, not eight.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NodeId(NonZeroU32);
 
 impl NodeId {
     /// The node with dense index `index`.
+    ///
+    /// # Panics
+    ///
+    /// When `index` is `u32::MAX`, which no node has.
     #[must_use]
     pub const fn new(index: u32) -> Self {
-        Self(index)
+        match NonZeroU32::new(!index) {
+            Some(complement) => Self(complement),
+            None => panic!("u32::MAX is no node's index"),
+        }
     }
 
     /// The dense index of this node.
     #[must_use]
     pub const fn index(self) -> u32 {
+        !self.0.get()
+    }
+
+    /// The node whose index's complement is `complement`: how a slot stores it.
+    pub(crate) const fn from_complement(complement: NonZeroU32) -> Self {
+        Self(complement)
+    }
+
+    /// The complement of this node's index, never zero.
+    pub(crate) const fn complement(self) -> NonZeroU32 {
         self.0
+    }
+}
+
+impl Ord for NodeId {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.index().cmp(&other.index())
+    }
+}
+
+impl PartialOrd for NodeId {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl fmt::Debug for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("NodeId").field(&self.index()).finish()
     }
 }
 
@@ -56,13 +96,13 @@ pub enum Order {
 pub struct Cursor {
     order: Order,
     from: Option<Position>,
-    span: core::num::NonZeroU32,
+    span: NonZeroU32,
 }
 
 impl Cursor {
     /// The first window: from the lowest position ascending, or the highest descending.
     #[must_use]
-    pub const fn first(order: Order, span: core::num::NonZeroU32) -> Self {
+    pub const fn first(order: Order, span: NonZeroU32) -> Self {
         Self {
             order,
             from: None,
@@ -72,7 +112,7 @@ impl Cursor {
 
     /// The window starting at `from` (included).
     #[must_use]
-    pub const fn at(order: Order, from: Position, span: core::num::NonZeroU32) -> Self {
+    pub const fn at(order: Order, from: Position, span: NonZeroU32) -> Self {
         Self {
             order,
             from: Some(from),
@@ -94,7 +134,7 @@ impl Cursor {
 
     /// Positions per window.
     #[must_use]
-    pub const fn span(&self) -> core::num::NonZeroU32 {
+    pub const fn span(&self) -> NonZeroU32 {
         self.span
     }
 }

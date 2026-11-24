@@ -308,7 +308,7 @@ fn merge<M: Memory>(
         .iter()
         .flat_map(|e| Slot::Live(e.target()).encode())
         .collect();
-    bytes.resize(byte_len(PAGE_SLOTS), 0xFF);
+    bytes.resize(byte_len(PAGE_SLOTS), 0);
     store.write(first.1.present().offset(), &bytes);
     // The live edges are packed at the front: the first hole follows them.
     let live = narrow(stored_u32(edges.len()));
