@@ -1434,3 +1434,14 @@ fn ic_stable_structures_memories_hold_a_graph() {
     let nodes = manager.get(MemoryId::new(MemoryRole::Nodes.index()));
     assert!(ic_stable_structures::Memory::size(&nodes) > 0);
 }
+
+#[test]
+fn add_edges_large_batch_indexes_every_block() {
+    let backing = Backing::default();
+    let mut g = backing.create(2049);
+    let specs: Vec<NewEdge<'_>> = (1..=2048)
+        .map(|target| NewEdge::directed(v(0), l(0), v(target), Placement::Append, &[]))
+        .collect();
+    g.add_edges(&specs).unwrap();
+    check(&g);
+}

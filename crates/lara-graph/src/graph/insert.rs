@@ -810,11 +810,10 @@ impl<M: Memory> Graph<M> {
     ) -> Option<Place> {
         match slot {
             Ok(entry) => {
-                let stored = bucket.stored();
-                self.publish(entry, bucket);
+                let bucket = self.publish(entry, bucket);
                 Some(Place {
                     record: place.record,
-                    target: Target::Present(entry, stored),
+                    target: Target::Present(entry, bucket.stored()),
                 })
             }
             Err(gap) => {
