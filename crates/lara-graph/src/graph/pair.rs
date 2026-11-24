@@ -35,8 +35,11 @@ impl<M: Memory> Graph<M> {
         let Some(pair) = self.pair(half)? else {
             return Ok(Removal::Absent);
         };
-        let (removal, own_after, _) = self.take_removal(half, pair);
+        let (removal, own_after, theirs_after) = self.take_removal(half, pair);
         self.publish(own_after.entry, own_after.bucket);
+        if let Some(theirs) = theirs_after {
+            self.publish(theirs.entry, theirs.bucket);
+        }
         Ok(removal)
     }
 
@@ -93,6 +96,11 @@ impl<M: Memory> Graph<M> {
                 label: half.label(),
                 direction: opposite(half.direction()),
             };
+            if let Some((last_node, last_key, _)) = theirs_cache
+                && (last_node != other || last_key != their_key)
+            {
+                self.flush_pending(&mut theirs_cache);
+            }
             let theirs = match theirs_cache {
                 Some((last_node, last_key, found))
                     if last_node == other && last_key == their_key =>
@@ -108,6 +116,7 @@ impl<M: Memory> Graph<M> {
             out.push(removal);
         }
         self.flush_pending(&mut own_cache);
+        self.flush_pending(&mut theirs_cache);
         Ok(out)
     }
 
@@ -144,7 +153,7 @@ impl<M: Memory> Graph<M> {
         let theirs_after = if other == half {
             None
         } else {
-            let bucket = self.tombstone(theirs, other.position());
+            let (bucket, _) = self.remove_half(theirs, other.position());
             Some(Found {
                 entry: theirs.entry,
                 bucket,

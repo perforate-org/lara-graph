@@ -176,6 +176,32 @@ fn hub_remove_edges_4096_loop_stable() -> BenchResult {
     })
 }
 
+#[bench(raw)]
+fn hub_remove_edges_parallel_4096_loop() -> BenchResult {
+    let mut g = heap_graph();
+    let (_, halves) = seed_parallel(&mut g, 4096);
+    bench_fn(|| {
+        for &half in &halves {
+            black_box(
+                g.remove_edge(half)
+                    .unwrap_or_else(|e| panic!("remove: {e}")),
+            );
+        }
+    })
+}
+
+#[bench(raw)]
+fn hub_remove_edges_parallel_4096_batched() -> BenchResult {
+    let mut g = heap_graph();
+    let (_, halves) = seed_parallel(&mut g, 4096);
+    bench_fn(|| {
+        black_box(
+            g.remove_edges(&halves)
+                .unwrap_or_else(|e| panic!("remove batch: {e}")),
+        )
+    })
+}
+
 fn grow_hub_undirected(mut g: Graph<impl Memory>, degree: u32) -> BenchResult {
     let hub = node(&mut g);
     let leaves = nodes(&mut g, degree);
