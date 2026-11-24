@@ -109,7 +109,10 @@ pub enum Error {
     },
 }
 
-/// A batch operation failed at `index`.
+/// A batch operation failed at `index`, with whether earlier elements were applied.
+///
+/// On the Internet Computer, a canister can trap on [`Self::PartiallyApplied`] to make the
+/// update call all-or-none; the IC discards the call's state changes when the call traps.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BatchError {
     /// Nothing before `index` was applied; the graph is unchanged.

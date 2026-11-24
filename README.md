@@ -61,6 +61,38 @@ GRAPH.with(|graph| {
 `try_load` and `try_init` return an `InitError` instead of panicking. Off the IC, `VecMemory`
 keeps a graph on the heap.
 
+## Batch operations
+
+Single operations return `Result<_, Error>` and are all-or-none. Batch operations take a slice
+and return `Result<_, BatchError>`; the error carries the failing index and whether the graph
+was changed.
+
+| Operation | On failure |
+| --- | --- |
+| `add_edges` | Ordered bulk. The failing edge is all-or-none; earlier edges remain. |
+| `set_edge_values` | Ordered bulk. The failing value is all-or-none; earlier values remain. |
+| `remove_edges` | Checks every node first, then removes all or nothing. |
+| `detach_many` | Checks every node first, then marks all or nothing. |
+
+`BatchError::Unchanged` means no element was applied. `BatchError::PartiallyApplied` means the
+elements before `index` were applied. A canister can turn a partial batch into an all-or-none
+update by trapping on `PartiallyApplied`; the IC then discards the call's state changes:
+
+```rust,ignore
+match graph.add_edges(&edges) {
+    Ok(halves) => halves,
+    Err(BatchError::Unchanged { error, .. }) => return Err(error.to_string()),
+    Err(BatchError::PartiallyApplied { index, error }) => {
+        ic_cdk::trap(&format!("batch edge {index}: {error}"));
+    }
+}
+```
+
+The trap rolls back the whole update call, including any other writes made earlier in the same
+call, and does not roll back other canisters called before the trap. Put a batch that must be
+all-or-none in its own update call. Batches are not a transaction API; `ReadBatch` is only a
+read-side context that holds node-record and list-page caches.
+
 ## Memories
 
 Each memory starts, as ic-stable-structures' do, with a 3-byte magic and a version byte.
