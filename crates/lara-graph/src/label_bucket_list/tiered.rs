@@ -38,8 +38,8 @@
 //! ```
 
 use super::{
-    EntryAt, LEAF_ENTRIES, LabelBucketKey, LabelBucketList, Lookup, Shape, class_len, encode_entry,
-    flat, read_entries, search, shift_in, shift_out,
+    EntryAt, LEAF_ENTRIES, LabelBucketKey, LabelBucketList, Listed, Lookup, Shape, class_len,
+    encode_entry, flat, read_entries, search, shift_in, shift_out,
 };
 use crate::corrupt::corrupt;
 use crate::memory::{Memory, WriteError};
@@ -174,7 +174,7 @@ pub(super) fn has_room<M: Memory>(pages: &Pages<'_, M>, top: Extent, adding: usi
 pub(super) fn for_each<M: Memory, B>(
     pages: &Pages<'_, M>,
     top: Extent,
-    f: &mut impl FnMut(LabelBucketKey, Stored) -> ControlFlow<B>,
+    f: &mut impl FnMut(LabelBucketKey, Listed) -> ControlFlow<B>,
 ) -> Option<B> {
     for leaf in read_top(pages, top) {
         if let Some(value) = super::for_each_in(pages, leaf.page.offset(), leaf.entries(), f) {

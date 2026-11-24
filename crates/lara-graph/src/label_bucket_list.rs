@@ -14,7 +14,7 @@
 //!
 //! ```text
 //! ---------------------------------------- <- Offset 0
-//! Extent: the flat list or the top↕ 7 bytes
+//! Extent: the flat list or the top↕ 5 bytes
 //! ----------------------------------------
 //! Entry count; 0xFF if tiered     ↕ 1 byte
 //! ----------------------------------------
@@ -151,15 +151,15 @@ pub(crate) fn encode_ref(list: Option<LabelBucketList>) -> [u8; LABEL_BUCKET_LIS
         Shape::Tiered { top } => (top, TIERED),
     });
     encoded.map_or([0; LABEL_BUCKET_LIST_REF_BYTES], |(extent, count)| {
-        let [e0, e1, e2, e3, e4, e5, e6] = extent.encode();
-        [e0, e1, e2, e3, e4, e5, e6, count]
+        let [e0, e1, e2, e3, e4] = extent.encode();
+        [e0, e1, e2, e3, e4, count]
     })
 }
 
 pub(crate) fn decode_ref(bytes: [u8; LABEL_BUCKET_LIST_REF_BYTES]) -> Option<LabelBucketList> {
-    let [e0, e1, e2, e3, e4, e5, e6, count] = bytes;
+    let [e0, e1, e2, e3, e4, count] = bytes;
     (count != 0).then(|| {
-        let extent = Extent::decode([e0, e1, e2, e3, e4, e5, e6]);
+        let extent = Extent::decode([e0, e1, e2, e3, e4]);
         LabelBucketList(match count {
             TIERED => Shape::Tiered { top: extent },
             count => Shape::Flat { extent, count },
@@ -313,11 +313,23 @@ pub(crate) fn has_room<M: Memory>(
     }
 }
 
+/// A listed bucket's stored form, decoded only when asked for: a walk that wants only the keys
+/// does not decode descriptors.
+#[derive(Clone, Copy)]
+pub(crate) struct Listed([u8; DESCRIPTOR_BYTES]);
+
+impl Listed {
+    #[inline]
+    pub(crate) fn stored(self) -> Stored {
+        Stored::decode(self.0)
+    }
+}
+
 /// Every entry of a list, in order, until `f` breaks.
 pub(crate) fn for_each<M: Memory, B>(
     pages: &Pages<'_, M>,
     list: Option<LabelBucketList>,
-    mut f: impl FnMut(LabelBucketKey, Stored) -> ControlFlow<B>,
+    mut f: impl FnMut(LabelBucketKey, Listed) -> ControlFlow<B>,
 ) -> Option<B> {
     match list.map(|LabelBucketList(shape)| shape) {
         None => None,
@@ -333,7 +345,7 @@ pub(crate) fn for_each_in<M: Memory, B>(
     pages: &Pages<'_, M>,
     base: ByteOffset,
     count: usize,
-    f: &mut impl FnMut(LabelBucketKey, Stored) -> ControlFlow<B>,
+    f: &mut impl FnMut(LabelBucketKey, Listed) -> ControlFlow<B>,
 ) -> Option<B> {
     pages.with_read(base, count * ENTRY_BYTES, |bytes| {
         for_each_bytes(bytes, 0, count, f)
@@ -345,13 +357,13 @@ pub(crate) fn for_each_bytes<B>(
     bytes: &[u8],
     at: usize,
     count: usize,
-    f: &mut impl FnMut(LabelBucketKey, Stored) -> ControlFlow<B>,
+    f: &mut impl FnMut(LabelBucketKey, Listed) -> ControlFlow<B>,
 ) -> Option<B> {
     let entries = bytes.get(at..)?.get(..count * ENTRY_BYTES)?;
     let (entries, _) = entries.as_chunks::<ENTRY_BYTES>();
-    for &entry in entries {
-        let (key, stored) = decode_entry(entry);
-        if let ControlFlow::Break(value) = f(key, stored) {
+    for &[k0, k1, k2, rest @ ..] in entries {
+        let key = LabelBucketKey::decode([k0, k1, k2]);
+        if let ControlFlow::Break(value) = f(key, Listed(rest)) {
             return Some(value);
         }
     }
@@ -365,8 +377,8 @@ pub(crate) fn entries<M: Memory>(
     list: Option<LabelBucketList>,
 ) -> Vec<(LabelBucketKey, Stored)> {
     let mut all = Vec::new();
-    for_each(pages, list, |key, stored| {
-        all.push((key, stored));
+    for_each(pages, list, |key, listed| {
+        all.push((key, listed.stored()));
         ControlFlow::<()>::Continue(())
     });
     all

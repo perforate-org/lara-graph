@@ -15,9 +15,9 @@
 //! ---------------------------------------- <- Offset 0
 //! Kind (4)                        ↕ 1 byte
 //! ----------------------------------------
-//! Header extent                   ↕ 7 bytes
+//! Header extent                   ↕ 5 bytes
 //! ----------------------------------------
-//! Reserved space                  ↕ 8 bytes
+//! Reserved space                  ↕ 10 bytes
 //! ----------------------------------------
 //! ```
 //!
@@ -29,15 +29,15 @@
 //! ---------------------------------------- <- Offset 0
 //! Slot descriptor                 ↕ 16 bytes
 //! ---------------------------------------- <- Offset 16
-//! Value plane root                ↕ 8 bytes
-//! ---------------------------------------- <- Offset 24
+//! Value plane root                ↕ 6 bytes
+//! ---------------------------------------- <- Offset 22
 //! Value width; 0 for none         ↕ 2 bytes
 //! ----------------------------------------
 //! Target index root page          ↕ 4 bytes       (u32::MAX none, u32::MAX - 1 dropped)
 //! ----------------------------------------
 //! Target index depth              ↕ 1 byte
 //! ----------------------------------------
-//! Reserved space                  ↕ 1 byte
+//! Reserved space                  ↕ 3 bytes
 //! ----------------------------------------
 //! ```
 
@@ -72,17 +72,17 @@ impl Stored {
         match self {
             Self::Plain(d) => d.encode(),
             Self::Extended(header) => {
-                let [e0, e1, e2, e3, e4, e5, e6] = header.encode();
+                let [e0, e1, e2, e3, e4] = header.encode();
                 let kind = KIND_EXTENDED;
-                [kind, e0, e1, e2, e3, e4, e5, e6, 0, 0, 0, 0, 0, 0, 0, 0]
+                [kind, e0, e1, e2, e3, e4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
             }
         }
     }
 
     pub(crate) fn decode(bytes: [u8; DESCRIPTOR_BYTES]) -> Self {
-        let [kind, e0, e1, e2, e3, e4, e5, e6, ..] = bytes;
+        let [kind, e0, e1, e2, e3, e4, ..] = bytes;
         if kind == KIND_EXTENDED {
-            Self::Extended(Extent::decode([e0, e1, e2, e3, e4, e5, e6]))
+            Self::Extended(Extent::decode([e0, e1, e2, e3, e4]))
         } else {
             Self::Plain(Descriptor::decode(bytes))
         }

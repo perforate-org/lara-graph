@@ -14,11 +14,11 @@
 //! ----------------------------------------
 //! Width table extent              ↕ 7 bytes
 //! ---------------------------------------- <- Address 16 (RECORDS_START)
-//! Record of node 0                ↕ 8 bytes
+//! Record of node 0                ↕ 6 bytes
 //! ----------------------------------------
 //! ...
 //! ----------------------------------------
-//! Record of node N - 1            ↕ 8 bytes
+//! Record of node N - 1            ↕ 6 bytes
 //! ----------------------------------------
 //! Unallocated space
 //! ```
@@ -321,9 +321,21 @@ impl<M: Memory> Graph<M> {
         let id = NodeId::new(first);
         let end = record_at_index(next);
         self.region().reserve(end)?;
-        for index in id.index()..next {
+        // A line of new records at a time: one write per eight nodes.
+        let line: [u8; RECORD_LINE_BYTES] = core::array::from_fn(|i| {
+            Record::NEW
+                .encode()
+                .get(i % RECORD_BYTES)
+                .copied()
+                .unwrap_or(0)
+        });
+        let mut index = first;
+        while index < next {
+            let count = (next - index).min(RECORDS_PER_LINE);
+            let len = usize::try_from(count).unwrap_or(0) * RECORD_BYTES;
             self.region()
-                .overwrite(record_at_index(index), &Record::NEW.encode());
+                .overwrite(record_at_index(index), line.get(..len).unwrap_or(&[]));
+            index += count;
         }
         self.region()
             .overwrite(ByteOffset::new(AT_COUNT), &next.to_le_bytes());
@@ -379,8 +391,8 @@ impl<M: Memory> Graph<M> {
         Ok(label_bucket_list::for_each(
             &self.label_bucket_lists.pages(),
             Some(list),
-            |_, stored| {
-                if LabelBucket::resolve(&view, stored).slots.live() > 0 {
+            |_, listed| {
+                if LabelBucket::resolve(&view, listed.stored()).slots.live() > 0 {
                     ControlFlow::Break(())
                 } else {
                     ControlFlow::<()>::Continue(())
@@ -514,9 +526,9 @@ fn record_at_index(index: u32) -> ByteOffset {
     ByteOffset::new(RECORDS_START + u64::from(index) * u64::try_from(RECORD_BYTES).unwrap_or(8))
 }
 
-/// Eight node records: 64 bytes, one cache line on the IC's host as well.
+/// Eight node records: 48 bytes, read at once.
 const RECORDS_PER_LINE: u32 = 8;
-const RECORD_LINE_BYTES: usize = 64;
+const RECORD_LINE_BYTES: usize = RECORD_BYTES * 8;
 
 /// A batch read's line of node records. Local to one call, so no invalidation is needed.
 pub(super) struct RecordLines {
@@ -534,7 +546,7 @@ impl Default for RecordLines {
 }
 
 impl RecordLines {
-    /// `v`'s record, reading one 64-byte line per eight dense ids.
+    /// `v`'s record, reading one 48-byte line per eight dense ids.
     #[inline]
     pub(super) fn record<M: Memory>(&mut self, graph: &Graph<M>, v: NodeId) -> Record {
         let base = v.index() / RECORDS_PER_LINE * RECORDS_PER_LINE;

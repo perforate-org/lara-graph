@@ -7,7 +7,7 @@ use super::{Error, Graph, LabelBucketKey, NewEdge};
 use crate::id::{Halves, NodeId, NodeState};
 use crate::label_bucket_list::{self, LabelBucketList, Lookup};
 use crate::memory::Memory;
-use crate::node::Record;
+use crate::node::{RECORD_BYTES, Record};
 use crate::page_store::PageStore;
 use crate::stored::Stored;
 use alloc::vec::Vec;
@@ -79,8 +79,9 @@ impl<M: Memory> Graph<M> {
         &mut self,
         halves: &[Half],
         edges: &[NewEdge<'_>],
-    ) -> Result<Vec<[u8; 8]>, Error> {
-        let mut records = alloc::vec![[0u8; 8]; usize::try_from(self.node_count()).unwrap_or(0)];
+    ) -> Result<Vec<[u8; RECORD_BYTES]>, Error> {
+        let mut records =
+            alloc::vec![[0u8; RECORD_BYTES]; usize::try_from(self.node_count()).unwrap_or(0)];
         let mut singles: Singles = Vec::with_capacity(SINGLES_PER_BATCH);
         for node_halves in halves.chunk_by(|a, b| a.node == b.node) {
             let (Some(head), Some(tail)) = (node_halves.first(), node_halves.last()) else {
@@ -134,17 +135,17 @@ impl<M: Memory> Graph<M> {
     }
 
     #[expect(clippy::indexing_slicing, reason = "each line covers records in range")]
-    fn write_records(&self, records: &[[u8; 8]]) {
+    fn write_records(&self, records: &[[u8; RECORD_BYTES]]) {
         for base in (0..records.len()).step_by(RECORDS_PER_LINE_USIZE) {
             let end = (base + RECORDS_PER_LINE_USIZE).min(records.len());
-            let mut line = [0u8; 64];
+            let mut line = [0u8; RECORDS_PER_LINE_USIZE * RECORD_BYTES];
             for (offset, record) in records[base..end].iter().enumerate() {
-                let start = offset * 8;
-                line[start..start + 8].copy_from_slice(record);
+                let start = offset * RECORD_BYTES;
+                line[start..start + RECORD_BYTES].copy_from_slice(record);
             }
             self.region().overwrite(
                 super::record_at_index(u32::try_from(base).unwrap_or(u32::MAX)),
-                &line[..(end - base) * 8],
+                &line[..(end - base) * RECORD_BYTES],
             );
         }
     }
@@ -153,7 +154,7 @@ impl<M: Memory> Graph<M> {
 fn flush_singles<M: Memory>(
     store: &mut PageStore<M>,
     singles: &mut Singles,
-    records: &mut [[u8; 8]],
+    records: &mut [[u8; RECORD_BYTES]],
 ) -> Result<(), Error> {
     if singles.is_empty() {
         return Ok(());
@@ -172,7 +173,7 @@ fn flush_singles<M: Memory>(
 
 /// Encodes `node`'s record with `list`; a node without a list keeps its empty record.
 #[inline]
-fn set_record(records: &mut [[u8; 8]], node: NodeId, list: Option<LabelBucketList>) {
+fn set_record(records: &mut [[u8; RECORD_BYTES]], node: NodeId, list: Option<LabelBucketList>) {
     if let Some(list) = list
         && let Some(record) = records.get_mut(usize::try_from(node.index()).unwrap_or(0))
     {

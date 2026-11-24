@@ -265,8 +265,8 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         let Some(list) = record.list else {
             return false;
         };
-        for_each_list(lists, &mut self.list_page, list, mode, &mut |_, stored| {
-            if slots(view, stored).live() > 0 {
+        for_each_list(lists, &mut self.list_page, list, mode, &mut |_, listed| {
+            if slots(view, listed.stored()).live() > 0 {
                 ControlFlow::Break(())
             } else {
                 ControlFlow::<()>::Continue(())

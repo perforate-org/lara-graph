@@ -6,9 +6,9 @@
 //!
 //! ```text
 //! ---------------------------------------- <- Offset 0
-//! Label bucket list extent        ↕ 7 bytes
-//!   (its last byte, the class, carries the state in bits 6-7:
-//!    0 live, 1 detaching, 2 deleted)
+//! Label bucket list extent        ↕ 5 bytes
+//!   (the extent's two spare bits, bits 6-7 of its last byte, carry the
+//!    state: 0 live, 1 detaching, 2 deleted)
 //! ----------------------------------------
 //! Entry count; 0xFF if tiered     ↕ 1 byte
 //! ----------------------------------------
@@ -17,7 +17,7 @@
 use crate::corrupt::corrupt;
 use crate::id::NodeState;
 use crate::label_bucket_list::{self, LABEL_BUCKET_LIST_REF_BYTES, LabelBucketList};
-use crate::page_store::{ByteClass, EXTENT_BYTES};
+use crate::page_store::{EXTENT_BYTES, EXTENT_SPARE_BITS};
 
 /// Bytes per node record.
 pub(crate) const RECORD_BYTES: usize = LABEL_BUCKET_LIST_REF_BYTES;
@@ -29,7 +29,7 @@ const STATE_BITS: u8 = 0b1100_0000;
 const DETACHING: u8 = 0b0100_0000;
 const DELETED: u8 = 0b1000_0000;
 const FLAG_AT: usize = EXTENT_BYTES - 1;
-const _: () = assert!(ByteClass::PAGE.log2() & STATE_BITS == 0);
+const _: () = assert!(STATE_BITS == EXTENT_SPARE_BITS);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Record {

@@ -24,11 +24,11 @@
 //! ----------------------------------------
 //! Live positions                  ↕ 2 bytes
 //! ----------------------------------------
-//! Extent                          ↕ 7 bytes
+//! Extent                          ↕ 5 bytes
 //! ----------------------------------------
 //! Value width beside the slots    ↕ 2 bytes       (0 for none)
 //! ----------------------------------------
-//! Reserved space                  ↕ 2 bytes
+//! Reserved space                  ↕ 4 bytes
 //! ---------------------------------------- <- Paged: 1024 slots per data page
 //! Kind (3)                        ↕ 1 byte
 //! ----------------------------------------
@@ -36,7 +36,9 @@
 //! ----------------------------------------
 //! Live positions                  ↕ 4 bytes
 //! ----------------------------------------
-//! Page index top extent           ↕ 7 bytes
+//! Page index top extent           ↕ 5 bytes
+//! ----------------------------------------
+//! Reserved space                  ↕ 2 bytes
 //! ----------------------------------------
 //! ```
 
@@ -246,18 +248,18 @@ impl Descriptor {
             Self::Run(run) => {
                 let [s0, s1] = run.stored.to_le_bytes();
                 let [l0, l1] = run.live.to_le_bytes();
-                let [e0, e1, e2, e3, e4, e5, e6] = run.extent.encode();
+                let [e0, e1, e2, e3, e4] = run.extent.encode();
                 let [w0, w1] = run.values.map_or(0, Width::get).to_le_bytes();
                 [
-                    KIND_RUN, s0, s1, l0, l1, e0, e1, e2, e3, e4, e5, e6, w0, w1, 0, 0,
+                    KIND_RUN, s0, s1, l0, l1, e0, e1, e2, e3, e4, w0, w1, 0, 0, 0, 0,
                 ]
             }
             Self::Paged(paged) => {
                 let [s0, s1, s2, s3] = paged.stored.to_le_bytes();
                 let [l0, l1, l2, l3] = paged.live.to_le_bytes();
-                let [e0, e1, e2, e3, e4, e5, e6] = paged.index.encode();
+                let [e0, e1, e2, e3, e4] = paged.index.encode();
                 [
-                    KIND_PAGED, s0, s1, s2, s3, l0, l1, l2, l3, e0, e1, e2, e3, e4, e5, e6,
+                    KIND_PAGED, s0, s1, s2, s3, l0, l1, l2, l3, e0, e1, e2, e3, e4, 0, 0,
                 ]
             }
         }
@@ -296,20 +298,20 @@ impl Descriptor {
             KIND_RUN => Self::Run(Run {
                 stored: u16::from_le_bytes([b1, b2]),
                 live: u16::from_le_bytes([b3, b4]),
-                extent: Extent::decode([b5, b6, b7, b8, b9, b10, b11]),
-                values: Width::stored(u16::from_le_bytes([b12, b13])),
+                extent: Extent::decode([b5, b6, b7, b8, b9]),
+                values: Width::stored(u16::from_le_bytes([b10, b11])),
             }),
             KIND_PAGED => Self::Paged(Paged {
                 stored: u32::from_le_bytes([b1, b2, b3, b4]),
                 live: u32::from_le_bytes([b5, b6, b7, b8]),
-                index: Extent::decode([b9, b10, b11, b12, b13, b14, b15]),
+                index: Extent::decode([b9, b10, b11, b12, b13]),
             }),
             _ => corrupt("descriptor kind"),
         }
     }
 }
 
-const _: () = assert!(1 + 4 + 4 + EXTENT_BYTES == DESCRIPTOR_BYTES);
+const _: () = assert!(1 + 4 + 4 + EXTENT_BYTES <= DESCRIPTOR_BYTES);
 
 #[cfg(test)]
 mod tests {

@@ -69,15 +69,17 @@
 //! # Extent
 //!
 //! Extent `index` of class `2^log2` bytes in a page starts at `64 + page × 4096 + index ×
-//! 2^log2` in the pages memory.
+//! 2^log2` in the pages memory. It encodes in 40 bits, little-endian:
 //!
 //! ```text
-//! ---------------------------------------- <- Offset 0
-//! Page id                         ↕ 4 bytes
-//! ----------------------------------------
-//! Index in the page               ↕ 2 bytes
-//! ----------------------------------------
-//! Class log2 (5 to 12)            ↕ 1 byte
+//! ---------------------------------------- <- Bit 0
+//! Page id                         ↕ 28 bits       (1 TiB of pages per memory)
+//! ---------------------------------------- <- Bit 28
+//! Start in the page, 32 B units  ↕ 7 bits       (index << (log2 - 5))
+//! ---------------------------------------- <- Bit 35
+//! Class log2 - 5 (0 to 7)         ↕ 3 bits
+//! ---------------------------------------- <- Bit 38
+//! Spare, for the holder           ↕ 2 bits
 //! ----------------------------------------
 //! ```
 
@@ -188,8 +190,20 @@ pub(crate) struct Extent {
     class: ByteClass,
 }
 
-/// Bytes an encoded [`Extent`] takes.
-pub(crate) const EXTENT_BYTES: usize = 7;
+/// Bytes an encoded [`Extent`] takes: 40 bits, of which the extent uses the low 38.
+pub(crate) const EXTENT_BYTES: usize = 5;
+/// Bits of a page id in an encoded extent.
+const PAGE_BITS: u32 = 28;
+/// Bits of the start within the page, in 32-byte units: 128 per page.
+const INDEX_BITS: u32 = 7;
+/// Bits of the class, as `log2 - 5`.
+const CLASS_BITS: u32 = 3;
+/// Page ids an encoded extent can name: 1 TiB of pages per memory.
+pub(crate) const MAX_PAGES: u32 = 1 << PAGE_BITS;
+/// The top bits of an encoded extent's last byte, which the extent leaves zero for its holder (a
+/// node record keeps the node's state there).
+pub(crate) const EXTENT_SPARE_BITS: u8 = 0b1100_0000;
+const _: () = assert!(PAGE_BITS + INDEX_BITS + CLASS_BITS + 2 == 40 && EXTENT_BYTES == 5);
 
 impl Extent {
     /// The `index`-th extent of `class` in `page`.
@@ -231,21 +245,25 @@ impl Extent {
     /// As the module's Extent diagram shows.
     pub(crate) fn encode(self) -> [u8; EXTENT_BYTES] {
         let [p0, p1, p2, p3] = self.page.0.to_le_bytes();
-        let [i0, i1] = self.index.to_le_bytes();
-        [p0, p1, p2, p3, i0, i1, self.class.0]
+        // Bits 28-34 the start within the page in 32-byte units, 35-37 the class: over the page
+        // id's top byte and one more.
+        let shift = self.class.0 - ByteClass::MIN_LOG2;
+        let [i0, i1] = ((self.index << shift << 4) | (u16::from(shift) << 11)).to_le_bytes();
+        [p0, p1, p2, p3 | i0, i1]
     }
 
+    /// Ignores the spare bits ([`EXTENT_SPARE_BITS`]). Shifts and masks only, as every extent
+    /// read goes through here; any 38 bits name a valid extent, so there is nothing to check.
     pub(crate) fn decode(bytes: [u8; EXTENT_BYTES]) -> Self {
-        let [p0, p1, p2, p3, i0, i1, class] = bytes;
-        let class = ByteClass::from_log2(class).unwrap_or_else(|| corrupt("extent class"));
-        let index = u16::from_le_bytes([i0, i1]);
-        if index >= class.per_page() {
-            corrupt("extent index");
-        }
+        let [b0, b1, b2, b3, b4] = bytes;
+        let page = u32::from_le_bytes([b0, b1, b2, b3]) & (MAX_PAGES - 1);
+        let units = (u16::from_le_bytes([b3, b4]) >> 4) & ((1 << INDEX_BITS) - 1);
+        let shift = (b4 >> 3) & 0b111;
         Self {
-            page: PageId(u32::from_le_bytes([p0, p1, p2, p3])),
-            index,
-            class,
+            page: PageId(page),
+            // A start of fewer units than the class's size is no extent's: its low bits drop.
+            index: units >> shift,
+            class: ByteClass(ByteClass::MIN_LOG2 + shift),
         }
     }
 }
@@ -477,9 +495,11 @@ impl<M: Memory> PageStore<M> {
     /// Grows both memories so that `pages` more pages can be taken without growing them: after
     /// this, allocations that take at most `pages` pages cannot fail. Changes no state.
     pub(crate) fn reserve(&mut self, pages: u32) -> Result<(), WriteError> {
+        // Beyond the page ids an extent can name, nothing more is taken.
         let end = self
             .minted
             .checked_add(pages)
+            .filter(|&end| end <= MAX_PAGES)
             .ok_or(WriteError::Overflow(crate::units::Overflow))?;
         if end > self.room {
             Region::new(&self.pages).reserve(PageId(end).offset())?;

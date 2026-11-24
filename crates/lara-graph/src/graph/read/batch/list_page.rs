@@ -5,7 +5,7 @@ use super::super::super::{Graph, RecordLines};
 use crate::corrupt::corrupt;
 use crate::descriptor::Descriptor;
 use crate::id::NodeId;
-use crate::label_bucket_list::{self, LabelBucketKey, LabelBucketList};
+use crate::label_bucket_list::{self, LabelBucketKey, LabelBucketList, Listed};
 use crate::memory::Memory;
 use crate::node::Record;
 use crate::page_store::{Extent, PAGE_BYTES, Pages};
@@ -93,7 +93,7 @@ impl ListPageCache {
         &mut self,
         pages: &Pages<'_, M>,
         list: LabelBucketList,
-        f: &mut impl FnMut(LabelBucketKey, Stored) -> ControlFlow<B>,
+        f: &mut impl FnMut(LabelBucketKey, Listed) -> ControlFlow<B>,
     ) -> Option<B> {
         if let Some((extent, count)) = list.flat()
             && let Some(bytes) = self.page(pages, extent)
@@ -165,7 +165,7 @@ pub(super) fn for_each_list<M: Memory, B>(
     list_page: &mut ListPageCache,
     list: LabelBucketList,
     mode: Mode,
-    f: &mut impl FnMut(LabelBucketKey, Stored) -> ControlFlow<B>,
+    f: &mut impl FnMut(LabelBucketKey, Listed) -> ControlFlow<B>,
 ) -> Option<B> {
     match mode {
         Mode::Dense => list_page.for_each(lists, list, f),

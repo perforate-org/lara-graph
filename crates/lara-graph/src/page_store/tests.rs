@@ -208,3 +208,22 @@ fn random_operations_keep_every_invariant() {
         check(&store, &[]);
     }
 }
+
+/// Extents round-trip at the edges of every field, and the holder's spare bits do not change
+/// what decodes.
+#[test]
+fn extents_encode_in_forty_bits() {
+    let last = PageId::new(MAX_PAGES - 1);
+    for extent in [
+        Extent::whole(PageId::new(0)),
+        Extent::whole(last),
+        Extent::new(last, 127, ByteClass::SMALLEST),
+        Extent::new(PageId::new(12_345), 3, ByteClass::for_bytes(512).unwrap()),
+    ] {
+        let mut bytes = extent.encode();
+        assert_eq!(Extent::decode(bytes), extent);
+        assert_eq!(bytes[EXTENT_BYTES - 1] & EXTENT_SPARE_BITS, 0);
+        bytes[EXTENT_BYTES - 1] |= EXTENT_SPARE_BITS;
+        assert_eq!(Extent::decode(bytes), extent);
+    }
+}
