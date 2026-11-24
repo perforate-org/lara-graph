@@ -361,3 +361,64 @@ fn set_edge_values_checks_all_nodes_before_writing() {
     assert_eq!(g.set_edge_values(&writes), Err(Error::UnknownNode(v(9))));
     assert_eq!(g.edge_value(half).unwrap().as_deref(), Some(&[9, 9][..]));
 }
+
+#[test]
+fn visit_values_each_matches_one_by_one() {
+    let backing = Backing::default();
+    let mut g = backing.create(3);
+    g.declare_width(l(0), w(2))
+        .unwrap_or_else(|e| panic!("{e}"));
+    for i in 0..4 {
+        let value = val(i, 2);
+        g.add_edge(
+            EdgeKind::Directed,
+            v(0),
+            l(0),
+            v(1),
+            Placement::Append,
+            &value,
+        )
+        .unwrap();
+    }
+    for i in 4..6 {
+        let value = val(i, 2);
+        g.add_edge(
+            EdgeKind::Directed,
+            v(2),
+            l(0),
+            v(1),
+            Placement::Append,
+            &value,
+        )
+        .unwrap();
+    }
+    let nodes = [v(0), v(2), v(1)];
+    let mut batch = g.read_batch();
+    let mut batched = Vec::new();
+    batch
+        .visit_values_each(
+            &nodes,
+            l(0),
+            Direction::Outgoing,
+            Order::Descending,
+            |node, position, value| {
+                batched.push((node.index(), position.index(), value.to_vec()));
+                ControlFlow::<()>::Continue(())
+            },
+        )
+        .unwrap();
+    let mut single = Vec::new();
+    for &node in &nodes {
+        g.visit_values(
+            node,
+            (l(0), Direction::Outgoing),
+            Order::Descending,
+            |position, value| {
+                single.push((node.index(), position.index(), value.to_vec()));
+                ControlFlow::<()>::Continue(())
+            },
+        )
+        .unwrap();
+    }
+    assert_eq!(batched, single);
+}

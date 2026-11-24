@@ -225,6 +225,53 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         Ok(None)
     }
 
+    /// Calls `f` with `(node, position, value)` for every value of each node's
+    /// `(label, direction)` bucket, in `order`, until `f` breaks.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`] for any node at or past [`Graph::node_count`].
+    pub fn visit_values_each<B>(
+        &mut self,
+        nodes: &[NodeId],
+        label: Label,
+        direction: Direction,
+        order: Order,
+        mut f: impl FnMut(NodeId, Position, &[u8]) -> ControlFlow<B>,
+    ) -> Result<Option<B>, Error> {
+        let graph = self.graph;
+        for &v in nodes {
+            graph.check(v)?;
+        }
+        let key = LabelBucketKey { label, direction };
+        let mode = mode(nodes);
+        let records = &mut self.records;
+        let list_page = &mut self.list_page;
+        for &v in nodes {
+            let record = record(graph, records, v, mode);
+            let Some(list) = record.list else { continue };
+            let Some(stored) = stored(
+                &graph.label_bucket_lists.pages(),
+                list_page,
+                list,
+                key,
+                mode,
+            ) else {
+                continue;
+            };
+            let view = graph.edges.pages();
+            let bucket = LabelBucket::resolve(&view, stored);
+            if let Some(done) =
+                graph.visit_values_in(&bucket, label, order, &mut |position, value| {
+                    f(v, position, value)
+                })
+            {
+                return Ok(Some(done));
+            }
+        }
+        Ok(None)
+    }
+
     /// Replaces `out` with the live-edge counts of each node's `(label, direction)` bucket, one
     /// entry per input node and 0 when the node has no bucket. Validates all nodes before it
     /// writes `out`.

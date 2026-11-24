@@ -9,6 +9,7 @@ use crate::label_bucket_list::LabelBucketKey;
 use crate::memory::Memory;
 use crate::page_store::Pages;
 use crate::paged;
+use crate::stored::LabelBucket;
 use crate::values;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -270,19 +271,25 @@ impl<M: Memory> Graph<M> {
         let Some(found) = self.find_label_bucket(v, LabelBucketKey { label, direction })? else {
             return Ok(None);
         };
-        let Some(width) = self.widths.get(label) else {
-            return Ok(None);
-        };
+        Ok(self.visit_values_in(&found.bucket, label, order, &mut f))
+    }
+
+    /// Calls `f` with the value of every position of `bucket` in `order`, until it breaks.
+    pub(super) fn visit_values_in<B>(
+        &self,
+        bucket: &LabelBucket,
+        label: Label,
+        order: Order,
+        f: &mut impl FnMut(Position, &[u8]) -> ControlFlow<B>,
+    ) -> Option<B> {
+        let width = self.widths.get(label)?;
         let view = self.edges.pages();
         let w = usize::from(width.get());
-        let mut ranges = live_ranges(&view, &found.bucket.slots);
+        let mut ranges = live_ranges(&view, &bucket.slots);
         if order == Order::Descending {
             ranges.reverse();
         }
-        let plane = found
-            .bucket
-            .values
-            .map_or(values::Plane::Empty, |c| c.plane);
+        let plane = bucket.values.map_or(values::Plane::Empty, |c| c.plane);
         let descending = order == Order::Descending;
         for (low, high) in ranges {
             let flow = values::visit(
@@ -302,10 +309,10 @@ impl<M: Memory> Graph<M> {
                 },
             );
             if flow.is_some() {
-                return Ok(flow);
+                return flow;
             }
         }
-        Ok(None)
+        None
     }
 
     /// Calls `f` with each live edge of `v`'s `(label, direction)` bucket and its value, in
