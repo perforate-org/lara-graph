@@ -70,12 +70,12 @@ was changed.
 | Operation | On failure |
 | --- | --- |
 | `add_edges` | Ordered bulk. The failing edge is all-or-none; earlier edges remain. |
-| `set_edge_values` | Ordered bulk. The failing value is all-or-none; earlier values remain. |
+| `set_edge_values` | Checks every node and value first; a later reservation failure restores earlier values. |
 | `remove_edges` | Checks every node first, then removes all or nothing. |
 | `detach_many` | Checks every node first, then marks all or nothing. |
 
 `BatchError::Unchanged` means no element was applied. `BatchError::PartiallyApplied` means the
-elements before `index` were applied. A canister can turn a partial batch into an all-or-none
+elements before `index` were applied; only `add_edges` can return it. A canister can turn a partial batch into an all-or-none
 update by trapping on `PartiallyApplied`; the IC then discards the call's state changes:
 
 ```rust,ignore

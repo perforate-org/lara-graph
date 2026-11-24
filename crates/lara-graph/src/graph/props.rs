@@ -1,7 +1,7 @@
 //! Edge values: writing, point and batch reads, values-first scans and combined scans.
 
 use super::pair::{Found, key_of, opposite};
-use super::{BatchError, Error, Graph, reserved};
+use super::{BatchError, Error, Graph, corrupt, reserved};
 use crate::descriptor::{Descriptor, PAGE_SLOTS};
 use crate::id::{Direction, Edge, EdgeRef, Label, NodeId, Order, Position, Width};
 use crate::label_bucket::{self, Span, Window, stored_u32};
@@ -80,10 +80,9 @@ impl<M: Memory> Graph<M> {
     }
 
     /// Writes each edge value in `values`, in order, and returns the old canonical value of
-    /// each edge (`None` for a hole). Each edge is all-or-none, but the batch is not atomic:
-    /// an error leaves the values before it written.
-    ///
-    /// All nodes and value lengths are checked before the first write.
+    /// each edge (`None` for a hole). All nodes and value lengths are checked before the first
+    /// write, and a failure after that restores every value written so far, so the batch is
+    /// all-or-none.
     ///
     /// # Errors
     ///
@@ -98,6 +97,7 @@ impl<M: Memory> Graph<M> {
                 .map_err(|error| BatchError::unchanged(index, error))?;
         }
         let mut out = Vec::with_capacity(values.len());
+        let mut journal: Vec<(EdgeRef, usize)> = Vec::new();
         let mut own_cache: Option<(NodeId, LabelBucketKey, Option<Found>)> = None;
         let mut theirs_cache: Option<(NodeId, LabelBucketKey, Found)> = None;
         for (index, edge) in values.iter().enumerate() {
@@ -107,9 +107,10 @@ impl<M: Memory> Graph<M> {
             let own = match own_cache {
                 Some((last_node, last_key, found)) if last_node == node && last_key == key => found,
                 _ => {
-                    let found = self
-                        .find_label_bucket(node, key)
-                        .map_err(|error| BatchError::after_prefix(index, error))?;
+                    let found = self.find_label_bucket(node, key).map_err(|error| {
+                        self.rollback_values(&journal, &out);
+                        BatchError::unchanged(index, error)
+                    })?;
                     own_cache = Some((node, key, found));
                     found
                 }
@@ -148,7 +149,10 @@ impl<M: Memory> Graph<M> {
             };
             let Some(width) = self
                 .value_width(half.label(), edge.value)
-                .map_err(|error| BatchError::after_prefix(index, error))?
+                .map_err(|error| {
+                    self.rollback_values(&journal, &out);
+                    BatchError::unchanged(index, error)
+                })?
             else {
                 out.push(Some(old));
                 continue;
@@ -157,7 +161,10 @@ impl<M: Memory> Graph<M> {
             let count = if pair.other == half { 1 } else { 2 };
             self.edges
                 .reserve((2 + values::PAGES_PER_WRITE) * u32::try_from(count).unwrap_or(2))
-                .map_err(|error| BatchError::after_prefix(index, error.into()))?;
+                .map_err(|error| {
+                    self.rollback_values(&journal, &out);
+                    BatchError::unchanged(index, error.into())
+                })?;
             for (h, found) in targets.iter_mut().take(count) {
                 let updated = self.write_value(*found, (width, h.position()), edge.value);
                 if *h == half {
@@ -166,9 +173,40 @@ impl<M: Memory> Graph<M> {
                     theirs_cache = Some((other, theirs_key, updated));
                 }
             }
+            journal.push((half, out.len()));
             out.push(Some(old));
         }
         Ok(out)
+    }
+
+    /// Restores the old values written before a failed batch, newest first.
+    fn rollback_values(&mut self, journal: &[(EdgeRef, usize)], out: &[Option<Vec<u8>>]) {
+        for &(half, index) in journal.iter().rev() {
+            let Some(Some(old)) = out.get(index) else {
+                continue;
+            };
+            self.restore_value(half, old);
+        }
+    }
+
+    /// Restores `old` to both halves of `half` without reserving: the failed write already made
+    /// the value cell, so this only overwrites it.
+    fn restore_value(&mut self, half: EdgeRef, old: &[u8]) {
+        let pair = self
+            .pair(half)
+            .unwrap_or_else(|_| corrupt("an edge whose value is being restored"));
+        let Some(pair) = pair else {
+            return;
+        };
+        let width = self
+            .widths
+            .get(half.label())
+            .unwrap_or_else(|| corrupt("a value being restored without a width"));
+        let targets = [(half, pair.own), (pair.other, pair.theirs)];
+        let count = if pair.other == half { 1 } else { 2 };
+        for (h, found) in targets.iter().take(count) {
+            self.write_value(*found, (width, h.position()), old);
+        }
     }
 
     /// Writes `value` at `position` of `found`, giving the bucket a value plane if it has none.
