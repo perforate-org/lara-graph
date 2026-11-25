@@ -15,6 +15,11 @@ clippy:
 doc:
     RUSTDOCFLAGS="-D warnings" cargo doc -p {{crate}} --all-features --document-private-items --no-deps
 
+# Proofs over every input of the persistent codecs (`#[cfg(kani)] mod proofs`). Needs Kani
+# (`cargo install --locked kani-verifier && cargo kani setup`); not part of the gate.
+kani:
+    cargo kani -p {{crate}}
+
 # Includes the public API snapshot (`tests/public_api.rs`).
 test:
     cargo test -p {{crate}} --all-features

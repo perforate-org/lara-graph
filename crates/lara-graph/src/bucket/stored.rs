@@ -175,3 +175,16 @@ mod tests {
         }
     }
 }
+
+/// Proofs over every input, checked by Kani (`cargo kani -p lara-graph`).
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// Any thirteen bytes decode to a list entry that encodes back to itself.
+    #[kani::proof]
+    fn list_entries_round_trip() {
+        let stored = Stored::decode(kani::any());
+        assert_eq!(Stored::decode(stored.encode()), stored);
+    }
+}

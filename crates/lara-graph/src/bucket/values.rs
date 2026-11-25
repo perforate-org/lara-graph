@@ -424,3 +424,23 @@ const _: () = assert!(EXTENT_BYTES + 1 == ROOT_BYTES);
 
 #[cfg(test)]
 mod tests;
+
+/// Proofs over every input, checked by Kani (`cargo kani -p lara-graph`).
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// Any six bytes of a known kind decode to a plane root that encodes back to itself.
+    #[kani::proof]
+    fn plane_roots_round_trip() {
+        let bytes: [u8; ROOT_BYTES] = kani::any();
+        let [kind, .., depth] = bytes;
+        kani::assume(
+            kind == KIND_EMPTY
+                || kind == KIND_RUN
+                || (kind == KIND_TABLE && (1..=MAX_DEPTH).contains(&depth)),
+        );
+        let plane = Plane::decode(bytes);
+        assert_eq!(Plane::decode(plane.encode()), plane);
+    }
+}

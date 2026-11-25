@@ -24,7 +24,7 @@ missing_docs = "deny"                  # [encap] every public item is deliberate
 unreachable_pub = "deny"               # [encap] `pub` only where it is actually exported
 unused_qualifications = "deny"
 # Tests run at full size with `--cfg lara_full_size` (see `crates/lara-graph/src/scale.rs`).
-unexpected_cfgs = { level = "deny", check-cfg = ["cfg(lara_full_size)"] }
+unexpected_cfgs = { level = "deny", check-cfg = ["cfg(lara_full_size)", "cfg(kani)"] }
 rust_2018_idioms = { level = "deny", priority = -1 }
 
 [workspace.lints.clippy]

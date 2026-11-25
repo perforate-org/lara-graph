@@ -415,3 +415,26 @@ mod tests {
         assert_eq!(Descriptor::EMPTY.encode(), [0; DESCRIPTOR_BYTES]);
     }
 }
+
+/// Proofs over every input, checked by Kani (`cargo kani -p lara-graph`).
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// Slot encoding is a bijection on four bytes: every word is an edge or a tombstone.
+    #[kani::proof]
+    fn slots_are_a_bijection() {
+        let bytes: [u8; 4] = kani::any();
+        assert_eq!(Slot::decode(bytes).encode(), bytes);
+    }
+
+    /// Any thirteen bytes but a header reference decode to a descriptor that encodes back to
+    /// itself.
+    #[kani::proof]
+    fn descriptors_round_trip() {
+        let bytes: [u8; DESCRIPTOR_BYTES] = kani::any();
+        kani::assume(kind_of(&bytes) != KIND_HEADER);
+        let descriptor = Descriptor::decode(bytes);
+        assert_eq!(Descriptor::decode(descriptor.encode()), descriptor);
+    }
+}

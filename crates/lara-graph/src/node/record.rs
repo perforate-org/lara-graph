@@ -87,3 +87,19 @@ mod tests {
         }
     }
 }
+
+/// Proofs over every input, checked by Kani (`cargo kani -p lara-graph`).
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// Any six bytes with a known state decode to a record that encodes back to itself.
+    #[kani::proof]
+    fn records_round_trip() {
+        let bytes: [u8; RECORD_BYTES] = kani::any();
+        let flags = bytes.get(FLAG_AT).copied().unwrap_or(0) & STATE_BITS;
+        kani::assume(flags != STATE_BITS);
+        let record = Record::decode(bytes);
+        assert_eq!(Record::decode(record.encode()), record);
+    }
+}

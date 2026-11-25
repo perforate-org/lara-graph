@@ -324,3 +324,16 @@ mod tests {
         }
     }
 }
+
+/// Proofs over every input, checked by Kani (`cargo kani -p lara-graph`).
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// Any five bytes decode to a label cell that encodes back to itself.
+    #[kani::proof]
+    fn label_cells_round_trip() {
+        let cell = LabelSet::decode(kani::any());
+        assert_eq!(LabelSet::decode(cell.encode()), cell);
+    }
+}

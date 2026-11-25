@@ -782,3 +782,24 @@ fn partial_head_at(lane: u64) -> ByteOffset {
 
 #[cfg(test)]
 mod tests;
+
+/// Proofs over every input, checked by Kani (`cargo kani -p lara-graph`).
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// Any five bytes decode to an extent, and it lies within its page.
+    #[kani::proof]
+    fn any_bytes_decode_to_an_extent_within_its_page() {
+        let extent = Extent::decode(kani::any());
+        let len = u64::from(extent.len());
+        assert!(u64::from(extent.index) * len + len <= u64::from(PAGE_BYTES));
+    }
+
+    /// An extent encodes to bytes that decode back to it.
+    #[kani::proof]
+    fn extents_round_trip() {
+        let extent = Extent::decode(kani::any());
+        assert_eq!(Extent::decode(extent.encode()), extent);
+    }
+}
