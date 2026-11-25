@@ -38,6 +38,24 @@ impl ReadBuf {
         self.heap_of(len)
     }
 
+    /// [`Self::fill`], always inlined: for a spilled label check, where a call cost about 40
+    /// instructions (`has_node_label_spilled_1024`). Inlining `fill` everywhere cost others more.
+    #[expect(clippy::inline_always, reason = "measured: see the doc")]
+    #[inline(always)]
+    pub(crate) fn fill_inlined<M: Memory>(
+        &mut self,
+        view: &Pages<'_, M>,
+        at: ByteOffset,
+        len: usize,
+    ) -> &[u8] {
+        if len <= SMALL_READ {
+            return view.read_uninit(at, self.small.get_mut(..len).unwrap_or(&mut []));
+        }
+        let bytes = self.heap_of(len);
+        view.read_into(at, bytes);
+        bytes
+    }
+
     /// Reads `len` bytes at `at`.
     pub(crate) fn fill<M: Memory>(
         &mut self,

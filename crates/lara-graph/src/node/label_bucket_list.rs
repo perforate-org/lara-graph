@@ -223,14 +223,29 @@ fn search_stored<M: Memory>(
     count: usize,
     key: LabelBucketKey,
 ) -> Option<Stored> {
-    let want = key.rank();
     pages.with_read(base, count * ENTRY_BYTES, |bytes| {
-        let (entries, _) = bytes.as_chunks::<ENTRY_BYTES>();
-        entries
-            .binary_search_by(|&[k0, k1, k2, ..]| rank_of([k0, k1, k2]).cmp(&want))
-            .ok()
-            .and_then(|index| entries.get(index).map(|&entry| decode_entry(entry).1))
+        find_stored(bytes.as_chunks::<ENTRY_BYTES>().0, key)
     })
+}
+
+/// Entries up to which a list is searched in order rather than by halves.
+const SCANNED_ENTRIES: usize = 8;
+
+/// The bucket `key` names among sorted `entries`: a short list compared entry by entry on the
+/// key's encoded bytes, a longer one searched by rank.
+#[inline]
+fn find_stored(entries: &[[u8; ENTRY_BYTES]], key: LabelBucketKey) -> Option<Stored> {
+    let entry = if entries.len() <= SCANNED_ENTRIES {
+        let want = key.encode();
+        entries
+            .iter()
+            .find(|&&[k0, k1, k2, ..]| [k0, k1, k2] == want)
+    } else {
+        let want = key.rank();
+        let found = entries.binary_search_by(|&[k0, k1, k2, ..]| rank_of([k0, k1, k2]).cmp(&want));
+        found.ok().and_then(|index| entries.get(index))
+    };
+    entry.map(|&[_, _, _, rest @ ..]| Stored::decode(rest))
 }
 
 /// [`lookup_stored`] over entries already copied into `bytes`, at `offset`.
@@ -240,14 +255,9 @@ pub(crate) fn lookup_stored_in(
     count: usize,
     key: LabelBucketKey,
 ) -> Option<Stored> {
-    let want = key.rank();
     let rest = bytes.get(offset..)?;
     let entries = rest.get(..count * ENTRY_BYTES)?;
-    let (entries, _) = entries.as_chunks::<ENTRY_BYTES>();
-    entries
-        .binary_search_by(|&[k0, k1, k2, ..]| rank_of([k0, k1, k2]).cmp(&want))
-        .ok()
-        .and_then(|index| entries.get(index).map(|&entry| decode_entry(entry).1))
+    find_stored(entries.as_chunks::<ENTRY_BYTES>().0, key)
 }
 
 /// Searches the `count` sorted entries at `base`, leaf `leaf` of their list.

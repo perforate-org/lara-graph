@@ -157,7 +157,7 @@ impl LabelSet {
             Self::Spilled(extent) => match spill(view, extent) {
                 Spill::Listed(count) => {
                     let mut buf = ReadBuf::new();
-                    let labels = buf.fill(view, after_count(extent), count * 2);
+                    let labels = buf.fill_inlined(view, after_count(extent), count * 2);
                     labels
                         .as_chunks::<2>()
                         .0

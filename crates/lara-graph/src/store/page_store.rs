@@ -703,10 +703,10 @@ impl<M: Memory> Pages<'_, M> {
     /// Calls `f` with `len` bytes read at `at`: from a small stack buffer when they fit (the usual
     /// short label bucket list), else from the heap.
     pub(crate) fn with_read<R>(&self, at: ByteOffset, len: usize, f: impl FnOnce(&[u8]) -> R) -> R {
-        let mut small = [0u8; SMALL_READ];
+        // Never zeroed: the read fills it in place (see `Memory::read_uninit`).
+        let mut small = [core::mem::MaybeUninit::<u8>::uninit(); SMALL_READ];
         if let Some(buf) = small.get_mut(..len) {
-            self.read_into(at, buf);
-            return f(buf);
+            return f(self.read_uninit(at, buf));
         }
         f(&self.read(at, len))
     }
