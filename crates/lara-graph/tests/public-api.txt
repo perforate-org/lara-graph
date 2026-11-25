@@ -28,7 +28,6 @@ pub lara_graph::Error::NotDetaching(lara_graph::NodeId)
 pub lara_graph::Error::NotEmpty
 pub lara_graph::Error::OutOfMemory(lara_graph::GrowFailed)
 pub lara_graph::Error::TooManyLabelBuckets(lara_graph::NodeId)
-pub lara_graph::Error::TooManyWidths
 pub lara_graph::Error::UnknownNode(lara_graph::NodeId)
 pub lara_graph::Error::WidthConflict
 pub lara_graph::Error::WidthConflict::declared: lara_graph::Width

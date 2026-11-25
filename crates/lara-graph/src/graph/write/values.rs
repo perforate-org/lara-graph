@@ -236,14 +236,14 @@ impl<M: Memory> Graph<M> {
     ///
     /// # Errors
     ///
-    /// [`Error::WidthConflict`] if `label` already has another width, [`Error::TooManyWidths`]
+    /// [`Error::WidthConflict`] if `label` already has another width,
     /// past 1023 labels, [`Error::OutOfMemory`]. On error nothing changes.
     pub fn declare_width(&mut self, label: Label, width: Width) -> Result<(), Error> {
-        if let Some(at) = self
+        if let Some(root) = self
             .widths
             .declare(&mut self.label_bucket_lists, label, width)?
         {
-            self.nodes.set_widths_at(at);
+            self.nodes.set_widths_root(root);
         }
         Ok(())
     }

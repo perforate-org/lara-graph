@@ -46,7 +46,7 @@ impl<M: Memory> Graph<M> {
         edges: PageStore<M>,
         label_bucket_lists: PageStore<M>,
     ) -> Self {
-        let widths = Widths::load(nodes.widths_at(), &label_bucket_lists);
+        let widths = Widths::load(nodes.widths_root(), &label_bucket_lists);
         Self {
             nodes,
             labels,

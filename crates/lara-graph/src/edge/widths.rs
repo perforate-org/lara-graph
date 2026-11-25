@@ -1,49 +1,46 @@
 //! The label width table: which labels' edges carry a value, and how wide it is.
 //!
-//! The table is one extent in the label bucket list store, its entries sorted by label, referenced
-//! from the nodes header (see `node::store`). The graph keeps a copy in the heap: it owns its memories.
-//!
-//! # Table
-//!
-//! ```text
-//! ---------------------------------------- <- Extent start
-//! Entry count = E                 ↕ 2 bytes
-//! ----------------------------------------
-//! Entry 0: label                  ↕ 2 bytes
-//! ----------------------------------------
-//! Entry 0: width                  ↕ 2 bytes
-//! ----------------------------------------
-//! ...
-//! ----------------------------------------
-//! Entry E - 1                     ↕ 4 bytes
-//! ----------------------------------------
-//! Unused space
-//! ```
+//! The table is a value plane in the label bucket list store with a two-byte cell per label: the
+//! label's width, or zero for none. Its root is in the nodes header (see `node::store`). Any of
+//! the 65,536 labels can have a width, and a plane takes pages only where labels have one. The
+//! graph keeps the labels that have a width in the heap, sorted: it owns its memories.
 
+use crate::bucket::reserved;
+use crate::bucket::values::{self, PAGES_PER_WRITE, Plane};
 use crate::error::Error;
 use crate::id::{Label, Width};
 use crate::store::corrupt::corrupt;
 use crate::store::memory::Memory;
-use crate::store::page_store::{ByteClass, Extent, PageStore};
-use crate::store::units::ByteOffset;
+use crate::store::page_store::PageStore;
 use alloc::vec::Vec;
+use core::ops::ControlFlow;
 
-const ENTRY_BYTES: usize = 4;
-/// Labels with a width: one page of entries.
-const MAX_WIDTHS: usize = (4096 - 2) / ENTRY_BYTES;
+/// A cell: the label's width, zero for none.
+const CELL: Width = match Width::new(2) {
+    Some(width) => width,
+    None => panic!("a cell is two bytes"),
+};
 
-/// The table and where it is stored: its entries in label order, as they are stored.
-#[derive(Default)]
+/// The labels with a width, in label order, and the plane that stores them.
 pub(crate) struct Widths {
     sorted: Vec<(Label, Width)>,
-    at: Option<Extent>,
+    plane: Plane,
+}
+
+impl Default for Widths {
+    fn default() -> Self {
+        Self {
+            sorted: Vec::new(),
+            plane: Plane::Empty,
+        }
+    }
 }
 
 impl Widths {
-    /// The table's extent (test invariant checks).
+    /// The table's plane (test invariant checks).
     #[cfg(test)]
-    pub(crate) const fn extent(&self) -> Option<Extent> {
-        self.at
+    pub(crate) const fn plane(&self) -> Plane {
+        self.plane
     }
 
     /// `label`'s width, checking that `value` matches it.
@@ -61,76 +58,59 @@ impl Widths {
         }
     }
 
-    /// Reads the table at `at`, which the nodes header names; an empty one for `None`.
-    pub(crate) fn load<M: Memory>(at: Option<Extent>, label_bucket_lists: &PageStore<M>) -> Self {
-        let Some(at) = at else {
-            return Self::default();
-        };
-        let view = label_bucket_lists.pages();
-        let count = usize::from(u16::from_le_bytes(view.read_array(at.offset())));
-        let bytes = view.read(ByteOffset::new(at.offset().get() + 2), count * ENTRY_BYTES);
-        let sorted = bytes
-            .as_chunks::<ENTRY_BYTES>()
-            .0
-            .iter()
-            .map(|&[l0, l1, w0, w1]| {
-                let width = Width::new(u16::from_le_bytes([w0, w1]))
-                    .unwrap_or_else(|| corrupt("label width"));
-                (Label::new(u16::from_le_bytes([l0, l1])), width)
-            })
-            .collect();
-        Self {
-            sorted,
-            at: Some(at),
-        }
+    /// Reads the table whose root the nodes header holds.
+    pub(crate) fn load<M: Memory>(plane: Plane, label_bucket_lists: &PageStore<M>) -> Self {
+        let mut sorted = Vec::new();
+        values::visit(
+            &label_bucket_lists.pages(),
+            plane,
+            CELL,
+            (0, 1 << 16, false),
+            |at, bytes| {
+                for (label, &[w0, w1]) in (at..).zip(bytes.as_chunks::<2>().0) {
+                    if let Some(width) = Width::new(u16::from_le_bytes([w0, w1])) {
+                        let label = u16::try_from(label).unwrap_or_else(|_| corrupt("label"));
+                        sorted.push((Label::new(label), width));
+                    }
+                }
+                ControlFlow::<()>::Continue(())
+            },
+        );
+        Self { sorted, plane }
     }
 
     pub(crate) fn get(&self, label: Label) -> Option<Width> {
         let i = self.sorted.binary_search_by_key(&label, |&(l, _)| l).ok()?;
         self.sorted.get(i).map(|&(_, width)| width)
     }
-}
 
-impl Widths {
-    /// Gives `label` values of `width` bytes: writes a new table to `lists`, releases the old
-    /// one, and returns where the new table is, for the nodes header; `None` when `label` already has
-    /// `width`. On error nothing changes.
+    /// Gives `label` values of `width` bytes and returns the table's new root, for the nodes
+    /// header; `None` when `label` already has `width`. On error nothing changes.
     pub(crate) fn declare<M: Memory>(
         &mut self,
         lists: &mut PageStore<M>,
         label: Label,
         width: Width,
-    ) -> Result<Option<Extent>, Error> {
-        match self.get(label) {
-            Some(declared) if declared == width => return Ok(None),
-            Some(declared) => return Err(Error::WidthConflict { label, declared }),
-            None if self.sorted.len() >= MAX_WIDTHS => return Err(Error::TooManyWidths),
-            None => {}
-        }
-        let mut sorted = self.sorted.clone();
-        let place = sorted.partition_point(|&(l, _)| l < label);
-        sorted.insert(place, (label, width));
-        let count = u16::try_from(sorted.len()).map_err(|_| Error::TooManyWidths)?;
-        let bytes: Vec<u8> = count
-            .to_le_bytes()
-            .into_iter()
-            .chain(sorted.iter().flat_map(|(l, w)| {
-                let [l0, l1] = l.get().to_le_bytes();
-                let [w0, w1] = w.get().to_le_bytes();
-                [l0, l1, w0, w1]
-            }))
-            .collect();
-        let class = ByteClass::for_bytes(u32::try_from(bytes.len()).unwrap_or(u32::MAX))
-            .unwrap_or_else(|| corrupt("width table beyond a page"));
-        let at = lists.allocate(class)?;
-        lists.write(at.offset(), &bytes);
-        if let Some(old) = self.at {
-            lists.release(old);
-        }
-        *self = Self {
-            sorted,
-            at: Some(at),
+    ) -> Result<Option<Plane>, Error> {
+        let place = match self.sorted.binary_search_by_key(&label, |&(l, _)| l) {
+            Ok(i) => {
+                return match self.sorted.get(i) {
+                    Some(&(_, declared)) if declared == width => Ok(None),
+                    Some(&(_, declared)) => Err(Error::WidthConflict { label, declared }),
+                    None => corrupt("a found width"),
+                };
+            }
+            Err(place) => place,
         };
-        Ok(Some(at))
+        lists.reserve(PAGES_PER_WRITE)?;
+        self.plane = reserved(values::write(
+            lists,
+            self.plane,
+            CELL,
+            u32::from(label.get()),
+            &width.get().to_le_bytes(),
+        ));
+        self.sorted.insert(place, (label, width));
+        Ok(Some(self.plane))
     }
 }

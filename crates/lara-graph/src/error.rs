@@ -34,8 +34,6 @@ pub enum Error {
         /// Its width.
         declared: Width,
     },
-    /// 1023 labels already have a width.
-    TooManyWidths,
     /// A value's length is not its label's width (0 for a label without one).
     WrongValueLength {
         /// The label.
@@ -159,7 +157,6 @@ impl fmt::Display for Error {
                 label.get(),
                 declared.get()
             ),
-            Self::TooManyWidths => f.write_str("too many labels with a width"),
             Self::WrongValueLength {
                 label,
                 expected,

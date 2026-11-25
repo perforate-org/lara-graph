@@ -414,3 +414,31 @@ fn visit_values_each_matches_one_by_one() {
     }
     assert_eq!(batched, single);
 }
+
+/// Any label can have a width: thousands of them, the highest included, survive a reopen and keep
+/// their widths, and a declared width cannot change.
+#[test]
+fn every_label_can_declare_a_width() {
+    let backing = Backing::default();
+    let mut g = backing.create(2);
+    let labels: Vec<u16> = (0..3000u16).map(|i| i * 21).chain([u16::MAX]).collect();
+    for &label in &labels {
+        g.declare_width(l(label), w(label % 64 + 1)).unwrap();
+    }
+    assert_eq!(g.declare_width(l(21), w(22)), Ok(()));
+    assert_eq!(
+        g.declare_width(l(21), w(3)),
+        Err(Error::WidthConflict {
+            label: l(21),
+            declared: w(22)
+        })
+    );
+    check(&g);
+    drop(g);
+    let g = backing.open();
+    for &label in &labels {
+        assert_eq!(g.width(l(label)), Some(w(label % 64 + 1)));
+    }
+    assert_eq!(g.width(l(1)), None);
+    check(&g);
+}
