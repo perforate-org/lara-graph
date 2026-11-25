@@ -41,6 +41,11 @@ smells:
         exit 1
     fi
 
+# Use the repository's git hooks (`.githooks`): format and lints before a commit, the gate before a
+# push. Once per clone.
+hooks:
+    git config core.hooksPath .githooks
+
 # Regenerate `tests/public-api.txt` after a deliberate API change; review the diff.
 bless-api:
     UPDATE_EXPECT=1 cargo test -p {{crate}} --test public_api

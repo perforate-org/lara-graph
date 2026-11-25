@@ -1,0 +1,73 @@
+# The gate on every push and pull request; Kani's proofs too. On main, canbench checks that the
+# committed instruction counts are what the code measures now.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gate:
+    name: Gate (fmt, clippy, test, doc, deslop, smells)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      # Rustdoc JSON for the public API snapshot needs a nightly: the one `tests/public_api.rs`
+      # names.
+      - run: rustup toolchain install nightly-2026-10-26 --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: cargo install --locked deslop-please@0.1.4
+      - name: Install qlty
+        run: |
+          curl -fsSL https://qlty.sh | bash
+          echo "$HOME/.qlty/bin" >> "$GITHUB_PATH"
+      - run: just gate
+
+  kani:
+    name: Kani proofs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: model-checking/kani-github-action@v1
+        with:
+          kani-version: "0.67.0"
+          args: -p lara-graph
+
+  canbench:
+    name: canbench results are current
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/lara-graph-bench
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install --locked canbench@0.7.0
+      # Instruction counts are deterministic: any change against the committed results means code
+      # changed without `canbench --persist`.
+      - name: Compare with canbench_results.yml
+        run: |
+          canbench --show-summary | tee canbench.out
+          if grep -qE 'counts: +\[total [0-9]+ \| regressed [1-9]|improved [1-9]|new [1-9]' canbench.out; then
+            echo "canbench_results.yml is stale: run canbench --persist and commit it" >&2
+            exit 1
+          fi
