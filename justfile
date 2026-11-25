@@ -3,7 +3,7 @@
 crate := "lara-graph"
 
 # Every gate; CI and pre-commit run this.
-gate: fmt clippy test doc smells
+gate: fmt clippy test doc deslop smells
 
 fmt:
     cargo fmt -p {{crate}} --check
@@ -14,6 +14,11 @@ clippy:
 # The modules' documentation is the specification: every link in it must resolve.
 doc:
     RUSTDOCFLAGS="-D warnings" cargo doc -p {{crate}} --all-features --document-private-items --no-deps
+
+# Architecture: modules depend one way, stay deep, and keep their fields to themselves
+# (deslop-please: `cargo install deslop-please`).
+deslop:
+    deslop-please {{crate}} --all-features
 
 # Proofs over every input of the persistent codecs (`#[cfg(kani)] mod proofs`). Needs Kani
 # (`cargo install --locked kani-verifier && cargo kani setup`); not part of the gate.
