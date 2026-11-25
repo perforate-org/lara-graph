@@ -138,6 +138,10 @@ pub fn lara_graph::Graph<M>::change_width(&mut self, lara_graph::Label, lara_gra
 pub fn lara_graph::Graph<M>::declare_width(&mut self, lara_graph::Label, lara_graph::Width) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::Graph<M>::migrate_values(&mut self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), impl core::ops::function::FnMut(&[u8], &mut [u8])) -> core::result::Result<lara_graph::Progress, lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
+pub fn lara_graph::Graph<M>::common_targets(&self, lara_graph::NodeId, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
+pub fn lara_graph::Graph<M>::common_targets_of(&self, &[lara_graph::NodeId], (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
+pub fn lara_graph::Graph<M>::sorted_targets(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
+impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::compact(&mut self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction)) -> core::result::Result<lara_graph::Compaction, lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::contains_edge(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), lara_graph::NodeId) -> core::result::Result<bool, lara_graph::Error>
@@ -287,6 +291,10 @@ impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::change_width(&mut self, lara_graph::Label, lara_graph::Width) -> core::result::Result<lara_graph::ValueVersion, lara_graph::Error>
 pub fn lara_graph::Graph<M>::declare_width(&mut self, lara_graph::Label, lara_graph::Width) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::Graph<M>::migrate_values(&mut self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), impl core::ops::function::FnMut(&[u8], &mut [u8])) -> core::result::Result<lara_graph::Progress, lara_graph::Error>
+impl<M: lara_graph::Memory> lara_graph::Graph<M>
+pub fn lara_graph::Graph<M>::common_targets(&self, lara_graph::NodeId, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
+pub fn lara_graph::Graph<M>::common_targets_of(&self, &[lara_graph::NodeId], (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
+pub fn lara_graph::Graph<M>::sorted_targets(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::compact(&mut self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction)) -> core::result::Result<lara_graph::Compaction, lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>

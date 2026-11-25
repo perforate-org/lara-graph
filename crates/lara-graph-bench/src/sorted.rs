@@ -86,6 +86,24 @@ fn common(first: u32, second: u32) -> BenchResult {
     })
 }
 
+/// Nodes of the given degrees, each with edges to random targets among the same
+/// `2 × max degree` nodes, intersected together.
+fn common_of(degrees: &[u32]) -> BenchResult {
+    let mut g = heap_graph();
+    let pool = nodes(&mut g, 2 * degrees.iter().copied().max().unwrap_or(1));
+    let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+    let ends: Vec<NodeId> = degrees
+        .iter()
+        .map(|&d| spread(&mut g, d, &pool, &mut rng))
+        .collect();
+    let mut out = Vec::new();
+    bench_fn(|| {
+        g.common_targets_of(&ends, OUT, &mut out)
+            .unwrap_or_else(|e| panic!("common: {e}"));
+        black_box(out.len());
+    })
+}
+
 #[bench(raw)]
 fn unsorted_16() -> BenchResult {
     unsorted(16)
@@ -188,4 +206,27 @@ fn common_65536_256() -> BenchResult {
 #[bench(raw)]
 fn common_65536_1024() -> BenchResult {
     common(65536, 1024)
+}
+
+/// Three nodes of 64 edges.
+#[bench(raw)]
+fn common3_64() -> BenchResult {
+    common_of(&[64, 64, 64])
+}
+
+#[bench(raw)]
+fn common3_256() -> BenchResult {
+    common_of(&[256, 256, 256])
+}
+
+#[bench(raw)]
+fn common3_1024() -> BenchResult {
+    common_of(&[1024, 1024, 1024])
+}
+
+/// A hub, a node of 1024 edges and one of 64: the hub is looked up only for what the two others
+/// share.
+#[bench(raw)]
+fn common3_65536_1024_64() -> BenchResult {
+    common_of(&[65536, 1024, 64])
 }

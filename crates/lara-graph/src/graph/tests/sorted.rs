@@ -93,3 +93,31 @@ fn common_targets_match_set_intersection_whichever_way_they_are_found() {
             .is_err()
     );
 }
+
+#[test]
+fn common_targets_of_many_match_the_intersection_of_all() {
+    let backing = Backing::default();
+    let g = graph(&backing);
+    let groups: [&[u32]; 7] = [
+        &[],
+        &[7],
+        &[0, 1, 40],
+        &[0, 7, 80],
+        &[39, 81, 120, 160],
+        &[0, 1, 2, 3],
+        &[1, 0, 41, 82],
+    ];
+    for group in groups {
+        let model: Vec<u32> = group
+            .iter()
+            .map(|&x| sorted_model(&g, x).into_iter().collect::<BTreeSet<u32>>())
+            .reduce(|a, b| a.intersection(&b).copied().collect())
+            .map_or_else(Vec::new, |set| set.into_iter().collect());
+        let nodes: Vec<NodeId> = group.iter().map(|&x| v(x)).collect();
+        let mut out = vec![v(0)];
+        g.common_targets_of(&nodes, (LABEL, Direction::Outgoing), &mut out)
+            .unwrap();
+        let got: Vec<u32> = out.into_iter().map(NodeId::index).collect();
+        assert_eq!(got, model, "nodes {group:?}");
+    }
+}

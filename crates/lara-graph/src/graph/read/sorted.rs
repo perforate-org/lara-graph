@@ -8,9 +8,12 @@
 //! decodes every posting and cost half again as much as reading and sorting (30.4M against
 //! 19.8M instructions for 65536 edges), so it is not used here.
 //!
-//! Two buckets are intersected by merging their sorted views, unless one is a paged bucket many
-//! times larger than the other: then each of the small one's targets is looked up in the large
-//! one's index ([`PROBE_RATIO`]).
+//! Buckets are intersected without sorting them: the smallest one's targets go into a hash
+//! table, and each larger one keeps those it holds, read once or, for a paged bucket many times
+//! larger than the candidates left, through its target index ([`PROBE_RATIO`]). Only the result
+//! is sorted.
+
+mod candidates;
 
 use crate::bucket::slots::{self, Span, Window};
 use crate::bucket::{LabelBucket, LabelBucketKey};
@@ -20,12 +23,14 @@ use crate::id::{Direction, Label, NodeId};
 use crate::input::Order;
 use crate::store::memory::Memory;
 use alloc::vec::Vec;
+use candidates::Candidates;
 use core::ops::ControlFlow;
 
-/// How many times more live edges a paged bucket must hold than the other bucket for an
-/// intersection to look the other's targets up in its index instead of reading and sorting it:
-/// a lookup cost about 14K instructions, reading and sorting about 300 an edge.
-const PROBE_RATIO: u32 = 48;
+/// How many times more live edges a paged bucket must hold than the candidates left for an
+/// intersection to look each candidate up in its index instead of reading it whole: a lookup cost
+/// about 14K instructions, reading an edge and looking it up in the candidates about 110
+/// (`common_65536_*` in canbench: 7.4M read against 13.9M looked up for 1024 candidates).
+const PROBE_RATIO: u32 = 128;
 
 impl<M: Memory> Graph<M> {
     /// Replaces the contents of `out` with the targets of the live edges of `v`'s
@@ -51,11 +56,8 @@ impl<M: Memory> Graph<M> {
     }
 
     /// Replaces the contents of `out` with the nodes that both `u`'s and `w`'s
-    /// `(label, direction)` buckets hold a live edge to, ascending, each once.
-    ///
-    /// Merges the two buckets' sorted views ([`Self::sorted_targets`]); when one is a paged bucket
-    /// many times larger than the other, looks each of the smaller one's targets up in its target
-    /// index instead, so the cost follows the smaller end.
+    /// `(label, direction)` buckets hold a live edge to, ascending, each once:
+    /// [`Self::common_targets_of`] for two nodes.
     ///
     /// # Errors
     ///
@@ -67,31 +69,97 @@ impl<M: Memory> Graph<M> {
         (label, direction): (Label, Direction),
         out: &mut Vec<NodeId>,
     ) -> Result<(), Error> {
+        self.common_targets_of(&[u, w], (label, direction), out)
+    }
+
+    /// Replaces the contents of `out` with the nodes that every one of `nodes`' `(label,
+    /// direction)` buckets holds a live edge to, ascending, each once; empty for no nodes.
+    ///
+    /// Nothing is sorted but the result. The smallest bucket's targets go into a hash table;
+    /// each larger bucket, smallest first, keeps those it holds: it is read once and its targets
+    /// looked up in the table, or, when it is a paged bucket over a hundred times larger than the
+    /// candidates left, each candidate is looked up in its target index.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`] for any of `nodes`.
+    pub fn common_targets_of(
+        &self,
+        nodes: &[NodeId],
+        (label, direction): (Label, Direction),
+        out: &mut Vec<NodeId>,
+    ) -> Result<(), Error> {
         out.clear();
-        let key = LabelBucketKey { label, direction };
-        let first = self.read_label_bucket(u, key)?;
-        let second = self.read_label_bucket(w, key)?;
-        let (Some(first), Some(second)) = (first, second) else {
+        let Some(mut buckets) = self.buckets_of(nodes, LabelBucketKey { label, direction })? else {
             return Ok(());
         };
-        let (small, large) = if first.slots.live() <= second.slots.live() {
-            (first, second)
-        } else {
-            (second, first)
-        };
-        let mut mine = Vec::new();
-        self.sorted_into(&small, &mut mine);
-        mine.dedup();
-        let probe = large.index.tree().is_some()
-            && small.slots.live().saturating_mul(PROBE_RATIO) < large.slots.live();
-        if probe {
-            out.extend(mine.into_iter().filter(|&t| self.holds(&large, t)));
+        buckets.sort_by_key(|b| b.slots.live());
+        let mut buckets = buckets.into_iter();
+        let Some(smallest) = buckets.next() else {
             return Ok(());
+        };
+        let mut candidates =
+            Candidates::with_room(usize::try_from(smallest.slots.live()).unwrap_or(0));
+        self.visit_targets(&smallest, |t| candidates.insert(t));
+        for bucket in buckets {
+            if candidates.alive() == 0 {
+                break;
+            }
+            self.narrow(&mut candidates, &bucket);
         }
-        let mut theirs = Vec::new();
-        self.sorted_into(&large, &mut theirs);
-        intersect(&mine, &theirs, out);
+        let mut found = candidates.survivors();
+        sort_indexes(&mut found);
+        out.extend(found.into_iter().map(NodeId::new));
         Ok(())
+    }
+
+    /// The `key` buckets of every one of `nodes`; `None` when any lacks one, or for no nodes.
+    fn buckets_of(
+        &self,
+        nodes: &[NodeId],
+        key: LabelBucketKey,
+    ) -> Result<Option<Vec<LabelBucket>>, Error> {
+        let mut buckets = Vec::with_capacity(nodes.len());
+        let mut missing = nodes.is_empty();
+        for &v in nodes {
+            match self.read_label_bucket(v, key)? {
+                Some(bucket) => buckets.push(bucket),
+                None => missing = true,
+            }
+        }
+        Ok((!missing).then_some(buckets))
+    }
+
+    /// Keeps the candidates `bucket` holds: read whole and looked up in the candidates, or for a
+    /// paged bucket [`PROBE_RATIO`] times larger than them, each candidate looked up in its index.
+    fn narrow(&self, candidates: &mut Candidates, bucket: &LabelBucket) {
+        candidates.next_round();
+        let left = u32::try_from(candidates.previous_count()).unwrap_or(u32::MAX);
+        let probe =
+            bucket.index.tree().is_some() && left.saturating_mul(PROBE_RATIO) < bucket.slots.live();
+        if !probe {
+            self.visit_targets(bucket, |t| candidates.keep(t));
+            return;
+        }
+        for t in candidates.previous() {
+            if self.holds(bucket, NodeId::new(t)) {
+                candidates.keep(t);
+            }
+        }
+    }
+
+    /// Calls `f` with the index of each live target of `bucket`, in position order.
+    fn visit_targets(&self, bucket: &LabelBucket, mut f: impl FnMut(u32)) {
+        slots::visit(
+            &bucket.slots,
+            &self.edge_view().pages(),
+            Span::all(&bucket.slots, Order::Ascending),
+            Window::Page,
+            |e| {
+                f(e.target().index());
+                ControlFlow::<()>::Continue(())
+            },
+        );
     }
 
     /// `bucket`'s live targets, ascending, once per edge, appended to `out`.
@@ -136,26 +204,6 @@ impl<M: Memory> Graph<M> {
             )
             .is_some()
         })
-    }
-}
-
-/// The nodes in both ascending lists, each once, appended to `out`; `mine` holds no repeats.
-fn intersect(mine: &[NodeId], theirs: &[NodeId], out: &mut Vec<NodeId>) {
-    let (mut i, mut j) = (0, 0);
-    while let (Some(a), Some(b)) = (mine.get(i), theirs.get(j)) {
-        match a.index().cmp(&b.index()) {
-            core::cmp::Ordering::Less => i += 1,
-            core::cmp::Ordering::Greater => j += 1,
-            core::cmp::Ordering::Equal => {
-                out.push(*a);
-                i += 1;
-                j += 1;
-                // Skip the rest of a target's parallel edges.
-                while theirs.get(j).is_some_and(|c| c == a) {
-                    j += 1;
-                }
-            }
-        }
     }
 }
 
