@@ -5,7 +5,6 @@ use crate::bucket::descriptor::{Descriptor, PAGE_SLOTS};
 use crate::bucket::stored::{Index, LabelBucket, Values};
 use crate::bucket::targets::{self, Change, Merged, Plan};
 use crate::bucket::values;
-use crate::graph::bucket::{indexed, moved};
 use crate::graph::{Compaction, Error, Graph, Step, reserved};
 use crate::id::{Direction, Label, NodeId, Progress};
 use crate::node::label_bucket_list::{self, LabelBucketKey};
@@ -125,13 +124,13 @@ impl<M: Memory> Graph<M> {
         bucket: &LabelBucket,
         step: &compact::Planned,
     ) -> Result<Option<Plan>, Error> {
-        if indexed(bucket).is_none() || !step.stays_paged() || step.moves().is_empty() {
+        if bucket.indexed().is_none() || !step.stays_paged() || step.moves().is_empty() {
             return Ok(None);
         }
         let changes: Vec<Change> = step
             .moves()
             .iter()
-            .flat_map(|m| moved(m.target(), (m.from(), m.to())))
+            .flat_map(|m| Change::moved(m.target(), (m.from(), m.to())))
             .collect();
         let plan = targets::plan(&self.edges.pages(), bucket.index.tree(), &changes);
         self.edges.reserve(plan.pages())?;

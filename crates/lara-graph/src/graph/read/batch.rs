@@ -2,10 +2,11 @@
 
 mod halves;
 mod list_page;
+mod view;
 
 use crate::bucket::descriptor::Descriptor;
 use crate::bucket::stored::{LabelBucket, Stored};
-use crate::graph::bucket::{Found, LastBucket, View};
+use crate::graph::bucket::{Found, LastBucket};
 use crate::graph::{Error, Graph, RecordLines};
 use crate::id::{Direction, Edge, Label, NodeId, NodeState, Order, Position};
 use crate::node::label_bucket_list::LabelBucketKey;
@@ -13,6 +14,7 @@ use crate::store::memory::Memory;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 use list_page::{ListPageCache, Mode, for_each_list, mode, record, stored};
+use view::View;
 
 /// A read-only batch over a list of nodes. The node-record line and flat-list page buffers
 /// live as long as the batch, so several reads in one query share them. Drop it before mutating

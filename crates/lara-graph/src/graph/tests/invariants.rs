@@ -255,7 +255,7 @@ fn check_page_tombstones<M: Memory>(view: &Pages<'_, M>, paged: &Paged) {
 /// Every bucket's live entries to a node are matched by as many entries back.
 fn check_pairs(halves: &BTreeMap<(u32, Label, Direction, u32), usize>) {
     for (&(owner, label, direction, other), &count) in halves {
-        let paired = halves.get(&(other, label, opposite(direction), owner));
+        let paired = halves.get(&(other, label, direction.opposite(), owner));
         assert_eq!(
             paired,
             Some(&count),

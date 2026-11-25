@@ -76,6 +76,15 @@ impl Stored {
         }
     }
 
+    /// The descriptor the entry stands for: in the entry, or in the header it points to.
+    #[inline]
+    pub(crate) fn slots<M: Memory>(self, edges: &Pages<'_, M>) -> Descriptor {
+        match self {
+            Self::Plain(slots) => slots,
+            Self::Extended(header) => Descriptor::decode(edges.read_array(header.offset())),
+        }
+    }
+
     pub(crate) fn decode(bytes: [u8; DESCRIPTOR_BYTES]) -> Self {
         if kind_of(&bytes) == KIND_HEADER {
             let [.., e0, e1, e2, e3, e4] = bytes;
@@ -135,6 +144,15 @@ pub(crate) struct LabelBucket {
 }
 
 impl LabelBucket {
+    /// The end of the positions the index covers; `None` when lookups scan the whole bucket (too
+    /// small for an index, or its index dropped).
+    pub(crate) fn indexed(&self) -> Option<u32> {
+        match self.index {
+            Index::Dropped => None,
+            Index::Empty | Index::Tree(_) => self.slots.indexed_end(),
+        }
+    }
+
     /// A bucket with only slots.
     pub(crate) const fn plain(slots: Descriptor) -> Self {
         Self {

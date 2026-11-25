@@ -9,7 +9,6 @@
 use crate::bucket::label_bucket::{self, Span, Window};
 use crate::bucket::stored::LabelBucket;
 use crate::bucket::targets::{self, BLOCK};
-use crate::graph::bucket::{indexed, opposite};
 use crate::graph::{Error, Graph};
 use crate::id::{Direction, EdgeRef, Label, NodeId, Order, Position};
 use crate::node::label_bucket_list::LabelBucketKey;
@@ -117,7 +116,7 @@ impl<M: Memory> Graph<M> {
                 return Ok(tiny_or_none.map(own_end));
             }
         };
-        let theirs_direction = opposite(direction);
+        let theirs_direction = direction.opposite();
         let theirs = self.read_label_bucket(
             v,
             LabelBucketKey {
@@ -144,7 +143,7 @@ impl<M: Memory> Graph<M> {
     /// pass, and the unindexed last block; `None` for a bucket without an index.
     fn indexed_spans_to(&self, bucket: &LabelBucket, t: NodeId) -> Option<Vec<(u32, u32)>> {
         let stored = bucket.slots.stored();
-        let (Some(end), Some(root)) = (indexed(bucket), bucket.index.tree()) else {
+        let (Some(end), Some(root)) = (bucket.indexed(), bucket.index.tree()) else {
             return None;
         };
         let mut spans: Vec<(u32, u32)> = Vec::new();

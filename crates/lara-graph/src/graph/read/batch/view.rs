@@ -15,7 +15,7 @@ use crate::store::page_store::{PageId, Pages};
 use core::ops::ControlFlow;
 
 /// A read's view of the graph: its label bucket lists, its edge pages and its width table.
-pub(in crate::graph) struct View<'g, M: Memory> {
+pub(super) struct View<'g, M: Memory> {
     lists: Pages<'g, M>,
     edges: Pages<'g, M>,
     widths: &'g Widths,
@@ -24,7 +24,7 @@ pub(in crate::graph) struct View<'g, M: Memory> {
 impl<M: Memory> Graph<M> {
     /// The view reads go through.
     #[inline]
-    pub(in crate::graph) fn view(&self) -> View<'_, M> {
+    pub(super) fn view(&self) -> View<'_, M> {
         View {
             lists: self.label_bucket_lists.pages(),
             edges: self.edges.pages(),
@@ -36,7 +36,7 @@ impl<M: Memory> Graph<M> {
 impl<M: Memory> View<'_, M> {
     /// The list entry of `list`'s bucket `key`, if it has one.
     #[inline]
-    pub(in crate::graph) fn lookup(
+    pub(super) fn lookup(
         &self,
         list: Option<LabelBucketList>,
         key: LabelBucketKey,
@@ -46,7 +46,7 @@ impl<M: Memory> View<'_, M> {
 
     /// Every entry of `list`, in order, until `f` breaks.
     #[inline]
-    pub(in crate::graph) fn walk<B>(
+    pub(super) fn walk<B>(
         &self,
         list: LabelBucketList,
         f: &mut impl FnMut(LabelBucketKey, Listed) -> ControlFlow<B>,
@@ -56,28 +56,25 @@ impl<M: Memory> View<'_, M> {
 
     /// Fills `buf` with list page `page`: for a batch that keeps a page of lists.
     #[inline]
-    pub(in crate::graph) fn read_list_page(&self, page: PageId, buf: &mut [u8]) {
+    pub(super) fn read_list_page(&self, page: PageId, buf: &mut [u8]) {
         self.lists.read_into(page.offset(), buf);
     }
 
     /// The descriptor a list entry stands for: in the entry, or in the header it points to.
     #[inline]
-    pub(in crate::graph) fn slots(&self, stored: Stored) -> Descriptor {
-        match stored {
-            Stored::Plain(slots) => slots,
-            Stored::Extended(header) => Descriptor::decode(self.edges.read_array(header.offset())),
-        }
+    pub(super) fn slots(&self, stored: Stored) -> Descriptor {
+        stored.slots(&self.edges)
     }
 
     /// The whole bucket a list entry stands for, its values and index included.
     #[inline]
-    pub(in crate::graph) fn resolve(&self, stored: Stored) -> LabelBucket {
+    pub(super) fn resolve(&self, stored: Stored) -> LabelBucket {
         LabelBucket::resolve(&self.edges, stored)
     }
 
     /// Calls `f` with each live edge of `slots` in `order`, until it breaks.
     #[inline]
-    pub(in crate::graph) fn visit<B>(
+    pub(super) fn visit<B>(
         &self,
         slots: &Descriptor,
         order: Order,
@@ -88,14 +85,14 @@ impl<M: Memory> View<'_, M> {
 
     /// The live target at `at` of `slots`, if any.
     #[inline]
-    pub(in crate::graph) fn target(&self, slots: &Descriptor, at: Position) -> Option<NodeId> {
+    pub(super) fn target(&self, slots: &Descriptor, at: Position) -> Option<NodeId> {
         label_bucket::get(slots, at, &self.edges)
     }
 
     /// Calls `f` with each live edge of `bucket` (of `label`) and its value, in `order`, until it
     /// breaks.
     #[inline]
-    pub(in crate::graph) fn visit_with_values<B>(
+    pub(super) fn visit_with_values<B>(
         &self,
         bucket: &LabelBucket,
         label: Label,

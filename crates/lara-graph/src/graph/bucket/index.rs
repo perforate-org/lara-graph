@@ -6,9 +6,9 @@
 //! live entries, and a lookup scans at most one block beside the index. A detaching node's
 //! buckets drop their indexes, as all their edges are going: their lookups scan.
 
-use crate::bucket::descriptor::Descriptor;
+use crate::bucket::descriptor::{Descriptor, Slot};
 use crate::bucket::label_bucket::{self, Spot};
-use crate::bucket::stored::{Index, LabelBucket};
+use crate::bucket::stored::{Index, LabelBucket, Stored};
 use crate::bucket::targets::{self, BLOCK, Change, InPlace, Nth, Root};
 use crate::graph::{Graph, reserved};
 use crate::id::{NodeId, Placement, Position};
@@ -23,6 +23,22 @@ pub(in crate::graph) enum Between {
     Nothing,
     /// Not known without looking.
     Unknown,
+}
+
+impl Between {
+    /// What the other end's bucket entry, `None` for no bucket, shows of edges to `target`: a
+    /// tiny bucket is read whole, a larger one is not.
+    pub(in crate::graph) fn of(other: Option<Stored>, target: NodeId) -> Self {
+        match other {
+            None => Self::Nothing,
+            Some(Stored::Plain(Descriptor::Tiny(tiny)))
+                if !tiny.slots().contains(&Slot::Live(target)) =>
+            {
+                Self::Nothing
+            }
+            Some(_) => Self::Unknown,
+        }
+    }
 }
 
 /// A block batch planned before the insert that completes the block; it holds when the insert
@@ -40,24 +56,6 @@ impl Batch {
     }
 }
 
-/// The end of the positions a bucket's index covers, its complete blocks; `None` for a bucket
-/// too small to have an index.
-pub(in crate::graph) fn indexed_end(slots: &Descriptor) -> Option<u32> {
-    match slots {
-        Descriptor::Paged(_) => Some(slots.stored() / BLOCK * BLOCK),
-        Descriptor::Tiny(_) | Descriptor::Run(_) => None,
-    }
-}
-
-/// The end of the positions `b`'s index covers; `None` when lookups scan the whole bucket (too
-/// small for an index, or its index dropped).
-pub(in crate::graph) fn indexed(b: &LabelBucket) -> Option<u32> {
-    match b.index {
-        Index::Dropped => None,
-        Index::Empty | Index::Tree(_) => indexed_end(&b.slots),
-    }
-}
-
 impl<M: Memory> Graph<M> {
     /// The bucket's index after an edge to `target` went in at `at`, the slots having been
     /// `was` before: a bucket that just became paged gets one built from its slots; an append
@@ -69,11 +67,11 @@ impl<M: Memory> Graph<M> {
         (target, at): (NodeId, Position),
         batch: Option<Batch>,
     ) -> LabelBucket {
-        let Some(end) = indexed(&bucket) else {
+        let Some(end) = bucket.indexed() else {
             return bucket;
         };
         let root = bucket.index.tree();
-        let index = match indexed_end(was) {
+        let index = match was.indexed_end() {
             None => {
                 let changes = self.block_changes(&bucket.slots, 0..end);
                 self.index_apply(None, &changes)
@@ -89,11 +87,12 @@ impl<M: Memory> Graph<M> {
             // A filled hole: in place when its posting's segment can take it.
             Some(_) if at.index() < end => match root {
                 Some(root)
-                    if targets::raise(&self.edges, root, key(target, at)) == InPlace::Done =>
+                    if targets::raise(&self.edges, root, targets::key_at(target, at))
+                        == InPlace::Done =>
                 {
                     bucket.index
                 }
-                Some(_) | None => self.index_apply(root, &[change(target, at, 1)]),
+                Some(_) | None => self.index_apply(root, &[Change::at(target, at, 1)]),
             },
             Some(_) => bucket.index,
         };
@@ -108,13 +107,13 @@ impl<M: Memory> Graph<M> {
         bucket: &LabelBucket,
         target: NodeId,
     ) -> Option<Batch> {
-        let end = indexed(bucket)?;
+        let end = bucket.indexed()?;
         let next = bucket.slots.stored();
         if !(next + 1).is_multiple_of(BLOCK) {
             return None;
         }
         let mut changes = self.block_changes(&bucket.slots, end..next);
-        changes.push(change(target, Position::new(next), 1));
+        changes.push(Change::at(target, Position::new(next), 1));
         Some(Batch {
             plan: alloc::boxed::Box::new(targets::plan(
                 &self.edges.pages(),
@@ -160,7 +159,7 @@ impl<M: Memory> Graph<M> {
             });
             last
         };
-        let end = indexed(b).unwrap_or(0);
+        let end = b.indexed().unwrap_or(0);
         last_in((end, b.slots.stored())).or_else(|| {
             let block = targets::last_block(&view, b.index.tree()?, t.index())?;
             last_in((block * BLOCK, (block + 1) * BLOCK))
@@ -171,7 +170,7 @@ impl<M: Memory> Graph<M> {
     fn block_changes(&self, slots: &Descriptor, range: core::ops::Range<u32>) -> Vec<Change> {
         let mut changes = Vec::new();
         label_bucket::find_in(slots, &self.edges.pages(), (range.start, range.end), |e| {
-            changes.push(change(e.target(), e.position(), 1));
+            changes.push(Change::at(e.target(), e.position(), 1));
             false
         });
         changes
@@ -185,9 +184,9 @@ impl<M: Memory> Graph<M> {
         target: NodeId,
         at: Position,
     ) {
-        match (indexed(bucket), bucket.index.tree()) {
+        match (bucket.indexed(), bucket.index.tree()) {
             (Some(end), Some(root)) if at.index() < end => {
-                targets::lower(&self.edges, root, key(target, at));
+                targets::lower(&self.edges, root, targets::key_at(target, at));
             }
             (Some(end), None) if at.index() < end => corrupt("an indexed edge without an index"),
             (Some(_) | None, _) => {}
@@ -210,7 +209,7 @@ impl<M: Memory> Graph<M> {
     /// How many live entries to `t` precede position `p`.
     pub(in crate::graph) fn rank_to(&self, b: &LabelBucket, t: NodeId, p: Position) -> u32 {
         let view = self.edges.pages();
-        let (low, before) = match indexed(b) {
+        let (low, before) = match b.indexed() {
             Some(_) => {
                 // The index counts the whole blocks before `p`'s, which all lie below the
                 // indexed end (`p` is below the bucket's end, so its block is at most the last);
@@ -241,7 +240,7 @@ impl<M: Memory> Graph<M> {
     ) -> Option<Position> {
         let view = self.edges.pages();
         let stored = b.slots.stored();
-        let (span, mut skip) = match (indexed(b), b.index.tree()) {
+        let (span, mut skip) = match (b.indexed(), b.index.tree()) {
             (Some(end), Some(root)) => match targets::nth(&view, root, t.index(), k) {
                 Nth::At(posting, within) => {
                     let low = posting.block * BLOCK;
@@ -273,26 +272,6 @@ impl<M: Memory> Graph<M> {
             ..bucket
         }
     }
-}
-
-/// The key of the posting of `target` in `at`'s block.
-const fn key(target: NodeId, at: Position) -> (u32, u32) {
-    (target.index(), at.index() / BLOCK)
-}
-
-/// A change of `delta` to the posting of `target` in `at`'s block.
-pub(in crate::graph) const fn change(target: NodeId, at: Position, delta: i64) -> Change {
-    Change {
-        key: key(target, at),
-        delta,
-    }
-}
-
-/// The index changes of compaction moving an edge to `target` from `from` to `to`. Both are
-/// indexed positions: compaction never merges a bucket's last page, which holds its unindexed
-/// last block, and moves only into earlier pages.
-pub(in crate::graph) fn moved(target: NodeId, (from, to): (Position, Position)) -> [Change; 2] {
-    [change(target, from, -1), change(target, to, 1)]
 }
 
 #[cfg(test)]

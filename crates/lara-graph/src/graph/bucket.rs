@@ -6,12 +6,10 @@ mod halves;
 mod index;
 mod locate;
 mod values;
-mod view;
 mod widths;
 
-pub(in crate::graph) use halves::{Pair, order};
-pub(in crate::graph) use index::{Batch, Between, indexed, moved};
-pub(in crate::graph) use locate::{Found, LastBucket, key_of, opposite};
+pub(in crate::graph) use halves::Pair;
+pub(in crate::graph) use index::{Batch, Between};
+pub(in crate::graph) use locate::{Found, LastBucket};
 pub(in crate::graph) use values::visit_joined;
-pub(in crate::graph) use view::View;
 pub(in crate::graph) use widths::{AT_WIDTHS, Widths};

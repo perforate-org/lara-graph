@@ -491,7 +491,7 @@ impl<M: Memory> Graph<M> {
     /// [`Error::UnknownNode`].
     pub fn edge_target(&self, half: EdgeRef) -> Result<Option<NodeId>, Error> {
         Ok(self
-            .bucket(half.node(), key_of(half))?
+            .bucket(half.node(), LabelBucketKey::of(half))?
             .and_then(|d| label_bucket::get(&d, half.position(), &self.edges.pages())))
     }
 
@@ -547,8 +547,9 @@ impl<M: Memory> Graph<M> {
     /// only scans slots does not pay for the rest of an extended header.
     fn bucket(&self, v: NodeId, key: LabelBucketKey) -> Result<Option<Descriptor>, Error> {
         let list = self.label_bucket_list(v)?;
-        let view = self.view();
-        Ok(view.lookup(list, key).map(|stored| view.slots(stored)))
+        let lists = self.label_bucket_lists.pages();
+        Ok(label_bucket_list::lookup_stored(&lists, list, key)
+            .map(|stored| stored.slots(&self.edges.pages())))
     }
 }
 
@@ -653,6 +654,17 @@ impl From<WriteError> for Error {
     }
 }
 
+impl Error {
+    /// `Ok` for a live node `v` in `state`; otherwise the error an edge to it fails with.
+    const fn unless_live(state: NodeState, v: NodeId) -> Result<(), Self> {
+        match state {
+            NodeState::Live => Ok(()),
+            NodeState::Detaching => Err(Self::Detaching(v)),
+            NodeState::Deleted => Err(Self::Deleted(v)),
+        }
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -708,11 +720,9 @@ mod write;
 pub use read::ReadBatch;
 pub use write::{EdgeKind, EdgeValue, NewEdge};
 
-use bucket::{Widths, key_of};
 #[cfg(test)]
-use bucket::{opposite, order};
-#[cfg(test)]
-use write::pages_per_half;
+use crate::bucket::pages_per_half;
+use bucket::Widths;
 
 #[cfg(test)]
 mod tests;

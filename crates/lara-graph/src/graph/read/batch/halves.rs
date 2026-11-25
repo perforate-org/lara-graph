@@ -3,7 +3,6 @@
 use super::{Mode, ReadBatch, check_all};
 use crate::bucket::descriptor::Descriptor;
 use crate::graph::Error;
-use crate::graph::bucket::{key_of, opposite};
 use crate::id::{EdgeRef, NodeId};
 use crate::node::label_bucket_list::LabelBucketKey;
 use crate::store::memory::Memory;
@@ -30,7 +29,7 @@ impl<M: Memory> ReadBatch<'_, M> {
         out.reserve(halves.len());
         for &half in halves {
             let node = half.node();
-            let key = key_of(half);
+            let key = LabelBucketKey::of(half);
             let found = self
                 .last_found
                 .get_or_try(node, key, || graph.find_label_bucket(node, key))?;
@@ -74,7 +73,7 @@ impl<M: Memory> ReadBatch<'_, M> {
         out.reserve(halves.len());
         for &half in halves {
             let node = half.node();
-            let key = key_of(half);
+            let key = LabelBucketKey::of(half);
             let descriptor = self.last_bucket.get(node, key).unwrap_or_else(|| {
                 let descriptor = self.bucket(node, key);
                 self.last_bucket.set(node, key, descriptor);
@@ -111,7 +110,7 @@ impl<M: Memory> ReadBatch<'_, M> {
         out.reserve(halves.len());
         for &half in halves {
             let node = half.node();
-            let key = key_of(half);
+            let key = LabelBucketKey::of(half);
             let own = self
                 .last_found
                 .get_or_try(node, key, || graph.find_label_bucket(node, key))?;
@@ -123,10 +122,7 @@ impl<M: Memory> ReadBatch<'_, M> {
                 out.push(None);
                 continue;
             };
-            let key = LabelBucketKey {
-                label: half.label(),
-                direction: opposite(half.direction()),
-            };
+            let key = LabelBucketKey::of(half).opposite();
             let theirs = self
                 .last_theirs
                 .get_or_else(other, key, || graph.present(other, key));

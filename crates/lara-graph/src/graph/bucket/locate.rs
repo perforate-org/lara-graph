@@ -2,7 +2,7 @@
 
 use crate::bucket::stored::{HEADER_CLASS, LabelBucket};
 use crate::graph::{Error, Graph, reserved};
-use crate::id::{Direction, EdgeRef, NodeId};
+use crate::id::NodeId;
 use crate::node::label_bucket_list::{self, EntryAt, LabelBucketKey, Lookup};
 use crate::store::corrupt::corrupt;
 use crate::store::memory::Memory;
@@ -97,13 +97,6 @@ impl<T> Default for LastBucket<T> {
     }
 }
 
-impl<T> LastBucket<T> {
-    /// A cache holding `held`, if any.
-    pub(in crate::graph) const fn holding(held: Option<(NodeId, LabelBucketKey, T)>) -> Self {
-        Self(held)
-    }
-}
-
 impl<T: Copy> LastBucket<T> {
     /// The bucket held for `(node, key)`, if that is the one held.
     #[inline]
@@ -153,33 +146,19 @@ impl<T: Copy> LastBucket<T> {
         self.0 = Some((node, key, found));
     }
 
-    pub(in crate::graph) fn clear(&mut self) {
-        self.0 = None;
-    }
-
     pub(in crate::graph) fn take(&mut self) -> Option<T> {
         self.0.take().map(|(_, _, found)| found)
     }
 
-    /// Whether a bucket other than `(node, key)`'s is held.
-    pub(in crate::graph) fn holds_other(&self, node: NodeId, key: LabelBucketKey) -> bool {
-        self.0
+    /// Takes the held bucket when it is not `(node, key)`'s.
+    pub(in crate::graph) fn take_other(&mut self, node: NodeId, key: LabelBucketKey) -> Option<T> {
+        if self
+            .0
             .is_some_and(|(last_node, last_key, _)| last_node != node || last_key != key)
-    }
-}
-
-pub(in crate::graph) const fn key_of(half: EdgeRef) -> LabelBucketKey {
-    LabelBucketKey {
-        label: half.label(),
-        direction: half.direction(),
-    }
-}
-
-/// The side the other half of an edge is on.
-pub(in crate::graph) const fn opposite(direction: Direction) -> Direction {
-    match direction {
-        Direction::Outgoing => Direction::Incoming,
-        Direction::Incoming => Direction::Outgoing,
-        Direction::Undirected => Direction::Undirected,
+        {
+            self.take()
+        } else {
+            None
+        }
     }
 }

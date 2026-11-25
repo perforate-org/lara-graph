@@ -1,8 +1,8 @@
 //! A batch's node-record and flat-list page reads: dense batches read through the shared
 //! buffers, sparse ones directly.
 
+use super::view::View;
 use crate::bucket::stored::Stored;
-use crate::graph::bucket::View;
 use crate::graph::{Graph, RecordLines};
 use crate::id::NodeId;
 use crate::node::label_bucket_list::{self, LabelBucketKey, LabelBucketList, Listed};

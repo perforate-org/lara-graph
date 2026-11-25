@@ -1,9 +1,9 @@
 //! Applying an admitted insert: plan each half's spot, reserve once, then write every half.
 
-use super::cache::Cached;
-use super::{Half, Place, Target, pages_per_half};
-use crate::bucket::descriptor::{Descriptor, Slot};
+use super::{Half, Place, Target};
+use crate::bucket::descriptor::Descriptor;
 use crate::bucket::label_bucket::{self, Spot};
+use crate::bucket::pages_per_half;
 use crate::bucket::stored::{LabelBucket, Stored, Values};
 use crate::bucket::values;
 use crate::graph::bucket::{Batch, Between};
@@ -36,11 +36,11 @@ type Spots<const N: usize> = [(Spot, Option<Batch>); N];
 impl<M: Memory> Graph<M> {
     /// The one insert path: a cache supplies any half already admitted, then the batch plans
     /// spots, reserves once and applies each half.
-    pub(super) fn insert_halves_with<const N: usize, C: Cached<N>>(
+    pub(super) fn insert_halves_with<const N: usize>(
         &mut self,
         halves: [Half; N],
         value: &[u8],
-        cached: &C,
+        cached: &[Option<Place>; N],
         mut cursor: Option<(usize, &mut HoleCursor)>,
     ) -> Result<([EdgeRef; N], [Option<Place>; N]), Error> {
         let label = halves
@@ -104,7 +104,15 @@ impl<M: Memory> Graph<M> {
         let partner = (N == 2)
             .then(|| halves.get(1 - i).zip(places.get(1 - i)))
             .flatten();
-        let between = partner.map_or(Between::Unknown, |(h, p)| between(h, p));
+        let between = partner.map_or(Between::Unknown, |(h, p)| {
+            Between::of(
+                match p.target {
+                    Target::Present(_, stored) => Some(stored),
+                    Target::Absent(_) => None,
+                },
+                h.target,
+            )
+        });
         let spot = match cursor.as_mut() {
             Some((at, cursor)) if *at == i => self.spot_for_cursor(&bucket, *half, between, cursor),
             _ => self.spot_for(&bucket, half.target, half.placement, between),
@@ -322,19 +330,5 @@ impl<M: Memory> Graph<M> {
                 ..record
             },
         );
-    }
-}
-
-/// Whether `half`'s bucket, at `place`, shows the two ends without edges between them: absent, or
-/// tiny without an entry to `half`'s target. Larger buckets are not read for this.
-fn between(half: &Half, place: &Place) -> Between {
-    match place.target {
-        Target::Absent(_) => Between::Nothing,
-        Target::Present(_, Stored::Plain(Descriptor::Tiny(tiny)))
-            if !tiny.slots().contains(&Slot::Live(half.target)) =>
-        {
-            Between::Nothing
-        }
-        Target::Present(..) => Between::Unknown,
     }
 }

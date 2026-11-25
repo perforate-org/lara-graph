@@ -382,7 +382,7 @@ fn model_detach_step<M: Memory>(g: &mut Graph<M>, model: &mut Model, x: u32, rng
             [source.node(), halves.other().node()].contains(&v(x)),
             "an edge of the detaching node"
         );
-        assert_eq!(halves, order(source, model.counterpart(source)));
+        assert_eq!(halves, Halves::of(source, model.counterpart(source)));
         let id = model.slot(source).unwrap().id;
         assert_eq!(
             r.value(),
@@ -411,7 +411,7 @@ fn at(half: EdgeRef) -> usize {
 
 fn model_remove<M: Memory>(g: &mut Graph<M>, model: &mut Model, half: EdgeRef) {
     let other = model.counterpart(half);
-    let expected = order(half, other);
+    let expected = Halves::of(half, other);
     let id = model.slot(half).unwrap().id;
     let value = model.expected(id, half.label());
     assert_eq!(

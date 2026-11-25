@@ -4,9 +4,9 @@
 use crate::bucket::descriptor::Descriptor;
 use crate::bucket::label_bucket;
 use crate::bucket::stored::LabelBucket;
-use crate::graph::bucket::{Found, indexed, key_of, opposite};
+use crate::graph::bucket::Found;
 use crate::graph::{Error, Graph};
-use crate::id::{Direction, EdgeRef, Halves, NodeId, Position};
+use crate::id::{EdgeRef, NodeId, Position};
 use crate::node::label_bucket_list::LabelBucketKey;
 use crate::store::corrupt::corrupt;
 use crate::store::memory::Memory;
@@ -16,7 +16,7 @@ impl<M: Memory> Graph<M> {
     /// Both halves of the edge `half` belongs to, with their buckets; `None` when `half` is not
     /// live.
     pub(in crate::graph) fn pair(&self, half: EdgeRef) -> Result<Option<Pair>, Error> {
-        let Some(own) = self.find_label_bucket(half.node(), key_of(half))? else {
+        let Some(own) = self.find_label_bucket(half.node(), LabelBucketKey::of(half))? else {
             return Ok(None);
         };
         Ok(self.pair_from(half, own))
@@ -26,10 +26,7 @@ impl<M: Memory> Graph<M> {
     pub(in crate::graph) fn pair_from(&self, half: EdgeRef, own: Found) -> Option<Pair> {
         let view = self.edges.pages();
         let other = label_bucket::get(&own.bucket.slots, half.position(), &view)?;
-        let key = LabelBucketKey {
-            label: half.label(),
-            direction: opposite(half.direction()),
-        };
+        let key = LabelBucketKey::of(half).opposite();
         let theirs = self.present(other, key);
         Some(self.pair_with_theirs(half, own, other, key, theirs))
     }
@@ -46,7 +43,7 @@ impl<M: Memory> Graph<M> {
         let view = self.edges.pages();
         let owner = half.node();
         // A small other bucket with one entry back answers alone; else match by rank.
-        let only = (indexed(&theirs.bucket).is_none()
+        let only = (theirs.bucket.indexed().is_none()
             && theirs.bucket.slots.stored() <= own.bucket.slots.stored())
         .then(|| only_entry_to(&theirs.bucket.slots, &view, owner))
         .flatten();
@@ -111,18 +108,4 @@ fn only_entry_to<M: Memory>(
         seen > 1
     });
     first.filter(|_| seen == 1)
-}
-
-/// An edge's halves from any half and its counterpart.
-pub(in crate::graph) fn order(half: EdgeRef, other: EdgeRef) -> Halves {
-    let half_first = match half.direction() {
-        Direction::Outgoing => true,
-        Direction::Incoming => false,
-        Direction::Undirected => half.node() >= other.node(),
-    };
-    if half_first {
-        Halves::new(half, other)
-    } else {
-        Halves::new(other, half)
-    }
 }

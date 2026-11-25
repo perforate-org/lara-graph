@@ -2,7 +2,7 @@
 //! with its edges.
 
 use crate::bucket::label_bucket::{self};
-use crate::graph::bucket::{key_of, visit_joined};
+use crate::graph::bucket::visit_joined;
 use crate::graph::{Error, Graph};
 use crate::id::{Direction, Edge, EdgeRef, Label, NodeId, Order, Position};
 use crate::node::label_bucket_list::LabelBucketKey;
@@ -18,7 +18,7 @@ impl<M: Memory> Graph<M> {
     ///
     /// [`Error::UnknownNode`].
     pub fn edge_value(&self, half: EdgeRef) -> Result<Option<Vec<u8>>, Error> {
-        let Some(found) = self.find_label_bucket(half.node(), key_of(half))? else {
+        let Some(found) = self.find_label_bucket(half.node(), LabelBucketKey::of(half))? else {
             return Ok(None);
         };
         let view = self.edges.pages();

@@ -8,7 +8,5 @@ mod insert;
 mod remove;
 mod values;
 
-#[cfg(test)]
-pub(in crate::graph) use insert::pages_per_half;
 pub use insert::{EdgeKind, NewEdge};
 pub use values::EdgeValue;

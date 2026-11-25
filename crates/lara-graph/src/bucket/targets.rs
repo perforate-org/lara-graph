@@ -16,6 +16,8 @@ mod bits;
 mod leaf;
 mod tree;
 
+use crate::id::{NodeId, Position};
+
 #[cfg(test)]
 pub(crate) use tree::extents;
 pub(crate) use tree::{
@@ -53,6 +55,28 @@ impl Posting {
 pub(crate) struct Change {
     pub(crate) key: (u32, u32),
     pub(crate) delta: i64,
+}
+
+/// The key of the posting of `target` in `at`'s block.
+pub(crate) const fn key_at(target: NodeId, at: Position) -> (u32, u32) {
+    (target.index(), at.index() / BLOCK)
+}
+
+impl Change {
+    /// A change of `delta` to the posting of `target` in `at`'s block.
+    pub(crate) const fn at(target: NodeId, at: Position, delta: i64) -> Self {
+        Self {
+            key: key_at(target, at),
+            delta,
+        }
+    }
+
+    /// The changes of compaction moving an edge to `target` from `from` to `to`. Both are
+    /// indexed positions: compaction never merges a bucket's last page, which holds its unindexed
+    /// last block, and moves only into earlier pages.
+    pub(crate) const fn moved(target: NodeId, (from, to): (Position, Position)) -> [Self; 2] {
+        [Self::at(target, from, -1), Self::at(target, to, 1)]
+    }
 }
 
 #[cfg(test)]

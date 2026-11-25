@@ -1,9 +1,9 @@
 //! Removing edges: both halves of each, with the value they carried.
 
 use crate::bucket::label_bucket;
-use crate::graph::bucket::{Found, LastBucket, Pair, key_of, opposite, order};
+use crate::graph::bucket::{Found, LastBucket, Pair};
 use crate::graph::{BatchError, Error, Graph, Removal};
-use crate::id::{EdgeRef, NodeId, RemovedEdge};
+use crate::id::{EdgeRef, Halves, NodeId, RemovedEdge};
 use crate::node::label_bucket_list::LabelBucketKey;
 use crate::store::memory::Memory;
 use alloc::vec::Vec;
@@ -59,14 +59,14 @@ impl<M: Memory> Graph<M> {
     /// publishing a pending bucket only when the batch moves on from it.
     fn remove_pending(&mut self, half: EdgeRef, pending: &mut Pending) -> Result<Removal, Error> {
         let node = half.node();
-        let key = key_of(half);
+        let key = LabelBucketKey::of(half);
         self.flush_unless(&mut pending.own, node, key);
         let own = match pending.own.get(node, key) {
             Some(found) => Some(found),
             None => self.find_label_bucket(node, key)?,
         };
         let Some(own) = own else {
-            pending.own.clear();
+            pending.own = LastBucket::default();
             return Ok(Removal::Absent);
         };
         let other = {
@@ -77,10 +77,7 @@ impl<M: Memory> Graph<M> {
             pending.own.set(node, key, own);
             return Ok(Removal::Absent);
         };
-        let their_key = LabelBucketKey {
-            label: half.label(),
-            direction: opposite(half.direction()),
-        };
+        let their_key = LabelBucketKey::of(half).opposite();
         self.flush_unless(&mut pending.theirs, other, their_key);
         let theirs = pending
             .theirs
@@ -88,14 +85,17 @@ impl<M: Memory> Graph<M> {
         let pair = self.pair_with_theirs(half, own, other, their_key, theirs);
         let (removal, own_after, theirs_after) = self.take_removal(half, pair);
         pending.own.set(node, key, own_after);
-        pending.theirs = LastBucket::holding(theirs_after.map(|found| (other, their_key, found)));
+        pending.theirs = LastBucket::default();
+        if let Some(found) = theirs_after {
+            pending.theirs.set(other, their_key, found);
+        }
         Ok(removal)
     }
 
     /// Publishes the bucket `cache` holds unless it is `(node, key)`'s.
     fn flush_unless(&mut self, cache: &mut LastBucket<Found>, node: NodeId, key: LabelBucketKey) {
-        if cache.holds_other(node, key) {
-            self.flush_pending(cache);
+        if let Some(found) = cache.take_other(node, key) {
+            self.publish(found.entry, found.bucket);
         }
     }
 
@@ -112,7 +112,7 @@ impl<M: Memory> Graph<M> {
         half: EdgeRef,
         Pair { own, other, theirs }: Pair,
     ) -> (Removal, Found, Option<Found>) {
-        let halves = order(half, other);
+        let halves = Halves::of(half, other);
         // Only a label with a width has a value to report.
         let value = if self.widths.get(half.label()).is_some() {
             let canonical = if halves.canonical() == half {

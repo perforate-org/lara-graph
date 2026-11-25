@@ -51,7 +51,7 @@ mod tiered;
 
 use crate::bucket::descriptor::DESCRIPTOR_BYTES;
 use crate::bucket::stored::Stored;
-use crate::id::{Direction, Label};
+use crate::id::{Direction, EdgeRef, Label};
 use crate::store::corrupt::corrupt;
 use crate::store::memory::{Memory, WriteError};
 use crate::store::page_store::{ByteClass, EXTENT_BYTES, Extent, PageStore, Pages};
@@ -86,6 +86,22 @@ const DIRECTION_INCOMING: u8 = 1;
 const DIRECTION_UNDIRECTED: u8 = 2;
 
 impl LabelBucketKey {
+    /// The key of the bucket that holds `half`.
+    pub(crate) const fn of(half: EdgeRef) -> Self {
+        Self {
+            label: half.label(),
+            direction: half.direction(),
+        }
+    }
+
+    /// The key of the bucket that holds the other halves of this one's edges.
+    pub(crate) const fn opposite(self) -> Self {
+        Self {
+            label: self.label,
+            direction: self.direction.opposite(),
+        }
+    }
+
     /// The key's place in key order: the label, then the direction.
     fn rank(self) -> u32 {
         rank_of(self.encode())

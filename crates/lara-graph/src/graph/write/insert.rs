@@ -9,15 +9,11 @@ mod batch;
 mod cache;
 
 use crate::bucket::stored::Stored;
-use crate::bucket::values::{self};
-use crate::bucket::{label_bucket, targets};
 use crate::graph::{Error, Graph};
-use crate::id::{Direction, EdgeRef, Halves, Label, NodeId, Placement, Width};
+use crate::id::{Direction, Halves, Label, NodeId, Placement};
 use crate::node::label_bucket_list::{EntryAt, LabelBucketKey};
 use crate::node::record::Record;
 use crate::store::memory::Memory;
-use apply::HoleCursor;
-use cache::{ManyCache, NoCache, OneCache};
 
 /// Whether [`NewEdge`] is directed or undirected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -158,62 +154,30 @@ impl<M: Memory> Graph<M> {
     /// [`Error::TooManyLabelBuckets`], [`Error::OutOfMemory`] or [`Error::AddressSpaceExhausted`].
     /// On error the graph is unchanged.
     pub fn add_edge(&mut self, edge: NewEdge<'_>) -> Result<Halves, Error> {
-        match edge.kind {
-            EdgeKind::Directed => {
-                let [canonical, other] = self.insert_halves(edge.directed_halves(), edge.value)?;
-                Ok(Halves::new(canonical, other))
-            }
-            EdgeKind::Undirected => match edge.undirected_halves() {
-                (at_high, None) => {
-                    let [half] = self.insert_halves([at_high], edge.value)?;
-                    Ok(Halves::new(half, half))
-                }
-                (at_high, Some(at_low)) => {
-                    let [canonical, other] = self.insert_halves([at_high, at_low], edge.value)?;
-                    Ok(Halves::new(canonical, other))
-                }
-            },
-        }
-    }
-
-    /// Inserts every half or none: checks and reserves memory first, then applies them.
-    fn insert_halves<const N: usize>(
-        &mut self,
-        halves: [Half; N],
-        value: &[u8],
-    ) -> Result<[EdgeRef; N], Error> {
-        Ok(self.insert_halves_with(halves, value, &NoCache, None)?.0)
-    }
-
-    /// [`insert_halves`] with an optional already admitted half.
-    fn insert_halves_cached<const N: usize>(
-        &mut self,
-        halves: [Half; N],
-        value: &[u8],
-        cached: Option<(usize, Place)>,
-        cursor: Option<(usize, &mut HoleCursor)>,
-    ) -> Result<([EdgeRef; N], [Option<Place>; N]), Error> {
-        self.insert_halves_with(halves, value, &OneCache(cached), cursor)
-    }
-
-    /// [`insert_halves`] with both halves' places already admitted.
-    fn insert_halves_two<const N: usize>(
-        &mut self,
-        halves: [Half; N],
-        value: &[u8],
-        cached: [Option<Place>; N],
-    ) -> Result<([EdgeRef; N], [Option<Place>; N]), Error> {
-        self.insert_halves_with(halves, value, &ManyCache(cached), None)
+        add_edge(self, edge)
     }
 }
 
-/// Pages one half can take from the edge store: its slots, a header, the target index's change,
-/// and for a label with a width, a run replacing a tiny bucket and the value's write.
-pub(in crate::graph) fn pages_per_half(width: Option<Width>) -> u32 {
-    label_bucket::PAGES_PER_INSERT
-        + 1
-        + targets::PAGES_PER_CHANGE
-        + width.map_or(0, |_| 1 + values::PAGES_PER_WRITE)
+/// Inserts `edge`'s halves, every one or none.
+fn add_edge<M: Memory>(graph: &mut Graph<M>, edge: NewEdge<'_>) -> Result<Halves, Error> {
+    match edge.kind {
+        EdgeKind::Directed => {
+            let ([canonical, other], _) =
+                graph.insert_halves_with(edge.directed_halves(), edge.value, &[None; 2], None)?;
+            Ok(Halves::new(canonical, other))
+        }
+        EdgeKind::Undirected => match edge.undirected_halves() {
+            (at_high, None) => {
+                let ([half], _) = graph.insert_halves_with([at_high], edge.value, &[None], None)?;
+                Ok(Halves::new(half, half))
+            }
+            (at_high, Some(at_low)) => {
+                let ([canonical, other], _) =
+                    graph.insert_halves_with([at_high, at_low], edge.value, &[None; 2], None)?;
+                Ok(Halves::new(canonical, other))
+            }
+        },
+    }
 }
 
 /// Where a half goes: its node's record and its bucket, or where the bucket belongs.

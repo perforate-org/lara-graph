@@ -1,9 +1,9 @@
 //! Writing edge values, one edge or a batch that is all-or-none.
 
 use crate::bucket::{label_bucket, values};
-use crate::graph::bucket::{Found, LastBucket, key_of, opposite, order};
+use crate::graph::bucket::{Found, LastBucket};
 use crate::graph::{BatchError, Error, Graph, corrupt};
-use crate::id::EdgeRef;
+use crate::id::{EdgeRef, Halves};
 use crate::node::label_bucket_list::LabelBucketKey;
 use crate::store::memory::Memory;
 use alloc::vec;
@@ -58,7 +58,7 @@ impl<M: Memory> Graph<M> {
         let Some(pair) = self.pair(half)? else {
             return Ok(None);
         };
-        let halves = order(half, pair.other);
+        let halves = Halves::of(half, pair.other);
         let mut targets = vec![(half, pair.own)];
         if pair.other != half {
             targets.push((pair.other, pair.theirs));
@@ -80,7 +80,7 @@ impl<M: Memory> Graph<M> {
             // The second half is looked up again only on the first's node, the one list the
             // first write can change; elsewhere the lookup from `pair` still holds.
             let found = if i > 0 && h.node() == first {
-                self.present(h.node(), key_of(h))
+                self.present(h.node(), LabelBucketKey::of(h))
             } else {
                 found
             };
@@ -134,7 +134,7 @@ impl<M: Memory> Graph<M> {
     ) -> Result<SetValue, Error> {
         let half = edge.half;
         let node = half.node();
-        let key = key_of(half);
+        let key = LabelBucketKey::of(half);
         let own = last
             .own
             .get_or_try(node, key, || self.find_label_bucket(node, key))?;
@@ -145,15 +145,12 @@ impl<M: Memory> Graph<M> {
         let Some(other) = label_bucket::get(&own.bucket.slots, half.position(), &view) else {
             return Ok(SetValue::Absent);
         };
-        let theirs_key = LabelBucketKey {
-            label: half.label(),
-            direction: opposite(half.direction()),
-        };
+        let theirs_key = LabelBucketKey::of(half).opposite();
         let theirs = last
             .theirs
             .get_or_else(other, theirs_key, || self.present(other, theirs_key));
         let pair = self.pair_with_theirs(half, own, other, theirs_key, theirs);
-        let halves = order(half, pair.other);
+        let halves = Halves::of(half, pair.other);
         let old = if halves.canonical() == half {
             self.read_value(&pair.own, half.label(), half.position())
         } else {

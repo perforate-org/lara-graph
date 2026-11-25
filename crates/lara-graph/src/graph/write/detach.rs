@@ -2,10 +2,10 @@
 
 use crate::bucket::label_bucket::{self, Span, Window};
 use crate::bucket::stored::{Index, LabelBucket};
-use crate::graph::bucket::{Found, indexed, opposite, order};
+use crate::graph::bucket::Found;
 use crate::graph::{BatchError, Detachment, Error, Graph, Step, Sweep};
 use crate::id::{
-    Direction, EdgeRef, Label, NodeId, NodeState, Order, Position, Progress, RemovedEdge,
+    Direction, EdgeRef, Halves, Label, NodeId, NodeState, Order, Position, Progress, RemovedEdge,
 };
 use crate::node::detaching_set::DetachingSet;
 use crate::node::label_bucket_list::{self, LabelBucketKey};
@@ -128,7 +128,7 @@ impl<M: Memory> Graph<M> {
             };
             cursor = Some((key, edge.position()));
             let half = EdgeRef::new(v, key.label, key.direction, edge.position());
-            let theirs_key = (edge.target(), opposite_key(half));
+            let theirs_key = (edge.target(), LabelBucketKey::of(half).opposite());
             let from = start_in(hint, &theirs_key);
             let (theirs, other) = theirs_cache
                 .filter(|(cached, _)| *cached == theirs_key)
@@ -250,7 +250,7 @@ impl<M: Memory> Graph<M> {
         (found, half): (Found, EdgeRef),
         (theirs, other): (Found, EdgeRef),
     ) -> (RemovedEdge, Found, Option<Found>) {
-        let halves = order(half, other);
+        let halves = Halves::of(half, other);
         let canonical = if halves.canonical() == half {
             found
         } else {
@@ -293,7 +293,7 @@ impl<M: Memory> Graph<M> {
         half: EdgeRef,
         (other, from): (NodeId, Position),
     ) -> (Found, EdgeRef) {
-        let key = opposite_key(half);
+        let key = LabelBucketKey::of(half).opposite();
         self.first_half_in(v, half, (other, from), self.present(other, key))
     }
 
@@ -305,9 +305,9 @@ impl<M: Memory> Graph<M> {
         (other, from): (NodeId, Position),
         theirs: Found,
     ) -> (Found, EdgeRef) {
-        let key = opposite_key(half);
+        let key = LabelBucketKey::of(half).opposite();
         // A paged bucket finds it through its target index; a smaller one is scanned.
-        let at = if indexed(&theirs.bucket).is_some() {
+        let at = if theirs.bucket.indexed().is_some() {
             self.select_to(&theirs.bucket, v, 0)
         } else {
             label_bucket::find(&theirs.bucket.slots, &self.edges.pages(), from, |e| {
@@ -317,14 +317,6 @@ impl<M: Memory> Graph<M> {
         }
         .unwrap_or_else(|| corrupt("an edge half without its counterpart"));
         (theirs, EdgeRef::new(other, key.label, key.direction, at))
-    }
-}
-
-/// The key of the bucket that holds the other half of `half`.
-const fn opposite_key(half: EdgeRef) -> LabelBucketKey {
-    LabelBucketKey {
-        label: half.label(),
-        direction: opposite(half.direction()),
     }
 }
 

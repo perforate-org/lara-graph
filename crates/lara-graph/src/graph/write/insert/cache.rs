@@ -9,36 +9,6 @@ pub(super) const TARGET_CACHE: usize = 8;
 /// A mixed batch keeps both directions and both undirected ends, so it needs a few more.
 pub(super) const MIXED_CACHE: usize = 16;
 
-/// Places a batch edge may already have admitted.
-pub(super) trait Cached<const N: usize> {
-    fn get(&self, index: usize) -> Option<Place>;
-}
-
-pub(super) struct NoCache;
-
-impl<const N: usize> Cached<N> for NoCache {
-    fn get(&self, _index: usize) -> Option<Place> {
-        None
-    }
-}
-
-pub(super) struct OneCache(pub(super) Option<(usize, Place)>);
-
-impl<const N: usize> Cached<N> for OneCache {
-    fn get(&self, index: usize) -> Option<Place> {
-        self.0
-            .and_then(|(at, place)| (at == index).then_some(place))
-    }
-}
-
-pub(super) struct ManyCache<const N: usize>(pub(super) [Option<Place>; N]);
-
-impl<const N: usize> Cached<N> for ManyCache<N> {
-    fn get(&self, index: usize) -> Option<Place> {
-        self.0.get(index).copied().flatten()
-    }
-}
-
 /// Up to `N` places, each by its node and bucket key.
 #[derive(Clone, Copy)]
 pub(super) struct PlaceCache<const N: usize>([Option<(NodeId, LabelBucketKey, Place)>; N]);

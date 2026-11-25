@@ -205,6 +205,17 @@ pub enum Direction {
     Undirected,
 }
 
+impl Direction {
+    /// The side the other half of an edge is on.
+    pub(crate) const fn opposite(self) -> Self {
+        match self {
+            Self::Outgoing => Self::Incoming,
+            Self::Incoming => Self::Outgoing,
+            Self::Undirected => Self::Undirected,
+        }
+    }
+}
+
 /// A position in one `(node, label)` bucket. Positions count removed edges, so an edge keeps
 /// its position until the bucket is compacted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -348,6 +359,20 @@ pub enum Halves {
 }
 
 impl Halves {
+    /// An edge's halves from any half and its counterpart.
+    pub(crate) fn of(half: EdgeRef, other: EdgeRef) -> Self {
+        let half_first = match half.direction() {
+            Direction::Outgoing => true,
+            Direction::Incoming => false,
+            Direction::Undirected => half.node() >= other.node(),
+        };
+        if half_first {
+            Self::new(half, other)
+        } else {
+            Self::new(other, half)
+        }
+    }
+
     pub(crate) fn new(canonical: EdgeRef, other: EdgeRef) -> Self {
         if canonical == other {
             Self::Single(canonical)

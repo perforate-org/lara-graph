@@ -36,6 +36,7 @@
 //!
 //! A list entry's kind 3 refers to a header instead (see `stored`).
 
+use crate::bucket::targets::BLOCK;
 use crate::id::{NodeId, Width};
 use crate::store::corrupt::corrupt;
 use crate::store::page_store::{ByteClass, EXTENT_BYTES, Extent, PAGE_BYTES};
@@ -218,6 +219,15 @@ pub(crate) const fn kind_of(bytes: &[u8; DESCRIPTOR_BYTES]) -> u8 {
 
 impl Descriptor {
     pub(crate) const EMPTY: Self = Self::Tiny(Tiny::EMPTY);
+
+    /// The end of the positions a bucket's index covers, its complete blocks; `None` for a bucket
+    /// too small to have an index.
+    pub(crate) fn indexed_end(&self) -> Option<u32> {
+        match self {
+            Self::Paged(_) => Some(self.stored() / BLOCK * BLOCK),
+            Self::Tiny(_) | Self::Run(_) => None,
+        }
+    }
 
     /// Positions in use, tombstones included.
     pub(crate) fn stored(&self) -> u32 {
