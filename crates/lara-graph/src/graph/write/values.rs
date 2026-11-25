@@ -236,8 +236,8 @@ impl<M: Memory> Graph<M> {
     ///
     /// # Errors
     ///
-    /// [`Error::WidthConflict`] if `label` already has another width,
-    /// past 1023 labels, [`Error::OutOfMemory`]. On error nothing changes.
+    /// [`Error::WidthConflict`] if `label` already has another width, [`Error::OutOfMemory`]. On
+    /// error nothing changes.
     pub fn declare_width(&mut self, label: Label, width: Width) -> Result<(), Error> {
         if let Some(root) = self
             .widths
