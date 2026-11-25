@@ -39,13 +39,13 @@ fn compacting_a_run_packs_it_and_reports_every_move() {
 #[test]
 fn a_compacted_run_becomes_tiny_and_an_empty_bucket_goes_away() {
     let backing = Backing::default();
-    let mut g = bucket_with_holes(&backing, 10, [0, 1, 2, 3, 4, 5, 7]);
+    let mut g = bucket_with_holes(&backing, 10, [0, 1, 2, 3, 4, 5, 6, 7]);
     g.compact(v(0), (l(0), Direction::Outgoing)).unwrap();
     assert!(matches!(
         out_bucket(&g, v(0), l(0)),
         Some(Descriptor::Tiny(_))
     ));
-    for at in 0..3 {
+    for at in 0..2 {
         remove(&mut g, v(0), l(0), p(at));
     }
     insert(&mut g, v(0), l(5), v(1));

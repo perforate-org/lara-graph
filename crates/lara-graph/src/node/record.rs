@@ -22,8 +22,8 @@ use crate::store::page_store::{EXTENT_BYTES, EXTENT_SPARE_BITS};
 /// Bytes per node record.
 pub(crate) const RECORD_BYTES: usize = LABEL_BUCKET_LIST_REF_BYTES;
 
-/// The top two bits of the label bucket list extent's class byte (its last) hold the state: classes
-/// are log2 values of at most 12. An empty list leaves the extent bytes zero, so the bits are free
+/// The top two bits of the label bucket list extent's last byte hold the state: the extent leaves
+/// them spare ([`EXTENT_SPARE_BITS`]). An empty list leaves the extent bytes zero, so the bits are free
 /// there too.
 const STATE_BITS: u8 = 0b1100_0000;
 const DETACHING: u8 = 0b0100_0000;

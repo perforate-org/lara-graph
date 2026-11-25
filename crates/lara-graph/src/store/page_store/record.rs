@@ -7,7 +7,7 @@
 //! ---------------------------------------- <- Offset 0
 //! Kind: 1 free, 2 chunk, 3 whole  ↕ 1 byte
 //! ----------------------------------------
-//! Class log2 (chunk)              ↕ 1 byte
+//! Class id (chunk)                ↕ 1 byte
 //! ----------------------------------------
 //! Extents in use (chunk)          ↕ 2 bytes
 //! ----------------------------------------
@@ -15,7 +15,8 @@
 //! ----------------------------------------
 //! Next page (free, chunk)         ↕ 4 bytes
 //! ----------------------------------------
-//! Slot bitmap (chunk)             ↕ 16 bytes
+//! Slots (chunk)                   ↕ 16 bytes      (a bitmap; for the 16 B class a slab's free
+//!                                                  list head, then its bump index)
 //! ----------------------------------------
 //! Reserved space                  ↕ 4 bytes
 //! ----------------------------------------
@@ -70,7 +71,7 @@ impl PageRecord {
                 prev,
                 next,
                 bitmap,
-            } => (KIND_CHUNK, class.log2(), used, prev, next, bitmap),
+            } => (KIND_CHUNK, class.id(), used, prev, next, bitmap),
             Self::Whole => (KIND_WHOLE, 0, 0, None, None, 0),
         };
         // Laid out by hand: chaining the parts as iterators cost about 1,500 instructions a record
@@ -127,7 +128,7 @@ impl PageRecord {
             KIND_FREE => Self::Free { next },
             KIND_WHOLE => Self::Whole,
             KIND_CHUNK => Self::Chunk {
-                class: ByteClass::from_log2(class)
+                class: ByteClass::from_id(class)
                     .filter(|c| !c.is_page())
                     .unwrap_or_else(|| corrupt("chunk class")),
                 used: u16::from_le_bytes([u0, u1]),

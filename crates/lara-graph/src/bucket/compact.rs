@@ -56,7 +56,7 @@ impl Step {
     }
 }
 
-/// Whether a compacted bucket may become tiny. A bucket with values may not: its three inline
+/// Whether a compacted bucket may become tiny. A bucket with values may not: its two inline
 /// slots leave no room for them.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Inline {

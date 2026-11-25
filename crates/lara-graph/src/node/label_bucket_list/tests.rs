@@ -28,7 +28,7 @@ fn descriptor(i: u32) -> Stored {
 }
 
 fn ext_key(e: Extent) -> (u32, u64, u8) {
-    (e.page().get(), e.offset().get(), e.class().log2())
+    (e.page().get(), e.offset().get(), e.class().id())
 }
 
 fn assert_matches(

@@ -207,10 +207,10 @@ impl LabelSet {
 /// What a spilled set's extent holds, from its first bytes.
 fn spill<M: Memory>(view: &Pages<'_, M>, extent: Extent) -> Spill {
     let [m0, m1, c0, c1, c2, c3, p0, p1, p2, p3, q0, q1, q2, q3]: [u8; BITMAP_HEADER_BYTES] =
-        if extent.len() >= 32 {
+        if usize::try_from(extent.len()).is_ok_and(|len| len >= BITMAP_HEADER_BYTES) {
             view.read_array(extent.offset())
         } else {
-            corrupt("a spilled label set below 32 bytes")
+            corrupt("a spilled label set shorter than a bitmap header")
         };
     // The bitmap's label count is kept for readers that want it without counting bits.
     let _ = [c0, c1, c2, c3];
@@ -278,7 +278,7 @@ fn listed<M: Memory>(store: &mut PageStore<M>, set: &[Label]) -> Result<Extent, 
 /// A bitmap set: its header, then two pages of bits.
 fn bitmap<M: Memory>(store: &mut PageStore<M>, set: &[Label]) -> Result<Extent, WriteError> {
     let mut txn = SpanTxn::begin(store);
-    let header = txn.allocate(ByteClass::SMALLEST)?;
+    let header = txn.allocate(ByteClass::B32)?;
     let low = txn.allocate(ByteClass::PAGE)?.page();
     let high = txn.allocate(ByteClass::PAGE)?.page();
     txn.commit();

@@ -16,7 +16,7 @@ fn value(width: Width, seed: u32) -> Vec<u8> {
 }
 
 fn ext_key(e: Extent) -> (u32, u64, u8) {
-    (e.page().get(), e.offset().get(), e.class().log2())
+    (e.page().get(), e.offset().get(), e.class().id())
 }
 
 fn check(

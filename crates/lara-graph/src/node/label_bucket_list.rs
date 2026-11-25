@@ -1,7 +1,7 @@
 //! Per-node label bucket lists: which `(label, direction)` label buckets a node has, and their
 //! descriptors.
 //!
-//! Entries are 16 bytes (label, direction, 13-byte descriptor), sorted by key. A list starts
+//! Entries are 12 bytes (label, direction, 9-byte listed descriptor), sorted by key. A list starts
 //! **flat**: one extent in its own page store, read whole and searched in memory; adding a bucket
 //! shifts entries in place or moves the list to the next class. A flat list that would outgrow a
 //! page becomes **tiered** (`tiered`): a small top extent lists leaf pages with their first key and
@@ -24,11 +24,11 @@
 //!
 //! ```text
 //! ---------------------------------------- <- Extent start
-//! Entry 0                         ↕ 16 bytes
+//! Entry 0                         ↕ 12 bytes
 //! ----------------------------------------
 //! ...
 //! ----------------------------------------
-//! Entry count - 1                 ↕ 16 bytes
+//! Entry count - 1                 ↕ 12 bytes
 //! ----------------------------------------
 //! Unused space
 //! ```
@@ -43,14 +43,15 @@
 //! ----------------------------------------
 //! Direction: 0 out, 1 in, 2 undir.↕ 1 byte
 //! ----------------------------------------
-//! Stored: descriptor or header ref↕ 13 bytes
+//! Stored: listed descriptor or    ↕ 9 bytes
+//!   header ref
 //! ----------------------------------------
 //! ```
 
 mod tiered;
 
 use crate::bucket::LabelBucketKey;
-use crate::bucket::descriptor::DESCRIPTOR_BYTES;
+use crate::bucket::descriptor::LISTED_BYTES;
 use crate::bucket::stored::Stored;
 use crate::id::{Direction, Label};
 use crate::store::corrupt::corrupt;
@@ -61,10 +62,11 @@ use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
 /// Bytes per list entry.
-const ENTRY_BYTES: usize = 3 + DESCRIPTOR_BYTES;
-/// Entries a flat list or a leaf holds: a page's, but for the two counts a count byte cannot
-/// take (256, and [`TIERED`]). Tests use a handful so that lists tier early.
-const LEAF_ENTRIES: usize = crate::store::scale::Scale::pick(8, 4096 / ENTRY_BYTES - 2);
+const ENTRY_BYTES: usize = 3 + LISTED_BYTES;
+/// Entries a flat list or a leaf holds: as many as a count byte can take but for 255 ([`TIERED`]),
+/// 254 of the 341 a page has room for. Tests use a handful so that lists tier early.
+const LEAF_ENTRIES: usize = crate::store::scale::Scale::pick(8, 254);
+const _: () = assert!(LEAF_ENTRIES * ENTRY_BYTES <= 4096);
 const _: () = assert!(crate::store::page_store::PAGE_BYTES == 4096);
 /// Pages one [`add`] can take from the store: tiering takes two leaves and a top.
 pub(crate) const PAGES_PER_ADD: u32 = 3;
@@ -313,7 +315,7 @@ pub(crate) fn has_room<M: Memory>(
 /// A listed bucket's stored form, decoded only when asked for: a walk that wants only the keys
 /// does not decode descriptors.
 #[derive(Clone, Copy)]
-pub(crate) struct Listed([u8; DESCRIPTOR_BYTES]);
+pub(crate) struct Listed([u8; LISTED_BYTES]);
 
 impl Listed {
     #[inline]
@@ -488,10 +490,8 @@ fn decode_entry(entry: [u8; ENTRY_BYTES]) -> (LabelBucketKey, Stored) {
 /// slow code on the IC (a 32-byte directory record cost about 1,500 instructions that way).
 fn encode_entry(key: LabelBucketKey, d: &Stored) -> [u8; ENTRY_BYTES] {
     let [k0, k1, k2] = key.encode();
-    let [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12] = d.encode();
-    [
-        k0, k1, k2, s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12,
-    ]
+    let [s0, s1, s2, s3, s4, s5, s6, s7, s8] = d.encode();
+    [k0, k1, k2, s0, s1, s2, s3, s4, s5, s6, s7, s8]
 }
 
 /// Publishes a bucket's new descriptor in place. Cannot fail.

@@ -4,14 +4,15 @@
 //!   contiguous range.
 //! - **directory** holds a header, then one 32-byte record per page, addressed by page id:
 //!   free-list links for free pages, and the class, use count and slot bitmap for pages split
-//!   into chunks.
+//!   into chunks (for the 16-byte class, a slab's free list instead: see [`Slots`]).
 //!
 //! Each memory starts as ic-stable-structures' memories do: a 3-byte magic and a version byte.
 //!
-//! An allocation is an [`Extent`] of a power-of-two byte class from 32 to 4096. Classes below a
-//! page are carved from chunk pages (one class per page, a bitmap of slots); a full-page extent
-//! is the page itself. Every operation is O(1). A page that empties goes back to one free list,
-//! so space freed by one class or use serves any other.
+//! An allocation is an [`Extent`] of a byte class: a power of two from 16 to 4096, or three
+//! quarters of one from 48 to 768 (see [`ByteClass`]). Classes below a page are carved from chunk
+//! pages (one class per page, a bitmap of slots); a full-page extent is the page itself. Every
+//! operation is O(1). A page that empties goes back to one free list, so space freed by one class
+//! or use serves any other.
 //!
 //! Allocation fails only when a memory cannot grow, and grows before changing anything. Release
 //! never fails.
@@ -32,13 +33,11 @@
 //! ----------------------------------------
 //! Free list head (page id)        ↕ 4 bytes
 //! ---------------------------------------- <- Address 12 (AT_PARTIAL_HEADS)
-//! Partial list head, 32 B class   ↕ 4 bytes
+//! Partial list head, 16 B class   ↕ 4 bytes
 //! ----------------------------------------
 //! ...
 //! ----------------------------------------
-//! Partial list head, 2 KiB class  ↕ 4 bytes
-//! ---------------------------------------- <- Address 40
-//! Reserved space                  ↕ 24 bytes
+//! Partial list head, 2 KiB class  ↕ 4 bytes       (thirteen heads, one per chunk class)
 //! ---------------------------------------- <- Address 64 (RECORDS_START)
 //! Record of page 0                ↕ 32 bytes
 //! ----------------------------------------
@@ -72,21 +71,24 @@
 //!
 //! # Extent
 //!
-//! Extent `index` of class `2^log2` bytes in a page starts at `64 + page × 4096 + index ×
-//! 2^log2` in the pages memory. It encodes in 40 bits, little-endian:
+//! Extent `index` of a class of `b` bytes in a page starts at `64 + page × 4096 + index × b` in
+//! the pages memory. It encodes in 40 bits, little-endian:
 //!
 //! ```text
 //! ---------------------------------------- <- Bit 0
-//! Page id                         ↕ 28 bits       (1 TiB of pages per memory)
-//! ---------------------------------------- <- Bit 28
-//! Start in the page, 32 B units  ↕ 7 bits       (index << (log2 - 5))
-//! ---------------------------------------- <- Bit 35
-//! Class log2 - 5 (0 to 7)         ↕ 3 bits
+//! Page id                         ↕ 27 bits       (512 GiB of pages per memory, past the IC's
+//!                                                  stable memory)
+//! ---------------------------------------- <- Bit 27
+//! Index in the page, low 7 bits   ↕ 7 bits        (below the class's extents per page)
+//! ---------------------------------------- <- Bit 34
+//! Class code                      ↕ 4 bits        (0 and 1: 16 B, the code being the index's
+//!                                                  8th bit; 2 to 14: the 32 B to 4 KiB classes)
 //! ---------------------------------------- <- Bit 38
 //! Spare, for the holder           ↕ 2 bits
 //! ----------------------------------------
 //! ```
 
+mod class;
 mod record;
 
 use crate::store::corrupt::corrupt;
@@ -94,6 +96,9 @@ use crate::store::memory::{Memory, Region, WriteError};
 use crate::store::txn::Allocator;
 use crate::store::units::ByteOffset;
 use alloc::vec::Vec;
+use class::Code;
+pub(crate) use class::{ByteClass, Slots};
+use class::{SLAB_LINK_BYTES, decode_slab_link, encode_slab_link};
 use record::{PageRecord, RECORD_BYTES, decode_link, encode_link};
 
 /// Bytes per page.
@@ -133,76 +138,25 @@ impl PageId {
     }
 }
 
-/// A power-of-two allocation size from 32 bytes to a whole page, stored as its log2.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct ByteClass(u8);
-
-impl ByteClass {
-    const MIN_LOG2: u8 = 5;
-    const PAGE_LOG2: u8 = 12;
-    /// Chunk classes, i.e. classes below a page.
-    const CHUNK_CLASSES: usize = 7;
-    pub(crate) const PAGE: Self = Self(Self::PAGE_LOG2);
-    /// The smallest class: 32 bytes.
-    pub(crate) const SMALLEST: Self = Self(5);
-
-    /// The smallest class holding `bytes`; `None` past a page.
-    pub(crate) fn for_bytes(bytes: u32) -> Option<Self> {
-        if bytes > PAGE_BYTES {
-            return None;
-        }
-        let log2 = bytes.max(1).next_power_of_two().trailing_zeros();
-        u8::try_from(log2)
-            .ok()
-            .map(|log2| Self(log2.max(Self::MIN_LOG2)))
-    }
-
-    pub(crate) fn from_log2(log2: u8) -> Option<Self> {
-        (Self::MIN_LOG2..=Self::PAGE_LOG2)
-            .contains(&log2)
-            .then_some(Self(log2))
-    }
-
-    pub(crate) const fn log2(self) -> u8 {
-        self.0
-    }
-
-    pub(crate) const fn bytes(self) -> u32 {
-        1 << self.0
-    }
-
-    pub(crate) const fn is_page(self) -> bool {
-        self.0 == Self::PAGE_LOG2
-    }
-
-    /// Extents of this class per chunk page.
-    const fn per_page(self) -> u16 {
-        1 << (Self::PAGE_LOG2 - self.0)
-    }
-
-    /// Position of this chunk class among the partial-list heads.
-    fn lane(self) -> u64 {
-        u64::from(self.0 - Self::MIN_LOG2)
-    }
-}
-
 /// An allocation: the `index`-th extent of `class` bytes in `page`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Extent {
     page: PageId,
-    index: u16,
+    /// Where it starts in its page: its index times its class's bytes, so a read adds it alone.
+    start: u16,
     class: ByteClass,
 }
 
 /// Bytes an encoded [`Extent`] takes: 40 bits, of which the extent uses the low 38.
 pub(crate) const EXTENT_BYTES: usize = 5;
 /// Bits of a page id in an encoded extent.
-pub(crate) const PAGE_BITS: u32 = 28;
-/// Bits of the start within the page, in 32-byte units: 128 per page.
+pub(crate) const PAGE_BITS: u32 = 27;
+/// Bits of the index within the page: 128 extents of the 32-byte class. The 16-byte class's 256
+/// take an eighth bit from the class code.
 const INDEX_BITS: u32 = 7;
-/// Bits of the class, as `log2 - 5`.
-const CLASS_BITS: u32 = 3;
-/// Page ids an encoded extent can name: 1 TiB of pages per memory.
+/// Bits of the class code.
+const CLASS_BITS: u32 = 4;
+/// Page ids an encoded extent can name: 512 GiB of pages per memory.
 pub(crate) const MAX_PAGES: u32 = 1 << PAGE_BITS;
 /// The top bits of an encoded extent's last byte, which the extent leaves zero for its holder (a
 /// node record keeps the node's state there).
@@ -216,14 +170,30 @@ impl Extent {
         if index >= class.per_page() {
             corrupt("extent index");
         }
-        Self { page, index, class }
+        Self::at(page, index, class)
+    }
+
+    /// The `index`-th extent of `class` in `page`, `index` below the class's extents per page.
+    fn at(page: PageId, index: u16, class: ByteClass) -> Self {
+        let start = u32::from(index) * class.bytes();
+        Self {
+            page,
+            start: u16::try_from(start).unwrap_or_else(|_| corrupt("extent start")),
+            class,
+        }
+    }
+
+    /// Which extent of its class in its page it is.
+    fn index(self) -> u16 {
+        let index = u32::from(self.start) / self.class.bytes();
+        u16::try_from(index).unwrap_or(u16::MAX)
     }
 
     /// A whole page as an extent.
     pub(crate) const fn whole(page: PageId) -> Self {
         Self {
             page,
-            index: 0,
+            start: 0,
             class: ByteClass::PAGE,
         }
     }
@@ -236,38 +206,44 @@ impl Extent {
         self.class
     }
 
-    pub(crate) const fn len(self) -> u32 {
+    pub(crate) fn len(self) -> u32 {
         self.class.bytes()
     }
 
     /// Where the extent starts in the pages memory.
     pub(crate) fn offset(self) -> ByteOffset {
-        let within = u64::from(self.index) * u64::from(self.class.bytes());
-        ByteOffset::new(self.page.offset().get() + within)
+        ByteOffset::new(self.page.offset().get() + u64::from(self.start))
     }
 
     /// As the module's Extent diagram shows.
     pub(crate) fn encode(self) -> [u8; EXTENT_BYTES] {
-        let [p0, p1, p2, p3] = self.page.0.to_le_bytes();
-        // Bits 28-34 the start within the page in 32-byte units, 35-37 the class: over the page
-        // id's top byte and one more.
-        let shift = self.class.0 - ByteClass::MIN_LOG2;
-        let [i0, i1] = ((self.index << shift << 4) | (u16::from(shift) << 11)).to_le_bytes();
-        [p0, p1, p2, p3 | i0, i1]
+        let code = if self.class.is_slab() {
+            u64::from(self.index() >> INDEX_BITS)
+        } else {
+            u64::from(self.class.0) + 1
+        };
+        let word = u64::from(self.page.0)
+            | (u64::from(self.index() & ((1 << INDEX_BITS) - 1)) << PAGE_BITS)
+            | (code << (PAGE_BITS + INDEX_BITS));
+        let [b0, b1, b2, b3, b4, ..] = word.to_le_bytes();
+        [b0, b1, b2, b3, b4]
     }
 
-    /// Ignores the spare bits ([`EXTENT_SPARE_BITS`]). Shifts and masks only, as every extent
-    /// read goes through here; any 38 bits name a valid extent, so there is nothing to check.
+    /// Ignores the spare bits ([`EXTENT_SPARE_BITS`]). One table load, a minimum and a product,
+    /// as every extent read goes through here; any 38 bits name a valid extent, so there is
+    /// nothing to check.
     pub(crate) fn decode(bytes: [u8; EXTENT_BYTES]) -> Self {
         let [b0, b1, b2, b3, b4] = bytes;
-        let page = u32::from_le_bytes([b0, b1, b2, b3]) & (MAX_PAGES - 1);
-        let units = (u16::from_le_bytes([b3, b4]) >> 4) & ((1 << INDEX_BITS) - 1);
-        let shift = (b4 >> 3) & 0b111;
+        let word = u64::from_le_bytes([b0, b1, b2, b3, b4, 0, 0, 0]);
+        let field = |at: u32, bits: u32| (word >> at) & ((1 << bits) - 1);
+        let code = Code::of(field(PAGE_BITS + INDEX_BITS, CLASS_BITS));
+        // An index past its class's last extent is no extent's: it clamps.
+        let index =
+            (u16::try_from(field(PAGE_BITS, INDEX_BITS)).unwrap_or(0) | code.high).min(code.last);
         Self {
-            page: PageId(page),
-            // A start of fewer units than the class's size is no extent's: its low bits drop.
-            index: units >> shift,
-            class: ByteClass(ByteClass::MIN_LOG2 + shift),
+            page: PageId(u32::try_from(field(0, PAGE_BITS)).unwrap_or(0)),
+            start: index * code.bytes,
+            class: code.class,
         }
     }
 }
@@ -300,10 +276,7 @@ impl<M: Memory> PageStore<M> {
         region.overwrite(ByteOffset::new(AT_MINTED), &0u32.to_le_bytes());
         region.overwrite(ByteOffset::new(AT_FREE_HEAD), &encode_link(None));
         for lane in 0..ByteClass::CHUNK_CLASSES {
-            region.overwrite(
-                partial_head_at(u64::try_from(lane).unwrap_or(0)),
-                &encode_link(None),
-            );
+            region.overwrite(partial_head_at(lane), &encode_link(None));
         }
         let [p0, p1, p2] = PAGES_MAGIC;
         Region::new(&pages).write(ByteOffset::new(0), &[p0, p1, p2, VERSION])?;
@@ -365,29 +338,15 @@ impl<M: Memory> PageStore<M> {
         if class.is_page() {
             let page = self.take_page()?;
             self.set_record(page, PageRecord::Whole);
-            return Ok(Extent {
-                page,
-                index: 0,
-                class,
-            });
+            return Ok(Extent::whole(page));
         }
         let mut chunk = self.open_chunk(class)?;
-        let index =
-            u16::try_from(chunk.bitmap.trailing_ones()).unwrap_or_else(|_| corrupt("bitmap"));
-        if index >= class.per_page() {
-            corrupt("partial chunk has no free slot");
-        }
-        chunk.used += 1;
-        chunk.bitmap |= 1 << index;
+        let index = self.take_slot(class, &mut chunk);
         self.store_chunk(class, &chunk);
         if chunk.used == class.per_page() {
             self.unlink_partial(class, chunk.page);
         }
-        Ok(Extent {
-            page: chunk.page,
-            index,
-            class,
-        })
+        Ok(Extent::at(chunk.page, index, class))
     }
 
     /// Allocates up to `count` extents of `class`, batching the chunk-page bitmap updates.
@@ -419,20 +378,12 @@ impl<M: Memory> PageStore<M> {
     ) -> Result<(), WriteError> {
         let mut chunk = self.open_chunk(class)?;
         let page = chunk.page;
-        let mut free = !chunk.bitmap;
         let mut taken = 0u32;
-        while free != 0 && below(out, count) {
-            let index = free.trailing_zeros();
-            free &= free - 1;
-            chunk.bitmap |= 1u128 << index;
-            out.push(Extent {
-                page,
-                index: u16::try_from(index).unwrap_or_else(|_| corrupt("chunk index")),
-                class,
-            });
+        while chunk.used < class.per_page() && below(out, count) {
+            let index = self.take_slot(class, &mut chunk);
+            out.push(Extent::at(page, index, class));
             taken += 1;
         }
-        chunk.used += u16::try_from(taken).unwrap_or_else(|_| corrupt("chunk used"));
         self.store_chunk(class, &chunk);
         if chunk.used >= class.per_page() {
             self.unlink_partial(class, page);
@@ -451,14 +402,14 @@ impl<M: Memory> PageStore<M> {
             page
         } else {
             let page = self.take_page()?;
-            let chunk = PageRecord::Chunk {
-                class,
+            let fresh = OpenChunk {
+                page,
                 used: 0,
                 prev: None,
                 next: None,
-                bitmap: 0,
+                slots: Slots::fresh(class),
             };
-            self.set_record(page, chunk);
+            self.store_chunk(class, &fresh);
             self.push_partial(class, page);
             page
         };
@@ -477,8 +428,64 @@ impl<M: Memory> PageStore<M> {
             used,
             prev,
             next,
-            bitmap,
+            slots: Slots::decode(class, bitmap),
         })
+    }
+
+    /// Takes a free extent of an open chunk page that has one: the first clear bit, the slab's
+    /// first freed extent (one two-byte read), or its next untouched one.
+    fn take_slot(&self, class: ByteClass, chunk: &mut OpenChunk) -> u16 {
+        let index = match &mut chunk.slots {
+            Slots::Bitmap(bits) => {
+                let index = bits.trailing_ones();
+                *bits |= 1 << index;
+                u16::try_from(index).unwrap_or(u16::MAX)
+            }
+            Slots::Slab {
+                head: Some(index), ..
+            } => {
+                let index = *index;
+                let link = Extent::at(chunk.page, index, class).offset();
+                let next = decode_slab_link(u16::from_le_bytes(self.pages().read_array(link)));
+                chunk.slots = Slots::Slab {
+                    head: next,
+                    bump: slab_bump(chunk.slots),
+                };
+                index
+            }
+            Slots::Slab { head: None, bump } => {
+                *bump += 1;
+                *bump - 1
+            }
+        };
+        if index >= class.per_page() {
+            corrupt("partial chunk has no free slot");
+        }
+        chunk.used += 1;
+        index
+    }
+
+    /// Returns extent `index` of an open chunk page to its free slots.
+    fn free_slot(&self, class: ByteClass, chunk: &mut OpenChunk, index: u16) {
+        match &mut chunk.slots {
+            Slots::Bitmap(bits) => {
+                let bit = 1u128 << index;
+                if *bits & bit == 0 {
+                    corrupt("released extent is not allocated");
+                }
+                *bits &= !bit;
+            }
+            Slots::Slab { head, bump } => {
+                if index >= *bump {
+                    corrupt("released extent is not allocated");
+                }
+                let link = Extent::at(chunk.page, index, class).offset();
+                let bytes: [u8; SLAB_LINK_BYTES] = encode_slab_link(*head).to_le_bytes();
+                self.write(link, &bytes);
+                *head = Some(index);
+            }
+        }
+        chunk.used -= 1;
     }
 
     /// Writes back the record of a chunk page opened by [`Self::open_chunk`].
@@ -491,7 +498,7 @@ impl<M: Memory> PageStore<M> {
                 used: chunk.used,
                 prev: chunk.prev,
                 next: chunk.next,
-                bitmap: chunk.bitmap,
+                bitmap: chunk.slots.encode(),
             },
         );
     }
@@ -515,7 +522,8 @@ impl<M: Memory> PageStore<M> {
 
     /// Returns an extent. A chunk page that empties goes back to the free pages.
     pub(crate) fn release(&mut self, extent: Extent) {
-        let Extent { page, index, class } = extent;
+        let Extent { page, class, .. } = extent;
+        let index = extent.index();
         match self.record(page) {
             PageRecord::Whole if class.is_page() => self.give_page(page),
             PageRecord::Chunk {
@@ -525,22 +533,17 @@ impl<M: Memory> PageStore<M> {
                 next,
                 bitmap,
             } if c == class => {
-                let bit = 1u128 << index;
-                if bitmap & bit == 0 {
-                    corrupt("released extent is not allocated");
-                }
-                let was_full = used == class.per_page();
-                let used = used - 1;
-                self.set_record(
+                let mut chunk = OpenChunk {
                     page,
-                    PageRecord::Chunk {
-                        class,
-                        used,
-                        prev,
-                        next,
-                        bitmap: bitmap & !bit,
-                    },
-                );
+                    used,
+                    prev,
+                    next,
+                    slots: Slots::decode(class, bitmap),
+                };
+                let was_full = used == class.per_page();
+                self.free_slot(class, &mut chunk, index);
+                self.store_chunk(class, &chunk);
+                let used = chunk.used;
                 if used == 0 {
                     if !was_full {
                         self.unlink_partial(class, page);
@@ -730,6 +733,25 @@ impl<M: Memory> Allocator for PageStore<M> {
 
 #[cfg(test)]
 impl<M: Memory> PageStore<M> {
+    /// The allocated extents' indexes of chunk `page` of `class` (test invariant checks).
+    pub(crate) fn allocated_in(&self, page: PageId, class: ByteClass, slots: Slots) -> Vec<u16> {
+        match slots {
+            Slots::Bitmap(bits) => (0..class.per_page())
+                .filter(|&i| bits & (1 << i) != 0)
+                .collect(),
+            Slots::Slab { head, bump } => {
+                let mut free = alloc::collections::BTreeSet::new();
+                let mut cursor = head;
+                while let Some(index) = cursor {
+                    assert!(index < bump && free.insert(index), "slab free list");
+                    let link = Extent::at(page, index, class).offset();
+                    cursor = decode_slab_link(u16::from_le_bytes(self.pages().read_array(link)));
+                }
+                (0..bump).filter(|i| !free.contains(i)).collect()
+            }
+        }
+    }
+
     /// Every allocated extent (test invariant checks).
     pub(crate) fn allocated(&self) -> Vec<Extent> {
         let mut out = Vec::new();
@@ -738,8 +760,8 @@ impl<M: Memory> PageStore<M> {
                 PageRecord::Free { .. } => {}
                 PageRecord::Whole => out.push(Extent::whole(page)),
                 PageRecord::Chunk { class, bitmap, .. } => {
-                    let used = (0..class.per_page()).filter(|i| bitmap & (1 << i) != 0);
-                    out.extend(used.map(|index| Extent { page, index, class }));
+                    let used = self.allocated_in(page, class, Slots::decode(class, bitmap));
+                    out.extend(used.into_iter().map(|index| Extent::at(page, index, class)));
                 }
             }
         }
@@ -767,13 +789,23 @@ struct OpenChunk {
     used: u16,
     prev: Option<PageId>,
     next: Option<PageId>,
-    bitmap: u128,
+    slots: Slots,
+}
+
+/// A slab's bump index (0 for a bitmap).
+const fn slab_bump(slots: Slots) -> u16 {
+    match slots {
+        Slots::Slab { bump, .. } => bump,
+        Slots::Bitmap(_) => 0,
+    }
 }
 
 /// Whether `out` holds fewer than `count` extents.
 fn below(out: &[Extent], count: u32) -> bool {
     u32::try_from(out.len()).unwrap_or(u32::MAX) < count
 }
+
+const _: () = assert!(AT_PARTIAL_HEADS + 4 * ByteClass::CHUNK_CLASSES <= HEADER_BYTES);
 
 fn partial_head_at(lane: u64) -> ByteOffset {
     ByteOffset::new(AT_PARTIAL_HEADS + 4 * lane)
@@ -792,7 +824,8 @@ mod proofs {
     fn any_bytes_decode_to_an_extent_within_its_page() {
         let extent = Extent::decode(kani::any());
         let len = u64::from(extent.len());
-        assert!(u64::from(extent.index) * len + len <= u64::from(PAGE_BYTES));
+        assert!(u64::from(extent.start) + len <= u64::from(PAGE_BYTES));
+        assert_eq!(u64::from(extent.start), u64::from(extent.index()) * len);
     }
 
     /// An extent encodes to bytes that decode back to it.

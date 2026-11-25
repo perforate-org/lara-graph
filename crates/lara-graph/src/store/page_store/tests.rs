@@ -1,3 +1,4 @@
+use super::class::{CLASS_BYTES, CLASS_PER_PAGE, CODES};
 use super::*;
 use crate::store::memory::VecMemory;
 use alloc::collections::BTreeSet;
@@ -32,7 +33,7 @@ fn check<M: Memory>(store: &PageStore<M>, live: &[Extent]) {
     }
     let mut partial = BTreeSet::new();
     for lane in 0..ByteClass::CHUNK_CLASSES {
-        let class = ByteClass(ByteClass::MIN_LOG2 + u8::try_from(lane).unwrap());
+        let class = ByteClass(u8::try_from(lane).unwrap());
         let mut prev = None;
         let mut cursor = store.partial_head(class);
         while let Some(page) = cursor {
@@ -69,24 +70,21 @@ fn check<M: Memory>(store: &PageStore<M>, live: &[Extent]) {
                 bitmap,
                 ..
             } => {
-                assert_eq!(
-                    bitmap.count_ones(),
-                    u32::from(used),
-                    "bitmap matches use count"
-                );
+                let allocated = store.allocated_in(page, class, Slots::decode(class, bitmap));
+                assert_eq!(allocated.len(), usize::from(used), "slots match use count");
                 assert!(used > 0, "an empty chunk is freed");
                 assert_eq!(
                     partial.contains(&page),
                     used < class.per_page(),
                     "partial listing"
                 );
-                for index in (0..class.per_page()).filter(|i| bitmap & (1 << i) != 0) {
+                for index in allocated {
                     used_slots.insert((page, index, class));
                 }
             }
         }
     }
-    let held: BTreeSet<_> = live.iter().map(|e| (e.page, e.index, e.class)).collect();
+    let held: BTreeSet<_> = live.iter().map(|e| (e.page, e.index(), e.class)).collect();
     assert_eq!(
         held, used_slots,
         "allocated extents are exactly the ones held"
@@ -178,10 +176,15 @@ impl Rng {
     }
 }
 
-/// One random allocation (any class) or release.
+/// One random allocation or release. Half the allocations are 16-byte ones, so that slabs fill,
+/// free and reuse extents; the rest are of any size.
 fn random_step<M: Memory>(store: &mut PageStore<M>, live: &mut Vec<Extent>, rng: &mut Rng) {
     if live.is_empty() || rng.below(100) < 55 {
-        let bytes = 1 << (5 + rng.below(8));
+        let bytes = if rng.below(2) == 0 {
+            16
+        } else {
+            1 + rng.below(PAGE_BYTES)
+        };
         live.push(store.allocate(class(bytes)).unwrap());
     } else {
         let at = usize::try_from(rng.below(u32::try_from(live.len()).unwrap())).unwrap();
@@ -218,6 +221,9 @@ fn extents_encode_in_forty_bits() {
         Extent::whole(PageId::new(0)),
         Extent::whole(last),
         Extent::new(last, 127, ByteClass::SMALLEST),
+        Extent::new(last, 128, ByteClass::SMALLEST),
+        Extent::new(last, 255, ByteClass::SMALLEST),
+        Extent::new(last, 127, ByteClass::B32),
         Extent::new(PageId::new(12_345), 3, ByteClass::for_bytes(512).unwrap()),
     ] {
         let mut bytes = extent.encode();
@@ -226,4 +232,76 @@ fn extents_encode_in_forty_bits() {
         bytes[EXTENT_BYTES - 1] |= EXTENT_SPARE_BITS;
         assert_eq!(Extent::decode(bytes), extent);
     }
+}
+
+/// Each size maps to the smallest class holding it, three-quarter classes included.
+#[test]
+fn sizes_take_the_smallest_class_holding_them() {
+    for bytes in 1..=PAGE_BYTES {
+        let class = class(bytes);
+        assert!(class.bytes() >= bytes, "{bytes} fits its class");
+        let below = CLASS_BYTES
+            .iter()
+            .map(|&b| u32::from(b))
+            .filter(|&b| b < class.bytes());
+        assert!(
+            below.into_iter().all(|b| b < bytes),
+            "{bytes} takes the smallest class"
+        );
+    }
+    assert_eq!(ByteClass::for_bytes(PAGE_BYTES + 1), None);
+    for (&bytes, &count) in CLASS_BYTES.iter().zip(&CLASS_PER_PAGE) {
+        assert_eq!(
+            u32::from(count),
+            PAGE_BYTES / u32::from(bytes),
+            "{bytes}: extents per page"
+        );
+    }
+}
+
+/// The 16-byte and three-quarter classes encode, pack their pages and free them like the others:
+/// a slab hands out all 256 16-byte extents of its page.
+#[test]
+fn small_and_three_quarter_classes_fill_their_pages() {
+    let backing = Backing::default();
+    let mut store = backing.create();
+    for bytes in [16, 48, 96, 192, 384, 768] {
+        let class = class(bytes);
+        let extents: Vec<Extent> = (0..class.per_page())
+            .map(|_| store.allocate(class).unwrap())
+            .collect();
+        let pages: BTreeSet<PageId> = extents.iter().map(|e| e.page()).collect();
+        assert_eq!(pages.len(), 1, "{bytes}: a page's worth shares one page");
+        for &e in &extents {
+            assert_eq!(Extent::decode(e.encode()), e);
+            assert!(
+                e.offset().get() + u64::from(bytes)
+                    <= e.page().offset().get() + u64::from(PAGE_BYTES)
+            );
+        }
+        check(&store, &extents);
+        for e in extents {
+            store.release(e);
+        }
+        check(&store, &[]);
+    }
+}
+
+/// The decoding table agrees with the class tables: codes 0 and 1 the 16-byte class's halves,
+/// 2 to 14 each other class, 15 a page.
+#[test]
+fn class_codes_match_the_class_tables() {
+    for (code, entry) in CODES.iter().enumerate() {
+        let id = match code {
+            0 | 1 => 0,
+            15 => ByteClass::PAGE.id(),
+            _ => u8::try_from(code - 1).unwrap(),
+        };
+        let class = ByteClass::from_id(id).unwrap();
+        assert_eq!(entry.class, class, "code {code}");
+        assert_eq!(entry.last, class.per_page() - 1, "code {code}");
+        assert_eq!(u32::from(entry.bytes), class.bytes(), "code {code}");
+        assert_eq!(entry.high, if code == 1 { 128 } else { 0 }, "code {code}");
+    }
+    assert_eq!(CLASS_BYTES.get(13), Some(&4096));
 }

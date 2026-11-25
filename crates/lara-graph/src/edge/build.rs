@@ -30,7 +30,7 @@ impl<M: Memory> EdgeStore<M> {
         value: impl Fn(&H) -> &'e [u8],
     ) -> Result<Stored, Error> {
         let count = u32::try_from(halves.len()).map_err(|_| Error::AddressSpaceExhausted)?;
-        let tiny_slots = u32::try_from(TINY_SLOTS).unwrap_or(3);
+        let tiny_slots = u32::try_from(TINY_SLOTS).unwrap_or(2);
         if width.is_none() && count <= tiny_slots {
             return Ok(tiny_bucket(halves));
         }

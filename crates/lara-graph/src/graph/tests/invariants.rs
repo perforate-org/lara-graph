@@ -270,5 +270,5 @@ fn check_pairs(halves: &BTreeMap<(u32, Label, Direction, u32), usize>) {
 }
 
 pub(super) fn key(e: Extent) -> (u32, u64, u8) {
-    (e.page().get(), e.offset().get(), e.class().log2())
+    (e.page().get(), e.offset().get(), e.class().id())
 }

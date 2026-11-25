@@ -129,9 +129,12 @@ impl LabelBucket {
         }
     }
 
-    /// Whether the bucket needs a header: it has values in a plane, or an index.
+    /// Whether the bucket needs a header: it is paged (a list entry has no room for it), or it
+    /// has values in a plane or an index.
     pub(crate) const fn extended(&self) -> bool {
-        self.values.is_some() || !matches!(self.index, Index::Empty)
+        matches!(self.slots, Descriptor::Paged(_))
+            || self.values.is_some()
+            || !matches!(self.index, Index::Empty)
     }
 }
 

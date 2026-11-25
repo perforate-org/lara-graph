@@ -1,19 +1,20 @@
 //! How a [`LabelBucket`] is stored in its label bucket list entry: a plain descriptor, or a
 //! header for a bucket with more to it.
 //!
-//! A list entry's 13 bytes after its key hold a [`Descriptor`] for a plain bucket, including a run that keeps
-//! its values beside its slots (see `descriptor`). A bucket whose values are in a value plane (a
-//! paged one, a run too large for its values beside it, or one of a label with wide values; never
-//! tiny: three inline slots leave no room for them), or a paged bucket with its target index (or
-//! one dropped while its node detaches), holds `Extended`: the extent of a 32-byte header in the
-//! edge store with the slot descriptor, the value plane's root and width, and the target index's
-//! root. Plain buckets pay nothing; an extended one costs one more 32-byte read.
+//! A list entry's 9 bytes after its key hold a listed [`Descriptor`] for a plain bucket: a tiny one,
+//! or a run, including one that keeps its values beside its slots (see `descriptor`). A paged
+//! bucket, and one whose values are in a value plane (a run too large for its values beside it,
+//! or one of a label with wide values; never tiny: two inline slots leave no room for them), holds
+//! `Extended`: the extent of a 32-byte header in the edge store with the full slot descriptor, the
+//! value plane's root and width, and the target index's root (or a mark that it was dropped while
+//! the node detaches). Plain buckets pay nothing; an extended one costs one more 32-byte read,
+//! which a paged bucket's scan of at least a page of slots does not notice.
 //!
 //! # Extended entry
 //!
 //! ```text
 //! ---------------------------------------- <- Offset 0
-//! Reserved space                  ↕ 8 bytes
+//! Reserved space                  ↕ 4 bytes
 //! ----------------------------------------
 //! Header extent, kind 3 in its    ↕ 5 bytes
 //!   spare bits
@@ -26,7 +27,7 @@
 //!
 //! ```text
 //! ---------------------------------------- <- Offset 0
-//! Slot descriptor                 ↕ 13 bytes
+//! Full slot descriptor            ↕ 13 bytes
 //! ---------------------------------------- <- Offset 13
 //! Value plane root                ↕ 6 bytes
 //! ---------------------------------------- <- Offset 19
@@ -40,7 +41,9 @@
 //! ----------------------------------------
 //! ```
 
-use crate::bucket::descriptor::{DESCRIPTOR_BYTES, Descriptor, KIND_HEADER, KIND_SHIFT, kind_of};
+use crate::bucket::descriptor::{
+    DESCRIPTOR_BYTES, Descriptor, KIND_HEADER, KIND_SHIFT, LISTED_BYTES, listed_kind,
+};
 use crate::bucket::target_index::Root;
 use crate::bucket::values::{Plane, ROOT_BYTES};
 use crate::bucket::{Index, LabelBucket, Values};
@@ -55,10 +58,10 @@ const HEADER_BYTES: usize = DESCRIPTOR_BYTES + ROOT_BYTES + 2 + 4 + 1;
 const NO_INDEX: u32 = u32::MAX;
 const DROPPED_INDEX: u32 = u32::MAX - 1;
 /// The class headers are allocated in.
-pub(crate) const HEADER_CLASS: ByteClass = ByteClass::SMALLEST;
+pub(crate) const HEADER_CLASS: ByteClass = ByteClass::B32;
 const _: () = assert!(HEADER_BYTES <= 32);
 
-/// A list entry's 13 bytes after its key.
+/// A list entry's 9 bytes after its key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Stored {
     Plain(Descriptor),
@@ -66,13 +69,13 @@ pub(crate) enum Stored {
 }
 
 impl Stored {
-    pub(crate) fn encode(&self) -> [u8; DESCRIPTOR_BYTES] {
+    pub(crate) fn encode(&self) -> [u8; LISTED_BYTES] {
         match self {
-            Self::Plain(d) => d.encode(),
+            Self::Plain(d) => d.encode_listed(),
             Self::Extended(header) => {
                 let [e0, e1, e2, e3, e4] = header.encode();
                 let last = e4 | (KIND_HEADER << KIND_SHIFT);
-                [0, 0, 0, 0, 0, 0, 0, 0, e0, e1, e2, e3, last]
+                [0, 0, 0, 0, e0, e1, e2, e3, last]
             }
         }
     }
@@ -86,12 +89,12 @@ impl Stored {
         }
     }
 
-    pub(crate) fn decode(bytes: [u8; DESCRIPTOR_BYTES]) -> Self {
-        if kind_of(&bytes) == KIND_HEADER {
+    pub(crate) fn decode(bytes: [u8; LISTED_BYTES]) -> Self {
+        if listed_kind(&bytes) == KIND_HEADER {
             let [.., e0, e1, e2, e3, e4] = bytes;
             Self::Extended(Extent::decode([e0, e1, e2, e3, e4]))
         } else {
-            Self::Plain(Descriptor::decode(bytes))
+            Self::Plain(Descriptor::decode_listed(bytes))
         }
     }
 }
@@ -159,7 +162,7 @@ impl LabelBucket {
     }
 }
 
-const _: () = assert!(EXTENT_BYTES < DESCRIPTOR_BYTES);
+const _: () = assert!(EXTENT_BYTES < LISTED_BYTES);
 
 #[cfg(test)]
 mod tests {
@@ -181,10 +184,12 @@ mod tests {
 mod proofs {
     use super::*;
 
-    /// Any thirteen bytes decode to a list entry that encodes back to itself.
+    /// Any nine bytes but a paged kind's decode to a list entry that encodes back to itself.
     #[kani::proof]
     fn list_entries_round_trip() {
-        let stored = Stored::decode(kani::any());
+        let bytes: [u8; LISTED_BYTES] = kani::any();
+        kani::assume(listed_kind(&bytes) != 2);
+        let stored = Stored::decode(bytes);
         assert_eq!(Stored::decode(stored.encode()), stored);
     }
 }
