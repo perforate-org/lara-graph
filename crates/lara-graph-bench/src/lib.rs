@@ -14,6 +14,7 @@ use lara_graph::{
     Position, ReadBatch, VecMemory,
 };
 
+mod all_labels;
 mod between;
 mod btree;
 mod churn;

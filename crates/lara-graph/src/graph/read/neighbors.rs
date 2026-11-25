@@ -53,6 +53,62 @@ impl<M: Memory> Graph<M> {
             }))
     }
 
+    /// Calls `f` with `(label, edge)` for each live edge of `v` on `direction`, whatever its label,
+    /// until it breaks; returns the break value. `Ascending` goes through the labels from low to
+    /// high and each bucket in position order; `Descending` reverses both. Reads `v`'s label
+    /// bucket list once, where a loop of [`Self::visit_neighbors`] over [`Self::edge_labels`]
+    /// would look each bucket up again.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`].
+    pub fn visit_all_neighbors<B>(
+        &self,
+        v: NodeId,
+        direction: Direction,
+        order: Order,
+        mut f: impl FnMut(Label, Neighbor) -> ControlFlow<B>,
+    ) -> Result<Option<B>, Error> {
+        let Some(list) = self.label_bucket_list(v)? else {
+            return Ok(None);
+        };
+        let lists = self.label_bucket_lists.pages();
+        let edges = self.edge_view().pages();
+        let mut visit = |label: Label, slots: Descriptor| {
+            slots::visit(
+                &slots,
+                &edges,
+                Span::all(&slots, order),
+                Window::Page,
+                |e| f(label, e),
+            )
+        };
+        if order == Order::Ascending {
+            return Ok(label_bucket_list::for_each(
+                &lists,
+                Some(list),
+                |key, listed| {
+                    if key.direction != direction {
+                        return ControlFlow::Continue(());
+                    }
+                    visit(key.label, listed.stored().slots(&edges))
+                        .map_or(ControlFlow::Continue(()), ControlFlow::Break)
+                },
+            ));
+        }
+        let mut buckets = Vec::new();
+        label_bucket_list::for_each(&lists, Some(list), |key, listed| {
+            if key.direction == direction {
+                buckets.push((key.label, listed.stored()));
+            }
+            ControlFlow::<()>::Continue(())
+        });
+        Ok(buckets
+            .into_iter()
+            .rev()
+            .find_map(|(label, stored)| visit(label, stored.slots(&edges))))
+    }
+
     /// Calls `f` with each live edge in `cursor`'s window of `v`'s `(label, direction)` bucket, in
     /// its order, and returns the next window, or `None` when the bucket has no positions past this
     /// one. Holes count toward the span, so each call reads at most `span` slots.

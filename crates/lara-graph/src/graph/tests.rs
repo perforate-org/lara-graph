@@ -121,6 +121,7 @@ fn out_bucket<M: Memory>(g: &Graph<M>, x: NodeId, label: Label) -> Option<Descri
     .unwrap()
 }
 
+mod all_labels;
 mod batch_reads;
 mod batch_writes;
 mod between;

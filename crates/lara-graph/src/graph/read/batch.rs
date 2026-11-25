@@ -92,6 +92,61 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         Ok(None)
     }
 
+    /// Calls `f` with `(node, label, edge)` for every live edge of each node on `direction`,
+    /// whatever its label, in `nodes` order, until `f` breaks: [`Graph::visit_all_neighbors`]
+    /// over many nodes, with the batch's record line and list page.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`] for any node at or past [`Graph::node_count`].
+    pub fn visit_all_neighbors_each<B>(
+        &mut self,
+        nodes: &[NodeId],
+        direction: Direction,
+        order: Order,
+        mut f: impl FnMut(NodeId, Label, Neighbor) -> ControlFlow<B>,
+    ) -> Result<Option<B>, Error> {
+        let graph = self.graph;
+        check_all(graph, nodes.iter().copied())?;
+        let mode = mode(nodes);
+        let view = graph.view();
+        let mut buckets: Vec<(Label, Stored)> = Vec::new();
+        for &v in nodes {
+            self.buckets_on(&view, (v, direction), mode, &mut buckets);
+            if order == Order::Descending {
+                buckets.reverse();
+            }
+            let found = buckets.iter().find_map(|&(label, stored)| {
+                view.visit(&view.slots(stored), order, |e| f(v, label, e))
+            });
+            if found.is_some() {
+                return Ok(found);
+            }
+        }
+        Ok(None)
+    }
+
+    /// Replaces `out` with `v`'s buckets on `direction`, in list order, through the batch's record
+    /// line and list page.
+    fn buckets_on(
+        &mut self,
+        view: &BatchView<'g, M>,
+        (v, direction): (NodeId, Direction),
+        mode: Mode,
+        out: &mut Vec<(Label, Stored)>,
+    ) {
+        out.clear();
+        let Some(list) = record(self.graph, &mut self.records, v, mode).list else {
+            return;
+        };
+        for_each_list(view, &mut self.list_page, list, mode, &mut |key, listed| {
+            if key.direction == direction {
+                out.push((key.label, listed.stored()));
+            }
+            ControlFlow::<()>::Continue(())
+        });
+    }
+
     /// Calls `f` with `(node, edge, value)` for every live edge of each node's bucket, in
     /// `nodes` order and `order` within each bucket, until `f` breaks.
     ///
