@@ -61,14 +61,28 @@ impl<M: Memory> EdgeStore<M> {
         (spot, batch): (Spot, Option<Batch>),
         value: Option<(Schema, &[u8])>,
     ) -> (Position, LabelBucket) {
-        let mut bucket = match (stored, value) {
+        match (stored, value) {
             // A plain bucket of a label without values takes the slot alone.
-            (Some(Stored::Plain(slots)), None) => {
-                return self.insert_plain(slots, target, (spot, batch));
-            }
-            (None, None) => return self.insert_plain(Descriptor::EMPTY, target, (spot, batch)),
-            (Some(stored), _) => LabelBucket::resolve(&self.store.pages(), stored),
-            (None, Some(_)) => LabelBucket::plain(Descriptor::EMPTY),
+            (Some(Stored::Plain(slots)), None) => self.insert_plain(slots, target, (spot, batch)),
+            (None, None) => self.insert_plain(Descriptor::EMPTY, target, (spot, batch)),
+            (stored, value) => self.insert_resolved(stored, target, (spot, batch), value),
+        }
+    }
+
+    /// [`Self::insert`] into a bucket with a header, or of a label with values. Kept out of line,
+    /// so that the plain path stays small: inlined, it cost each plain insert about 40
+    /// instructions.
+    #[inline(never)]
+    fn insert_resolved(
+        &mut self,
+        stored: Option<Stored>,
+        target: NodeId,
+        (spot, batch): (Spot, Option<Batch>),
+        value: Option<(Schema, &[u8])>,
+    ) -> (Position, LabelBucket) {
+        let mut bucket = match stored {
+            Some(stored) => LabelBucket::resolve(&self.store.pages(), stored),
+            None => LabelBucket::plain(Descriptor::EMPTY),
         };
         bucket = match value {
             // A bucket of a label with values but no value plane yet (new, or made before the

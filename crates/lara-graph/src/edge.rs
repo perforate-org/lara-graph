@@ -30,7 +30,7 @@ use crate::bucket::values::PAGES_PER_WRITE;
 use crate::id::Width;
 use crate::store::memory::Memory;
 use crate::store::memory::WriteError;
-use crate::store::page_store::{PageStore, Pages};
+use crate::store::page_store::{Extent, PageStore, Pages};
 
 /// The edge store: every bucket's slots, header, index and values in the edge pages.
 pub(crate) struct EdgeStore<M: Memory> {
@@ -114,14 +114,20 @@ impl<M: Memory> EdgeStore<M> {
         bucket
     }
 
+    /// A new header, with no migration record. Kept out of line: a bucket takes one once, and
+    /// inlined into the insert path it cost each insert about 40 instructions.
+    #[cold]
+    #[inline(never)]
+    fn new_header(&mut self) -> Extent {
+        let header = reserved(self.store.allocate(HEADER_CLASS));
+        set_migration_record(&self.store, header, None);
+        header
+    }
+
     fn settle(&mut self, bucket: LabelBucket) -> LabelBucket {
         match (bucket.extended(), bucket.header) {
             (true, None) => LabelBucket {
-                header: {
-                    let header = reserved(self.store.allocate(HEADER_CLASS));
-                    set_migration_record(&self.store, header, None);
-                    Some(header)
-                },
+                header: Some(self.new_header()),
                 ..bucket
             },
             (false, Some(header)) => {
