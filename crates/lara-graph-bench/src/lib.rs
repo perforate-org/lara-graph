@@ -26,6 +26,7 @@ mod node_labels;
 mod remove;
 mod scan;
 mod shortest;
+mod sorted;
 pub mod two_hop;
 mod values;
 

@@ -138,5 +138,6 @@ mod model;
 mod node_labels;
 mod proxies;
 mod reads;
+mod sorted;
 
 use invariants::check;
