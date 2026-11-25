@@ -36,8 +36,10 @@ impl ListPageCache {
         }
     }
 
-    /// The page slice at `extent`, loaded once a run of three lists lands in its page.
-    #[inline]
+    /// The page slice at `extent`, loaded once a run of three lists lands in its page. Always
+    /// inlined: left a call, it cost a batch of label reads 6 %.
+    #[expect(clippy::inline_always, reason = "measured: see the doc")]
+    #[inline(always)]
     fn page<'a, M: Memory>(&'a mut self, pages: &Pages<'_, M>, extent: Extent) -> Option<&'a [u8]> {
         let page = extent.page().get();
         if page == self.last_page {

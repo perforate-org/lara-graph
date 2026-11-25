@@ -102,6 +102,9 @@ pub struct Graph<M: Memory> {
     widths: Widths,
     /// Mirrors the label postings directory's root, in the node labels memory's header.
     postings: crate::values::Plane,
+    /// Nodes whose label cells the node labels memory already covers, so that adding a node
+    /// grows it only when it must.
+    label_room: u32,
 }
 
 /// An operation failed; the graph is unchanged.
@@ -308,6 +311,7 @@ impl<M: Memory> Graph<M> {
         let postings = crate::values::Plane::decode(
             Region::new(&node_labels).read_array(ByteOffset::new(AT_POSTINGS)),
         );
+        let label_room = label_room(&node_labels);
         Self {
             nodes,
             node_labels,
@@ -316,6 +320,7 @@ impl<M: Memory> Graph<M> {
             count,
             widths,
             postings,
+            label_room,
         }
     }
 
@@ -340,7 +345,7 @@ impl<M: Memory> Graph<M> {
         // Checked first, so that the id needs no check of its own.
         let id = NodeId::new(count);
         // Labels first: a new node's cell is zeros (no labels), so growing the memory makes it.
-        Region::new(&self.node_labels).reserve(label_cell_end(next))?;
+        self.reserve_label_cells(next)?;
         self.region().write(record_at(id), &Record::NEW.encode())?;
         self.region()
             .overwrite(ByteOffset::new(AT_COUNT), &next.to_le_bytes());
@@ -363,7 +368,7 @@ impl<M: Memory> Graph<M> {
             .ok_or(Error::AddressSpaceExhausted)?;
         let id = NodeId::new(first);
         let end = record_at_index(next);
-        Region::new(&self.node_labels).reserve(label_cell_end(next))?;
+        self.reserve_label_cells(next)?;
         self.region().reserve(end)?;
         // A line of new records at a time: one write per eight nodes.
         let line: [u8; RECORD_LINE_BYTES] = core::array::from_fn(|i| {
@@ -570,6 +575,24 @@ fn record_at_index(index: u32) -> ByteOffset {
     ByteOffset::new(RECORDS_START + u64::from(index) * u64::try_from(RECORD_BYTES).unwrap_or(8))
 }
 
+impl<M: Memory> Graph<M> {
+    /// Grows the node labels memory to cover the cells of `nodes` nodes, when it does not yet.
+    fn reserve_label_cells(&mut self, nodes: u32) -> Result<(), Error> {
+        if nodes > self.label_room {
+            Region::new(&self.node_labels).reserve(label_cell_end(nodes))?;
+            self.label_room = label_room(&self.node_labels);
+        }
+        Ok(())
+    }
+}
+
+/// How many nodes' label cells `node_labels` covers as it stands.
+fn label_room<M: Memory>(node_labels: &M) -> u32 {
+    let bytes = node_labels.size().saturating_mul(crate::memory::PAGE_SIZE);
+    let cell = u64::try_from(crate::node_labels::CELL_BYTES).unwrap_or(5);
+    u32::try_from(bytes.saturating_sub(LABEL_CELLS_START) / cell).unwrap_or(u32::MAX)
+}
+
 /// Where `v`'s label cell is in the node labels memory.
 fn label_cell_at(v: NodeId) -> ByteOffset {
     label_cell_end(v.index())
@@ -601,8 +624,10 @@ impl Default for RecordLines {
 }
 
 impl RecordLines {
-    /// `v`'s record, reading one 48-byte line per eight dense ids.
-    #[inline]
+    /// `v`'s record, reading one 48-byte line per eight dense ids. Always inlined: a batch's
+    /// per-node loop is little more than this, and left a call it cost those loops 8-13 %.
+    #[expect(clippy::inline_always, reason = "measured: see the doc")]
+    #[inline(always)]
     pub(super) fn record<M: Memory>(&mut self, graph: &Graph<M>, v: NodeId) -> Record {
         let base = v.index() / RECORDS_PER_LINE * RECORDS_PER_LINE;
         // The last partial line still takes the single-record path: a 64-byte read would run

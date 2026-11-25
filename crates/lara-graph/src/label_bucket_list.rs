@@ -327,6 +327,7 @@ impl Listed {
 }
 
 /// Every entry of a list, in order, until `f` breaks.
+#[inline]
 pub(crate) fn for_each<M: Memory, B>(
     pages: &Pages<'_, M>,
     list: Option<LabelBucketList>,

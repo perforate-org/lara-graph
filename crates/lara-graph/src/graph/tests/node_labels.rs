@@ -193,3 +193,32 @@ fn nodes_with_a_label_come_back_in_id_order() {
     assert_eq!(g.node_label_count(l(1)), 0);
     assert_eq!(nodes_with(&g, 2, None), want2);
 }
+
+/// A label set whose postings run out of memory part way changes nothing: the postings added
+/// before the failure are taken back, and the node keeps its old set.
+#[test]
+fn node_labels_that_run_out_of_memory_change_nothing() {
+    let backing = Backing::default();
+    let mut g = backing.create(4);
+    g.set_node_labels(v(0), &set(&[1, 2, 3])).unwrap();
+    g.set_node_labels(v(1), &set(&[2])).unwrap();
+    let memory =
+        &backing.memories[usize::from(crate::memories::MemoryRole::LabelBucketListPages.index())];
+    memory.cap(memory.size());
+    let capacity = u32::try_from(memory.size() * (PAGE_SIZE / 4096)).unwrap();
+    // Leave room for the new set and the first few postings only.
+    let mut held = Vec::new();
+    while capacity - g.label_bucket_lists.minted() > 26 {
+        held.push(g.label_bucket_lists.allocate(ByteClass::PAGE).unwrap());
+    }
+    let many: Vec<Label> = (0..6000).map(l).collect();
+    let error = g.set_node_labels(v(0), &many);
+    assert!(matches!(error, Err(Error::OutOfMemory(_))), "{error:?}");
+    assert_eq!(labels_of(&g, v(0)), [1, 2, 3]);
+    assert_eq!(g.node_label_count(l(2)), 2);
+    assert_eq!(g.node_label_count(l(0)), 0);
+    for extent in held {
+        g.label_bucket_lists.release(extent);
+    }
+    check(&g);
+}

@@ -13,7 +13,8 @@ keeps two promises, in this order:
 Edges are directed or undirected, carry a `u16` label and, if the label declares a width, a
 fixed-width value. Positions are stable: removing an edge leaves a hole that a later insert may
 fill, and only an explicit `compact` moves edges. Large nodes keep a target index, so pairing
-an edge's two halves and refilling holes never scan them. The crate is `no_std` + `alloc`.
+an edge's two halves and refilling holes never scan them. Nodes carry any set of `u16` labels,
+and each label lists its nodes. The crate is `no_std` + `alloc`.
 
 ## Use in a canister
 
@@ -61,6 +62,21 @@ GRAPH.with(|graph| {
 `try_load` and `try_init` return an `InitError` instead of panicking. Off the IC, `VecMemory`
 keeps a graph on the heap.
 
+## Node labels
+
+A node's labels are a set of `Label`s, kept apart from its edges' labels. `set_node_labels`
+replaces the set and is the one writer of both directions; `node_labels` lists it and
+`has_node_label` checks one label, with one 5-byte read for a node with at most two labels, so
+filtering neighbours by a label during a traversal stays cheap. `visit_nodes_with_label` gives
+a label's nodes in ascending id order, resuming after any node and stopping when the callback
+breaks, and `node_label_count` their number. A deleted node loses its labels.
+
+| Operation | Instructions in stable memory (canbench) |
+| --- | --- |
+| `has_node_label`, a node with one label | about 270 |
+| `visit_nodes_with_label`, 16 of 10,000 nodes | about 2.1 K in all |
+| `set_node_labels`, one label on a new node | about 3.8 K |
+
 ## Batch operations
 
 Single operations return `Result<_, Error>` and are all-or-none. Batch operations take a slice
@@ -105,9 +121,10 @@ Each memory starts, as ic-stable-structures' do, with a 3-byte magic and a versi
 
 | Role | Holds |
 | --- | --- |
-| `Nodes` | one 8-byte record per node |
+| `Nodes` | one 6-byte record per node |
 | `EdgePages`, `EdgeDirectory` | label buckets: edges, their values and target indexes |
-| `LabelBucketListPages`, `LabelBucketListDirectory` | each node's label bucket list, and the width table |
+| `LabelBucketListPages`, `LabelBucketListDirectory` | each node's label bucket list, the width table, larger node label sets and each label's nodes |
+| `NodeLabels` | one 5-byte label cell per node, and the root of the label postings |
 
 The byte layouts are drawn in the modules' documentation. The design and its measurements are in
 [`crates/lara-graph/DESIGN.md`](crates/lara-graph/DESIGN.md).
