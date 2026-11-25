@@ -1,6 +1,6 @@
 # lara-graph
 
-LARA (Localized Adjacency Relocation Array) is a labeled multigraph store on paged memory. It runs
+LARA (Labeled Adjacency Rooted Array) is a labeled multigraph store on paged memory. It runs
 on any memory that reads, writes and grows by 64 KiB pages; its first target is Internet Computer
 stable memory, beside [ic-stable-structures](https://crates.io/crates/ic-stable-structures). It
 keeps two promises, in this order:

@@ -1,4 +1,4 @@
-//! LARA (Localized Adjacency Relocation Array): a labeled multigraph store on paged memory.
+//! LARA (Labeled Adjacency Rooted Array): a labeled multigraph store on paged memory.
 //!
 //! # What LARA guarantees, in priority order
 //!
