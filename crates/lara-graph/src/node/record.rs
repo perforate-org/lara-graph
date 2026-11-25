@@ -58,19 +58,23 @@ impl Record {
     }
 
     pub(crate) fn decode(mut bytes: [u8; RECORD_BYTES]) -> Self {
-        let mut state = NodeState::Live;
+        let state = Self::state_of(bytes);
         if let Some(flags) = bytes.get_mut(FLAG_AT) {
-            state = match *flags & STATE_BITS {
-                0 => NodeState::Live,
-                DETACHING => NodeState::Detaching,
-                DELETED => NodeState::Deleted,
-                _ => corrupt("node state"),
-            };
             *flags &= !STATE_BITS;
         }
         Self {
             list: label_bucket_list::decode_ref(bytes),
             state,
+        }
+    }
+
+    /// The state alone, from the state bits: a read of a node's state decodes no extent.
+    pub(crate) fn state_of(bytes: [u8; RECORD_BYTES]) -> NodeState {
+        match bytes.get(FLAG_AT).map_or(0, |flags| flags & STATE_BITS) {
+            0 => NodeState::Live,
+            DETACHING => NodeState::Detaching,
+            DELETED => NodeState::Deleted,
+            _ => corrupt("node state"),
         }
     }
 }

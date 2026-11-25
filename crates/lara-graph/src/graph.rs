@@ -3,10 +3,10 @@
 //! The nodes memory is laid out in `node::store`, the node labels memory in `node::labels`.
 
 use crate::error::Error;
-use crate::id::NodeId;
+use crate::id::{NodeId, NodeState};
 use crate::node::label_bucket_list::LabelBucketList;
 use crate::node::labels::LabelStore;
-use crate::node::record::Record;
+use crate::node::record::{RECORD_BYTES, Record};
 use crate::node::store::{NodeStore, RecordLines};
 use crate::store::corrupt::corrupt;
 use crate::store::memory::Memory;
@@ -74,11 +74,22 @@ impl<M: Memory> Graph<M> {
         Ok(self.nodes.record(v))
     }
 
-    /// `v`'s record through a batch's line of records. `v` is known.
-    #[expect(clippy::inline_always, reason = "see RecordLines::record")]
+    /// `v`'s state alone, without decoding its record's list.
+    fn state(&self, v: NodeId) -> Result<NodeState, Error> {
+        self.check(v)?;
+        Ok(self.nodes.state(v))
+    }
+
+    /// A known node's record, undecoded: a whole record or the state alone decodes from it.
+    fn record_bytes(&self, v: NodeId) -> [u8; RECORD_BYTES] {
+        self.nodes.record_bytes(v)
+    }
+
+    /// [`Self::record_bytes`] through a batch's line of records.
+    #[expect(clippy::inline_always, reason = "see RecordLines::bytes_of")]
     #[inline(always)]
-    fn record_in(&self, lines: &mut RecordLines, v: NodeId) -> Record {
-        lines.record(&self.nodes, v)
+    fn line_record_bytes(&self, lines: &mut RecordLines, v: NodeId) -> [u8; RECORD_BYTES] {
+        lines.bytes_of(&self.nodes, v)
     }
 
     fn label_bucket_list(&self, v: NodeId) -> Result<Option<LabelBucketList>, Error> {

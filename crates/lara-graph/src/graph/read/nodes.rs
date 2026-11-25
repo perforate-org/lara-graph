@@ -23,7 +23,7 @@ impl<M: Memory> Graph<M> {
     ///
     /// [`Error::UnknownNode`].
     pub fn node_state(&self, v: NodeId) -> Result<NodeState, Error> {
-        Ok(self.record(v)?.state)
+        self.state(v)
     }
 
     /// The labels of `v`'s edges on `direction`: those it has buckets under, in order. A node's own

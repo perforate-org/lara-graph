@@ -23,7 +23,7 @@
 //! ```
 
 use crate::bucket::values::Plane;
-use crate::id::NodeId;
+use crate::id::{NodeId, NodeState};
 use crate::node::record::{RECORD_BYTES, Record};
 use crate::store::corrupt::corrupt;
 use crate::store::memory::{Memory, Region, WriteError};
@@ -74,7 +74,17 @@ impl<M: Memory> NodeStore<M> {
     /// `v`'s record. `v` is known.
     #[inline]
     pub(crate) fn record(&self, v: NodeId) -> Record {
-        Record::decode(Region::new(&self.memory).read_array(record_at(v.index())))
+        Record::decode(self.record_bytes(v))
+    }
+
+    /// A known node's state alone, without decoding its list's extent.
+    pub(crate) fn state(&self, v: NodeId) -> NodeState {
+        Record::state_of(self.record_bytes(v))
+    }
+
+    /// A known node's record, undecoded.
+    pub(crate) fn record_bytes(&self, v: NodeId) -> [u8; RECORD_BYTES] {
+        Region::new(&self.memory).read_array(record_at(v.index()))
     }
 
     /// Rewrites an existing node's record. Cannot fail.
@@ -164,17 +174,21 @@ impl Default for RecordLines {
 }
 
 impl RecordLines {
-    /// `v`'s record, reading one 48-byte line per eight dense ids. `v` is known. Always inlined:
-    /// a batch's per-node loop is little more than this, and left a call it cost those loops
-    /// 8-13 %.
+    /// `v`'s record's bytes, reading one 48-byte line per eight dense ids: a whole record or the
+    /// state alone decodes from them. `v` is known. Always inlined: a batch's per-node loop is
+    /// little more than this, and left a call it cost those loops 8-13 %.
     #[expect(clippy::inline_always, reason = "measured: see the doc")]
     #[inline(always)]
-    pub(crate) fn record<M: Memory>(&mut self, nodes: &NodeStore<M>, v: NodeId) -> Record {
+    pub(crate) fn bytes_of<M: Memory>(
+        &mut self,
+        nodes: &NodeStore<M>,
+        v: NodeId,
+    ) -> [u8; RECORD_BYTES] {
         let base = v.index() / RECORDS_PER_LINE * RECORDS_PER_LINE;
         // The last partial line still takes the single-record path: a 48-byte read would run
         // past the records the memory holds.
         if nodes.count.saturating_sub(base) < RECORDS_PER_LINE {
-            return nodes.record(v);
+            return nodes.record_bytes(v);
         }
         if base != self.base {
             self.bytes = Region::new(&nodes.memory).read_array(record_at(base));
@@ -182,7 +196,7 @@ impl RecordLines {
         }
         let offset = usize::try_from(v.index() - base).unwrap_or_else(|_| corrupt("record offset"))
             * RECORD_BYTES;
-        Record::decode(line_record(&self.bytes, offset))
+        line_record(&self.bytes, offset)
     }
 }
 

@@ -5,11 +5,11 @@ use super::view::BatchView;
 use crate::bucket::LabelBucketKey;
 use crate::bucket::stored::Stored;
 use crate::graph::Graph;
-use crate::id::NodeId;
+use crate::id::{NodeId, NodeState};
 use crate::node::label_bucket_list::{self, LabelBucketList, Listed};
 use crate::node::labels::CellLines;
 use crate::node::labels::set::LabelSet;
-use crate::node::record::Record;
+use crate::node::record::{RECORD_BYTES, Record};
 use crate::node::store::RecordLines;
 use crate::store::corrupt::corrupt;
 use crate::store::memory::Memory;
@@ -149,9 +149,32 @@ pub(super) fn record<M: Memory>(
     v: NodeId,
     mode: Mode,
 ) -> Record {
+    Record::decode(record_bytes(graph, records, v, mode))
+}
+
+/// `v`'s state alone, as [`record`] reads the record: no extent decoded.
+#[expect(clippy::inline_always, reason = "as record")]
+#[inline(always)]
+pub(super) fn state<M: Memory>(
+    graph: &Graph<M>,
+    records: &mut RecordLines,
+    v: NodeId,
+    mode: Mode,
+) -> NodeState {
+    Record::state_of(record_bytes(graph, records, v, mode))
+}
+
+#[expect(clippy::inline_always, reason = "as record")]
+#[inline(always)]
+fn record_bytes<M: Memory>(
+    graph: &Graph<M>,
+    records: &mut RecordLines,
+    v: NodeId,
+    mode: Mode,
+) -> [u8; RECORD_BYTES] {
     match mode {
-        Mode::Dense => graph.record_in(records, v),
-        Mode::Sparse => graph.record(v).unwrap_or_else(|_| corrupt("a known node")),
+        Mode::Dense => graph.line_record_bytes(records, v),
+        Mode::Sparse => graph.record_bytes(v),
     }
 }
 

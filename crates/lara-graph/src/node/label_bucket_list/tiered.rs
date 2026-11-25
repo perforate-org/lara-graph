@@ -341,7 +341,8 @@ mod proofs {
     #[kani::proof]
     fn top_entries_round_trip() {
         let bytes: [u8; TOP_ENTRY_BYTES] = kani::any();
-        kani::assume((bytes[5] >> 4) & 0b11 <= 2);
+        let [_, _, w0, w1, w2, w3, _] = bytes;
+        kani::assume((u32::from_le_bytes([w0, w1, w2, w3]) >> PAGE_BITS) & 0b11 <= 2);
         let leaf = Leaf::decode(bytes);
         let back = Leaf::decode(leaf.encode());
         assert_eq!(

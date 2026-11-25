@@ -19,7 +19,7 @@ use crate::node::labels::CellLines;
 use crate::node::store::RecordLines;
 use crate::store::memory::Memory;
 use alloc::vec::Vec;
-use buffers::{ListPageCache, Mode, for_each_list, mode, record, stored};
+use buffers::{ListPageCache, Mode, for_each_list, mode, record, state, stored};
 use core::ops::ControlFlow;
 use view::BatchView;
 
@@ -278,7 +278,7 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         let mode = mode(nodes);
         let records = &mut self.records;
         for &v in nodes {
-            out.push(record(graph, records, v, mode).state);
+            out.push(state(graph, records, v, mode));
         }
         Ok(())
     }
