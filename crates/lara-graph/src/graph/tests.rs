@@ -12,7 +12,7 @@ use crate::id::{Direction, EdgeRef, Halves, Label, NodeId, NodeState, Position, 
 use crate::input::{Cursor, Order, Placement};
 use crate::input::{EdgeValue, NewEdge};
 use crate::node::label_bucket_list;
-use crate::outcome::{Progress, Removal, RemovedEdge};
+use crate::outcome::{BucketFill, Progress, Removal, RemovedEdge};
 use crate::store::memory::{PAGE_SIZE, VecMemory};
 use crate::store::page_store::{ByteClass, Extent, Pages};
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -94,9 +94,12 @@ fn insert<M: Memory>(g: &mut Graph<M>, from: NodeId, label: Label, to: NodeId) -
     .position()
 }
 
-/// The report of removing the edge with `halves` and no value.
-fn removed(halves: Halves) -> Removal {
-    Removal::Removed(RemovedEdge::new(halves, Vec::new()))
+/// The halves a removal reports, if it removed an edge.
+fn removed(removal: Result<Removal, Error>) -> Option<Halves> {
+    match removal {
+        Ok(Removal::Removed(edge)) => Some(edge.halves()),
+        Ok(Removal::Absent) | Err(_) => None,
+    }
 }
 
 /// Removes the directed edge whose out half is at `at`; returns its target if it was live.

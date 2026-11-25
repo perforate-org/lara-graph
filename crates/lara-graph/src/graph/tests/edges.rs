@@ -70,7 +70,7 @@ fn a_directed_edge_is_stored_at_both_ends() {
         .unwrap();
     assert_eq!(labels, Vec::<Label>::new());
     check(&g);
-    assert_eq!(g.remove_edge(e.other()), Ok(removed(e)));
+    assert_eq!(removed(g.remove_edge(e.other())), Some(e));
     assert_eq!(g.degree(v(0), (l(4), Direction::Outgoing)), Ok(0));
     assert_eq!(g.degree(v(2), (l(4), Direction::Incoming)), Ok(0));
     check(&g);
@@ -168,8 +168,8 @@ fn an_undirected_edges_canonical_half_is_at_the_larger_node_and_a_self_loop_has_
         [(0, 2), (1, 1)]
     );
     check(&g);
-    assert_eq!(g.remove_edge(s.other()), Ok(removed(s)));
-    assert_eq!(g.remove_edge(e.other()), Ok(removed(e)));
+    assert_eq!(removed(g.remove_edge(s.other())), Some(s));
+    assert_eq!(removed(g.remove_edge(e.other())), Some(e));
     assert_eq!(g.degree(v(1), (l(0), Direction::Undirected)), Ok(0));
     check(&g);
 }
@@ -204,7 +204,7 @@ fn a_directed_self_loop_has_an_out_and_an_in_half() {
         second.other(),
         EdgeRef::new(v(0), l(0), Direction::Incoming, p(1))
     );
-    assert_eq!(g.remove_edge(first.other()), Ok(removed(first)));
+    assert_eq!(removed(g.remove_edge(first.other())), Some(first));
     assert_eq!(g.counterpart(second.other()), Ok(Some(second.canonical())));
     check(&g);
 }

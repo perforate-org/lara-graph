@@ -166,10 +166,10 @@ fn values_have_the_labels_width_and_edges_before_it_read_as_zeros() {
             &[9, 9],
         ))
         .unwrap();
-    assert_eq!(
-        g.remove_edge(late.other()),
-        Ok(Removal::Removed(RemovedEdge::new(late, vec![9, 9])))
-    );
+    let Ok(Removal::Removed(edge)) = g.remove_edge(late.other()) else {
+        panic!("the edge is removed")
+    };
+    assert_eq!((edge.halves(), edge.value()), (late, &[9, 9][..]));
     assert_eq!(g.edge_value(late.canonical()), Ok(None));
     check(&g);
     check(&backing.open());

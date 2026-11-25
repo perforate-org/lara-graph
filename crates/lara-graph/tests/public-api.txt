@@ -80,6 +80,10 @@ pub lara_graph::Progress::Remaining
 pub enum lara_graph::Removal
 pub lara_graph::Removal::Absent
 pub lara_graph::Removal::Removed(lara_graph::RemovedEdge)
+pub struct lara_graph::BucketFill
+impl lara_graph::BucketFill
+pub const fn lara_graph::BucketFill::holes(self) -> u32
+pub const fn lara_graph::BucketFill::live(self) -> u32
 pub struct lara_graph::Cursor
 impl lara_graph::Cursor
 pub const fn lara_graph::Cursor::at(lara_graph::Order, lara_graph::Position, core::num::nonzero::NonZeroU32) -> Self
@@ -234,7 +238,9 @@ pub fn lara_graph::ReadBatch<'_, M>::has_node_label_each(&mut self, &[lara_graph
 pub fn lara_graph::ReadBatch<'_, M>::node_labels_each<B>(&mut self, &[lara_graph::NodeId], impl core::ops::function::FnMut(lara_graph::NodeId, lara_graph::Label) -> core::ops::control_flow::ControlFlow<B>) -> core::result::Result<core::option::Option<B>, lara_graph::Error>
 pub struct lara_graph::RemovedEdge
 impl lara_graph::RemovedEdge
+pub const fn lara_graph::RemovedEdge::canonical_fill(&self) -> lara_graph::BucketFill
 pub const fn lara_graph::RemovedEdge::halves(&self) -> lara_graph::Halves
+pub const fn lara_graph::RemovedEdge::other_fill(&self) -> lara_graph::BucketFill
 pub fn lara_graph::RemovedEdge::value(&self) -> &[u8]
 pub struct lara_graph::StableGraph<M: lara_graph::Memory>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>

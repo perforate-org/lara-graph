@@ -169,6 +169,15 @@ impl Model {
         self.buckets.get(&key)?.get(at).copied().flatten()
     }
 
+    /// How full `half`'s bucket is.
+    fn fill(&self, half: EdgeRef) -> BucketFill {
+        let key = (half.node().index(), half.label(), half.direction());
+        let slots = self.buckets.get(&key).map_or(&[][..], Vec::as_slice);
+        let live = slots.iter().filter(|s| s.is_some()).count();
+        let live = u32::try_from(live).unwrap();
+        BucketFill::new(live, u32::try_from(slots.len()).unwrap() - live)
+    }
+
     fn clear(&mut self, half: EdgeRef) {
         let key = (half.node().index(), half.label(), half.direction());
         let at = usize::try_from(half.position().index()).unwrap();
@@ -414,12 +423,17 @@ fn model_remove<M: Memory>(g: &mut Graph<M>, model: &mut Model, half: EdgeRef) {
     let expected = Halves::of(half, other);
     let id = model.slot(half).unwrap().id;
     let value = model.expected(id, half.label());
-    assert_eq!(
-        g.remove_edge(half),
-        Ok(Removal::Removed(RemovedEdge::new(expected, value)))
-    );
+    let removal = g.remove_edge(half);
     model.clear(half);
     model.clear(other);
+    let fills = [
+        model.fill(expected.canonical()),
+        model.fill(expected.other()),
+    ];
+    assert_eq!(
+        removal,
+        Ok(Removal::Removed(RemovedEdge::new(expected, value, fills)))
+    );
     assert_eq!(g.edge_target(half), Ok(None));
     assert_eq!(g.remove_edge(other), Ok(Removal::Absent));
 }

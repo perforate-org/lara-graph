@@ -8,7 +8,7 @@ use crate::bucket::descriptor::Descriptor;
 use crate::bucket::slots;
 use crate::edge::{EdgeStore, EdgeView};
 use crate::id::{EdgeRef, Halves, NodeId, Position, Width};
-use crate::outcome::RemovedEdge;
+use crate::outcome::{BucketFill, RemovedEdge};
 use crate::store::corrupt::corrupt;
 use crate::store::memory::Memory;
 use crate::store::page_store::Pages;
@@ -40,7 +40,20 @@ impl<M: Memory> EdgeStore<M> {
         if other != half {
             self.remove_half(theirs, other.position());
         }
-        RemovedEdge::new(halves, value)
+        let (own, theirs) = (
+            fill(own),
+            if other == half {
+                fill(own)
+            } else {
+                fill(theirs)
+            },
+        );
+        let fills = if halves.canonical() == half {
+            [own, theirs]
+        } else {
+            [theirs, own]
+        };
+        RemovedEdge::new(halves, value, fills)
     }
 
     /// Applies one tombstone to a bucket without publishing it yet.
@@ -50,6 +63,12 @@ impl<M: Memory> EdgeStore<M> {
         bucket.slots = next;
         self.index_removed(bucket, target, at);
     }
+}
+
+/// How full `bucket` is.
+fn fill(bucket: &LabelBucket) -> BucketFill {
+    let live = bucket.slots.live();
+    BucketFill::new(live, bucket.slots.stored() - live)
 }
 
 impl<M: Memory> EdgeView<'_, M> {

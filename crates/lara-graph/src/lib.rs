@@ -46,5 +46,7 @@ pub use graph::{DetachingSet, Graph, Graph as StableGraph, Memories, MemoryRole,
 pub use id::{Direction, EdgeRef, Halves, Label, Neighbor, NodeId, NodeState, Position, Width};
 pub use input::{Cursor, EdgeKind, EdgeValue, NewEdge, Order, Placement};
 
-pub use outcome::{Compaction, Detachment, Move, Progress, Removal, RemovedEdge, Step, Sweep};
+pub use outcome::{
+    BucketFill, Compaction, Detachment, Move, Progress, Removal, RemovedEdge, Step, Sweep,
+};
 pub use store::memory::{GrowFailed, Memory, PAGE_SIZE, VecMemory};

@@ -16,6 +16,7 @@ use lara_graph::{
 
 mod between;
 mod btree;
+mod churn;
 mod detach;
 mod insert;
 mod locality;

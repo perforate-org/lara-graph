@@ -53,17 +53,36 @@ impl Move {
     }
 }
 
-/// An edge that was removed: its halves, and its value as the canonical half held it (empty for
-/// a label without a width).
+/// An edge that was removed: its halves, its value as the canonical half held it (empty for a
+/// label without a width), and how full each half left its bucket.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RemovedEdge {
     halves: Halves,
     value: Vec<u8>,
+    /// The canonical half's bucket's, then the other's (the same for an undirected self-loop).
+    fills: [BucketFill; 2],
 }
 
 impl RemovedEdge {
-    pub(crate) const fn new(halves: Halves, value: Vec<u8>) -> Self {
-        Self { halves, value }
+    pub(crate) const fn new(halves: Halves, value: Vec<u8>, fills: [BucketFill; 2]) -> Self {
+        Self {
+            halves,
+            value,
+            fills,
+        }
+    }
+
+    /// How full the canonical half's bucket is after the removal.
+    #[must_use]
+    pub const fn canonical_fill(&self) -> BucketFill {
+        self.fills[0]
+    }
+
+    /// How full the other half's bucket is after the removal (the canonical one's again for an
+    /// undirected self-loop).
+    #[must_use]
+    pub const fn other_fill(&self) -> BucketFill {
+        self.fills[1]
     }
 
     /// The removed halves.
@@ -76,6 +95,34 @@ impl RemovedEdge {
     #[must_use]
     pub fn value(&self) -> &[u8] {
         &self.value
+    }
+}
+
+/// How full a bucket is: its live edges, and the holes among its positions that compaction can
+/// reclaim. A removal reports it for both buckets it changed, so a caller deciding when to
+/// compact needs no further read: compacting once the holes reach the live edges keeps a graph
+/// under steady updates within about 1.1 to 1.3 times its size built fresh (`examples/churn.rs`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct BucketFill {
+    live: u32,
+    holes: u32,
+}
+
+impl BucketFill {
+    pub(crate) const fn new(live: u32, holes: u32) -> Self {
+        Self { live, holes }
+    }
+
+    /// Live edges.
+    #[must_use]
+    pub const fn live(self) -> u32 {
+        self.live
+    }
+
+    /// Removed edges whose positions the bucket still holds.
+    #[must_use]
+    pub const fn holes(self) -> u32 {
+        self.holes
     }
 }
 
