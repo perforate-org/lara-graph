@@ -37,7 +37,7 @@ pub fn heap_graph() -> Graph<VecMemory> {
     Graph::new(Memories::from_fn(|_| VecMemory::new()))
 }
 
-/// A graph in six virtual stable memories (ids 0..6), as a canister wires it.
+/// A graph in seven virtual stable memories (ids 0..7), as a canister wires it.
 fn stable_graph() -> Graph<VirtualMemory<DefaultMemoryImpl>> {
     let manager = MemoryManager::init(DefaultMemoryImpl::default());
     Graph::init(Memories::from_fn(|role| {

@@ -15,11 +15,14 @@ impl<M: Memory> Graph<M> {
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownNode`], [`Error::Deleted`], or [`Error::OutOfMemory`]. On error the
-    /// labels and postings are unchanged.
+    /// [`Error::UnknownNode`], [`Error::Proxy`], [`Error::Deleted`], or [`Error::OutOfMemory`].
+    /// On error the labels and postings are unchanged.
     pub fn set_node_labels(&mut self, v: NodeId, labels: &[Label]) -> Result<(), Error> {
         if self.record(v)?.state == NodeState::Deleted {
             return Err(Error::Deleted(v));
+        }
+        if v.is_proxy() {
+            return Err(Error::Proxy(v));
         }
         let mut set: Vec<Label> = labels.to_vec();
         set.sort_unstable();
@@ -27,7 +30,7 @@ impl<M: Memory> Graph<M> {
         Ok(self.labels.set(&mut self.label_bucket_lists, v, &set)?)
     }
 
-    /// Appends `v`'s labels, ascending, to `out` after clearing it.
+    /// Appends `v`'s labels, ascending, to `out` after clearing it; a proxy has none.
     ///
     /// # Errors
     ///
@@ -39,7 +42,8 @@ impl<M: Memory> Graph<M> {
         Ok(())
     }
 
-    /// Whether `v` has `label`: one 5-byte read for a node with at most two labels.
+    /// Whether `v` has `label`: one 5-byte read for a node with at most two labels; false for a
+    /// proxy.
     ///
     /// # Errors
     ///
@@ -74,6 +78,9 @@ impl<M: Memory> Graph<M> {
 
     /// Drops `v`'s labels and postings as it is deleted. Cannot fail: removals never allocate.
     pub(super) fn clear_node_labels(&mut self, v: NodeId) {
+        if v.is_proxy() {
+            return;
+        }
         self.labels.clear(&mut self.label_bucket_lists, v);
     }
 

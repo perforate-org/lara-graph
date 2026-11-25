@@ -7,7 +7,7 @@ use super::{Graph, VERSION};
 use crate::error::InitError;
 use crate::graph::memories::Memories;
 use crate::node::labels::{LabelStore, MAGIC as LABELS_MAGIC};
-use crate::node::store::{MAGIC as NODES_MAGIC, NodeStore};
+use crate::node::store::{MAGIC as NODES_MAGIC, NodeStore, PROXIES_MAGIC};
 use crate::store::memory::{Memory, WriteError};
 use crate::store::page_store::{self, PageStore, header};
 use crate::store::units::Overflow;
@@ -54,7 +54,7 @@ impl<M: Memory> Graph<M> {
     /// [`InitError::OutOfMemory`].
     pub fn try_new(memories: Memories<M>) -> Result<Self, InitError> {
         let (
-            (nodes, node_labels),
+            (nodes, proxies, node_labels),
             [edge_pages, edge_directory],
             [label_bucket_list_pages, label_bucket_list_directory],
         ) = memories.into_parts();
@@ -62,7 +62,7 @@ impl<M: Memory> Graph<M> {
         let label_bucket_lists =
             PageStore::format(label_bucket_list_pages, label_bucket_list_directory)
                 .map_err(init_error)?;
-        let nodes = NodeStore::format(nodes, VERSION).map_err(init_error)?;
+        let nodes = NodeStore::format(nodes, proxies, VERSION).map_err(init_error)?;
         let labels = LabelStore::format(node_labels, VERSION).map_err(init_error)?;
         Ok(Self::assemble((nodes, labels), edges, label_bucket_lists))
     }
@@ -74,26 +74,25 @@ impl<M: Memory> Graph<M> {
     /// [`InitError::NotAGraph`] or [`InitError::UnsupportedVersion`].
     pub fn try_load(memories: Memories<M>) -> Result<Self, InitError> {
         let (
-            (nodes, node_labels),
+            (nodes, proxies, node_labels),
             [edge_pages, edge_directory],
             [label_bucket_list_pages, label_bucket_list_directory],
         ) = memories.into_parts();
-        match header(&nodes, NODES_MAGIC) {
-            None => return Err(InitError::NotAGraph),
-            Some(VERSION) => {}
-            Some(version) => return Err(InitError::UnsupportedVersion(version)),
+        // An empty proxies memory is a graph that never had a proxy.
+        if proxies.size() > 0 {
+            expect_header(&proxies, PROXIES_MAGIC)?;
         }
-        match header(&node_labels, LABELS_MAGIC) {
-            None => return Err(InitError::NotAGraph),
-            Some(VERSION) => {}
-            Some(version) => return Err(InitError::UnsupportedVersion(version)),
-        }
+        expect_header(&nodes, NODES_MAGIC)?;
+        expect_header(&node_labels, LABELS_MAGIC)?;
         let edges = PageStore::open(edge_pages, edge_directory).map_err(open_error)?;
         let label_bucket_lists =
             PageStore::open(label_bucket_list_pages, label_bucket_list_directory)
                 .map_err(open_error)?;
         Ok(Self::assemble(
-            (NodeStore::open(nodes), LabelStore::open(node_labels)),
+            (
+                NodeStore::open(nodes, proxies, VERSION),
+                LabelStore::open(node_labels),
+            ),
             edges,
             label_bucket_lists,
         ))
@@ -119,11 +118,21 @@ impl<M: Memory> Graph<M> {
         let (edge_pages, edge_directory) = self.edges.into_memories();
         let (label_bucket_list_pages, label_bucket_list_directory) =
             self.label_bucket_lists.into_memories();
+        let (nodes, proxies) = self.nodes.into_memories();
         Memories::from_parts(
-            (self.nodes.into_memory(), self.labels.into_memory()),
+            (nodes, proxies, self.labels.into_memory()),
             [edge_pages, edge_directory],
             [label_bucket_list_pages, label_bucket_list_directory],
         )
+    }
+}
+
+/// Fails unless `memory` starts with `magic` and this layout version.
+fn expect_header<M: Memory>(memory: &M, magic: [u8; 3]) -> Result<(), InitError> {
+    match header(memory, magic) {
+        None => Err(InitError::NotAGraph),
+        Some(VERSION) => Ok(()),
+        Some(version) => Err(InitError::UnsupportedVersion(version)),
     }
 }
 

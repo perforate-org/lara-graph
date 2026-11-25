@@ -48,10 +48,12 @@ impl<M: Memory> Graph<M> {
         Ok(halves::edge_halves(edges, &positions))
     }
 
-    /// Fails with [`Error::NotEmpty`] when any node has edges.
+    /// Fails with [`Error::NotEmpty`] when any node or proxy has edges.
     fn check_bulk_empty(&self) -> Result<(), Error> {
-        for v in 0..self.node_count() {
-            if self.label_bucket_list(NodeId::new(v))?.is_some() {
+        let nodes = (0..self.node_count()).map(NodeId::new);
+        let proxies = (0..self.proxy_count()).map(NodeId::proxy);
+        for v in nodes.chain(proxies) {
+            if self.label_bucket_list(v)?.is_some() {
                 return Err(Error::NotEmpty);
             }
         }
@@ -62,6 +64,9 @@ impl<M: Memory> Graph<M> {
     fn check_bulk_edge(&self, edge: &NewEdge<'_>) -> Result<(), Error> {
         self.check(edge.from())?;
         self.check(edge.to())?;
+        if let Some(proxy) = [edge.from(), edge.to()].into_iter().find(|v| v.is_proxy()) {
+            return Err(Error::Proxy(proxy));
+        }
         for v in [edge.from(), edge.to()] {
             match self.record(v)?.state {
                 NodeState::Live => {}

@@ -250,6 +250,13 @@ const SIDES: [Direction; 3] = [
     Direction::Undirected,
 ];
 
+/// Proxies the model graph has: occasional edge sources, and detached now and then.
+const PROXIES: u32 = 2;
+
+fn proxy(k: u32) -> u32 {
+    NodeId::proxy(k).index()
+}
+
 fn random_step<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n: u32) {
     let roll = rng.below(100);
     let phase = if model.next_id < 4_000 {
@@ -267,7 +274,11 @@ fn random_step<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n:
     }
     // Detach a node now and then; never an insert target (0..3), so the hub keeps growing.
     // Targets' in-buckets are detached in the targeted tests.
-    let x = 3 + rng.below(n - 3);
+    let x = if rng.below(8) == 0 {
+        proxy(rng.below(PROXIES))
+    } else {
+        3 + rng.below(n - 3)
+    };
     if model.detaching.is_none() && !model.deleted.contains(&x) && rng.below(400) == 0 {
         g.detach(v(x)).unwrap();
         model.detaching = Some(x);
@@ -303,7 +314,12 @@ fn model_insert<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n
     let (from, label) = if rng.below(2) == 0 {
         (0, HUB.1)
     } else {
-        (rng.below(n), l(u16::try_from(rng.below(3)).unwrap()))
+        let from = if rng.below(8) == 0 {
+            proxy(rng.below(PROXIES))
+        } else {
+            rng.below(n)
+        };
+        (from, l(u16::try_from(rng.below(3)).unwrap()))
     };
     let to = rng.below(3);
     if let Some(error) = [from, to].into_iter().find_map(|x| model.blocked(x)) {
@@ -335,13 +351,19 @@ fn model_insert<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n
                 &value,
             ))
             .unwrap();
+        // An edge from a proxy is keyed at its local target.
+        let (canonical, other) = if v(from).is_proxy() {
+            ((to, Direction::Incoming), (from, Direction::Outgoing))
+        } else {
+            ((from, Direction::Outgoing), (to, Direction::Incoming))
+        };
         assert_eq!(
             halves.canonical(),
-            Model::half((from, label, Direction::Outgoing), at(halves.canonical()))
+            Model::half((canonical.0, label, canonical.1), at(halves.canonical()))
         );
         assert_eq!(
             halves.other(),
-            Model::half((to, label, Direction::Incoming), at(halves.other()))
+            Model::half((other.0, label, other.1), at(halves.other()))
         );
         halves
     } else {
@@ -354,7 +376,12 @@ fn model_insert<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n
                 &value,
             ))
             .unwrap();
-        let (low, high) = (from.min(to), from.max(to));
+        // The local end when the other is a proxy, else the larger id.
+        let (low, high) = if v(from).is_proxy() {
+            (from, to)
+        } else {
+            (from.min(to), from.max(to))
+        };
         assert_eq!(halves.canonical().node(), v(high));
         assert_eq!(halves.other().node(), v(low));
         assert_eq!(halves.canonical().direction(), Direction::Undirected);
@@ -486,7 +513,7 @@ fn model_compact<M: Memory>(g: &mut Graph<M>, model: &mut Model, key: Key) {
 }
 
 fn assert_matches_model<M: Memory>(g: &Graph<M>, model: &Model, n: u32) {
-    for x in 0..n {
+    for x in (0..n).chain((0..PROXIES).map(proxy)) {
         for label in (0..3).map(l) {
             for direction in SIDES {
                 let expected: Vec<(u32, u32)> = model
@@ -623,6 +650,7 @@ fn random_operations_match_a_model_across_reopens() {
     for seed in 1u64..=3 {
         let backing = Backing::default();
         let mut g = backing.create(N);
+        g.add_proxies(NonZeroU32::new(PROXIES).unwrap()).unwrap();
         let mut model = Model::default();
         for (label, width) in WIDTHS_AT_START {
             g.declare_width(l(label), Width::new(width).unwrap())

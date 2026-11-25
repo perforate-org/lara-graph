@@ -27,6 +27,7 @@ pub lara_graph::Error::Detaching(lara_graph::NodeId)
 pub lara_graph::Error::NotDetaching(lara_graph::NodeId)
 pub lara_graph::Error::NotEmpty
 pub lara_graph::Error::OutOfMemory(lara_graph::GrowFailed)
+pub lara_graph::Error::Proxy(lara_graph::NodeId)
 pub lara_graph::Error::TooManyLabelBuckets(lara_graph::NodeId)
 pub lara_graph::Error::UnknownNode(lara_graph::NodeId)
 pub lara_graph::Error::WidthConflict
@@ -61,8 +62,9 @@ pub lara_graph::MemoryRole::LabelBucketListDirectory
 pub lara_graph::MemoryRole::LabelBucketListPages
 pub lara_graph::MemoryRole::NodeLabels
 pub lara_graph::MemoryRole::Nodes
+pub lara_graph::MemoryRole::Proxies
 impl lara_graph::MemoryRole
-pub const lara_graph::MemoryRole::ALL: [Self; 6]
+pub const lara_graph::MemoryRole::ALL: [Self; 7]
 pub const fn lara_graph::MemoryRole::index(self) -> u8
 pub enum lara_graph::NodeState
 pub lara_graph::NodeState::Deleted
@@ -114,6 +116,8 @@ pub fn lara_graph::Graph<M>::add_edges(&mut self, &[lara_graph::NewEdge<'_>]) ->
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::add_node(&mut self) -> core::result::Result<lara_graph::NodeId, lara_graph::Error>
 pub fn lara_graph::Graph<M>::add_nodes(&mut self, core::num::nonzero::NonZeroU32) -> core::result::Result<lara_graph::NodeId, lara_graph::Error>
+pub fn lara_graph::Graph<M>::add_proxies(&mut self, core::num::nonzero::NonZeroU32) -> core::result::Result<lara_graph::NodeId, lara_graph::Error>
+pub fn lara_graph::Graph<M>::add_proxy(&mut self) -> core::result::Result<lara_graph::NodeId, lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::bulk_load(&mut self, &[lara_graph::NewEdge<'_>]) -> core::result::Result<alloc::vec::Vec<lara_graph::Halves>, lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
@@ -146,6 +150,7 @@ pub fn lara_graph::Graph<M>::edge_labels(&self, lara_graph::NodeId, lara_graph::
 pub fn lara_graph::Graph<M>::has_edges(&self, lara_graph::NodeId) -> core::result::Result<bool, lara_graph::Error>
 pub const fn lara_graph::Graph<M>::node_count(&self) -> u32
 pub fn lara_graph::Graph<M>::node_state(&self, lara_graph::NodeId) -> core::result::Result<lara_graph::NodeState, lara_graph::Error>
+pub fn lara_graph::Graph<M>::proxy_count(&self) -> u32
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::edge_value(&self, lara_graph::EdgeRef) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, lara_graph::Error>
 pub fn lara_graph::Graph<M>::values_at(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), &[lara_graph::Position], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), lara_graph::Error>
@@ -190,7 +195,7 @@ pub struct lara_graph::Memories<M>
 impl<M> lara_graph::Memories<M>
 pub fn lara_graph::Memories<M>::from_fn(impl core::ops::function::FnMut(lara_graph::MemoryRole) -> M) -> Self
 impl<M> core::iter::traits::collect::IntoIterator for lara_graph::Memories<M>
-pub type lara_graph::Memories<M>::IntoIter = core::array::iter::IntoIter<(lara_graph::MemoryRole, M), 6>
+pub type lara_graph::Memories<M>::IntoIter = core::array::iter::IntoIter<(lara_graph::MemoryRole, M), 7>
 pub type lara_graph::Memories<M>::Item = (lara_graph::MemoryRole, M)
 pub fn lara_graph::Memories<M>::into_iter(self) -> Self::IntoIter
 pub struct lara_graph::Move
@@ -210,7 +215,10 @@ pub const fn lara_graph::NewEdge<'a>::undirected(lara_graph::NodeId, lara_graph:
 pub struct lara_graph::NodeId(_)
 impl lara_graph::NodeId
 pub const fn lara_graph::NodeId::index(self) -> u32
+pub const fn lara_graph::NodeId::is_proxy(self) -> bool
 pub const fn lara_graph::NodeId::new(u32) -> Self
+pub const fn lara_graph::NodeId::proxy(u32) -> Self
+pub const fn lara_graph::NodeId::proxy_ordinal(self) -> core::option::Option<u32>
 impl core::cmp::Ord for lara_graph::NodeId
 pub fn lara_graph::NodeId::cmp(&self, &Self) -> core::cmp::Ordering
 impl core::cmp::PartialOrd for lara_graph::NodeId
@@ -252,6 +260,8 @@ pub fn lara_graph::Graph<M>::add_edges(&mut self, &[lara_graph::NewEdge<'_>]) ->
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::add_node(&mut self) -> core::result::Result<lara_graph::NodeId, lara_graph::Error>
 pub fn lara_graph::Graph<M>::add_nodes(&mut self, core::num::nonzero::NonZeroU32) -> core::result::Result<lara_graph::NodeId, lara_graph::Error>
+pub fn lara_graph::Graph<M>::add_proxies(&mut self, core::num::nonzero::NonZeroU32) -> core::result::Result<lara_graph::NodeId, lara_graph::Error>
+pub fn lara_graph::Graph<M>::add_proxy(&mut self) -> core::result::Result<lara_graph::NodeId, lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::bulk_load(&mut self, &[lara_graph::NewEdge<'_>]) -> core::result::Result<alloc::vec::Vec<lara_graph::Halves>, lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
@@ -284,6 +294,7 @@ pub fn lara_graph::Graph<M>::edge_labels(&self, lara_graph::NodeId, lara_graph::
 pub fn lara_graph::Graph<M>::has_edges(&self, lara_graph::NodeId) -> core::result::Result<bool, lara_graph::Error>
 pub const fn lara_graph::Graph<M>::node_count(&self) -> u32
 pub fn lara_graph::Graph<M>::node_state(&self, lara_graph::NodeId) -> core::result::Result<lara_graph::NodeState, lara_graph::Error>
+pub fn lara_graph::Graph<M>::proxy_count(&self) -> u32
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::edge_value(&self, lara_graph::EdgeRef) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, lara_graph::Error>
 pub fn lara_graph::Graph<M>::values_at(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), &[lara_graph::Position], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), lara_graph::Error>

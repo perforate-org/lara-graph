@@ -1,4 +1,4 @@
-//! The graph: label buckets of edge halves per node and direction, over six memories.
+//! The graph: label buckets of edge halves per node and direction, over seven memories.
 //!
 //! The nodes memory is laid out in `node::store`, the node labels memory in `node::labels`.
 
@@ -62,7 +62,7 @@ impl<M: Memory> Graph<M> {
     }
 
     fn check(&self, v: NodeId) -> Result<(), Error> {
-        if v.index() < self.node_count() {
+        if self.nodes.contains(v) {
             Ok(())
         } else {
             Err(Error::UnknownNode(v))
@@ -71,13 +71,13 @@ impl<M: Memory> Graph<M> {
 
     fn record(&self, v: NodeId) -> Result<Record, Error> {
         self.check(v)?;
-        Ok(self.nodes.record(v))
+        Ok(Record::decode(self.nodes.record_bytes(v)))
     }
 
     /// `v`'s state alone, without decoding its record's list.
     fn state(&self, v: NodeId) -> Result<NodeState, Error> {
         self.check(v)?;
-        Ok(self.nodes.state(v))
+        Ok(Record::state_of(self.nodes.record_bytes(v)))
     }
 
     /// A known node's record, undecoded: a whole record or the state alone decodes from it.

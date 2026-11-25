@@ -98,6 +98,10 @@ impl<M: Memory> LabelStore<M> {
 
     /// `v`'s label cell. `v` is covered.
     pub(crate) fn cell(&self, v: NodeId) -> LabelSet {
+        // A proxy has no cell: it has no labels.
+        if v.is_proxy() {
+            return LabelSet::decode([0; CELL_BYTES]);
+        }
         LabelSet::decode(Region::new(&self.memory).read_array::<CELL_BYTES>(cell_at(v.index())))
     }
 

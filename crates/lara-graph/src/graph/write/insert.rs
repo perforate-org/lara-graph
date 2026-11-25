@@ -44,9 +44,9 @@ impl<M: Memory> Graph<M> {
 fn add_edge<M: Memory>(graph: &mut Graph<M>, edge: NewEdge<'_>) -> Result<Halves, Error> {
     match edge.kind() {
         EdgeKind::Directed => {
-            let ([canonical, other], _) =
+            let ([first, second], _) =
                 graph.insert_halves_with(Half::directed(&edge), edge.value(), &[None; 2], None)?;
-            Ok(Halves::new(canonical, other))
+            Ok(Halves::of(first, second))
         }
         EdgeKind::Undirected => match Half::undirected(&edge) {
             (at_high, None) => {
@@ -55,9 +55,9 @@ fn add_edge<M: Memory>(graph: &mut Graph<M>, edge: NewEdge<'_>) -> Result<Halves
                 Ok(Halves::new(half, half))
             }
             (at_high, Some(at_low)) => {
-                let ([canonical, other], _) =
+                let ([first, second], _) =
                     graph.insert_halves_with([at_high, at_low], edge.value(), &[None; 2], None)?;
-                Ok(Halves::new(canonical, other))
+                Ok(Halves::of(first, second))
             }
         },
     }

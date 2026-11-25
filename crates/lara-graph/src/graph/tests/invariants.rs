@@ -12,6 +12,9 @@ pub(super) fn check<M: Memory>(g: &Graph<M>) {
         check_node(g, i, &mut seen);
         check_node_labels(g, i, &mut seen);
     }
+    for ordinal in 0..g.proxy_count() {
+        check_node(g, NodeId::proxy(ordinal).index(), &mut seen);
+    }
     for extent in values::extents(&g.label_bucket_lists.pages(), g.widths.plane()) {
         assert!(
             seen.label_bucket_lists.insert(key(extent)),

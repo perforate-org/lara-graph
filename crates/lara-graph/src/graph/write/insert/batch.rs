@@ -111,8 +111,8 @@ fn add_directed<M: Memory>(
                 Some((0, &mut holes)),
             )
             .map_err(|error| BatchError::after_prefix(index, error))?;
-        let [canonical, other] = halves;
-        out.push(Halves::new(canonical, other));
+        let [first, second] = halves;
+        out.push(Halves::of(first, second));
         cache = updated
             .first()
             .and_then(|place| *place)
@@ -134,14 +134,14 @@ fn add_mixed<M: Memory>(
         let halves = match edge.kind() {
             EdgeKind::Directed => {
                 insert_remembered(graph, Half::directed(edge), edge.value(), &mut cache)
-                    .map(|[canonical, other]| Halves::new(canonical, other))
+                    .map(|[first, second]| Halves::of(first, second))
             }
             EdgeKind::Undirected => match Half::undirected(edge) {
                 (at_high, None) => insert_remembered(graph, [at_high], edge.value(), &mut cache)
                     .map(|[half]| Halves::new(half, half)),
                 (at_high, Some(at_low)) => {
                     insert_remembered(graph, [at_high, at_low], edge.value(), &mut cache)
-                        .map(|[canonical, other]| Halves::new(canonical, other))
+                        .map(|[first, second]| Halves::of(first, second))
                 }
             },
         };
@@ -193,8 +193,8 @@ fn add_undirected<M: Memory>(
                 None,
             )
             .map_err(|error| BatchError::after_prefix(index, error))?;
-        let [canonical, other] = halves;
-        out.push(Halves::new(canonical, other));
+        let [first, second] = halves;
+        out.push(Halves::of(first, second));
         cache.remember(ends, key, updated);
     }
     Ok(out)
@@ -215,8 +215,8 @@ fn add_repeated<M: Memory>(
         let (inserted, updated) = graph
             .insert_halves_with(halves, edge.value(), &cached, None)
             .map_err(|error| BatchError::after_prefix(index, error))?;
-        let [canonical, other] = inserted;
-        out.push(Halves::new(canonical, other));
+        let [first, second] = inserted;
+        out.push(Halves::of(first, second));
         cache.remember(halves, updated);
     }
     Ok(out)

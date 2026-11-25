@@ -11,10 +11,17 @@ use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
 impl<M: Memory> Graph<M> {
-    /// Number of nodes; ids are `0..node_count`.
+    /// Number of local nodes; ids are `0..node_count`. Proxies are counted apart
+    /// ([`Self::proxy_count`]).
     #[must_use]
     pub const fn node_count(&self) -> u32 {
         self.nodes.count()
+    }
+
+    /// Number of proxies ([`Self::add_proxy`]); their ids are `NodeId::proxy(0..proxy_count)`.
+    #[must_use]
+    pub fn proxy_count(&self) -> u32 {
+        self.nodes.proxy_count()
     }
 
     /// Whether `v` is live, being detached or deleted.

@@ -48,6 +48,9 @@ impl<M: Memory> Graph<M> {
         half: Half,
         cached: Option<Place>,
     ) -> Result<Place, Error> {
+        if half.node.is_proxy() && half.target.is_proxy() {
+            return Err(Error::Proxy(half.node));
+        }
         if let Some(place) = cached {
             Error::unless_live(place.record.state, half.node)?;
             Ok(place)

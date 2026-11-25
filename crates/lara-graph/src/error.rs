@@ -27,6 +27,9 @@ pub enum Error {
     Deleted(NodeId),
     /// [`Graph::bulk_load`] was called on a graph that already holds edges.
     NotEmpty,
+    /// The node is a proxy ([`Graph::add_proxy`]), which takes no part in this: proxies have no
+    /// labels, no edge joins two of them, and a bulk load places none.
+    Proxy(NodeId),
     /// The label already has a different width ([`Graph::declare_width`]).
     WidthConflict {
         /// The label.
@@ -151,6 +154,7 @@ impl fmt::Display for Error {
             Self::NotDetaching(v) => write!(f, "node {} is not being detached", v.index()),
             Self::Deleted(v) => write!(f, "node {} is deleted", v.index()),
             Self::NotEmpty => f.write_str("the graph already holds edges"),
+            Self::Proxy(v) => write!(f, "node {} is a proxy", v.index()),
             Self::WidthConflict { label, declared } => write!(
                 f,
                 "label {} already has width {}",

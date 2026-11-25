@@ -24,7 +24,7 @@ use core::ops::ControlFlow;
 /// The backing memories of a test graph; graphs borrow them so they can be reopened.
 #[derive(Default)]
 struct Backing {
-    memories: [VecMemory; 6],
+    memories: [VecMemory; 7],
 }
 
 impl Backing {
@@ -121,7 +121,6 @@ fn out_bucket<M: Memory>(g: &Graph<M>, x: NodeId, label: Label) -> Option<Descri
     .unwrap()
 }
 
-mod all_labels;
 mod batch_reads;
 mod batch_writes;
 mod between;
@@ -135,6 +134,7 @@ mod invariants;
 mod lifecycle;
 mod model;
 mod node_labels;
+mod proxies;
 mod reads;
 
 use invariants::check;
