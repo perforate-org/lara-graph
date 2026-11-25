@@ -591,3 +591,16 @@ mod tests {
         assert_eq!(u32::try_from(ENTRY).unwrap(), ENTRY_BYTES);
     }
 }
+
+/// Proofs over every input, checked by Kani (`cargo kani -p lara-graph`).
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// Any eight bytes decode to a page index entry that encodes back to itself.
+    #[kani::proof]
+    fn index_entries_round_trip() {
+        let leaf = decode(kani::any());
+        assert_eq!(decode(encode(leaf)), leaf);
+    }
+}

@@ -326,3 +326,22 @@ pub(super) fn remove<M: Memory>(
     write_top(store, top, &leaves);
     tiered(top)
 }
+
+/// Proofs over every input, checked by Kani (`cargo kani -p lara-graph`).
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// A top entry of a valid key decodes to the leaf it was encoded from.
+    #[kani::proof]
+    fn top_entries_round_trip() {
+        let bytes: [u8; TOP_ENTRY_BYTES] = kani::any();
+        kani::assume(bytes[2] <= 2);
+        let leaf = Leaf::decode(bytes);
+        let back = Leaf::decode(leaf.encode());
+        assert_eq!(
+            (back.first, back.page, back.count),
+            (leaf.first, leaf.page, leaf.count)
+        );
+    }
+}

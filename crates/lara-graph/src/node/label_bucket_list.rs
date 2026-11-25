@@ -621,3 +621,30 @@ fn entry_offset(base: ByteOffset, index: usize) -> ByteOffset {
 
 #[cfg(test)]
 mod tests;
+
+/// Proofs over every input, checked by Kani (`cargo kani -p lara-graph`).
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    fn any_key() -> LabelBucketKey {
+        let direction: u8 = kani::any();
+        kani::assume(direction <= DIRECTION_UNDIRECTED);
+        let [l0, l1] = kani::any::<u16>().to_le_bytes();
+        LabelBucketKey::decode([l0, l1, direction])
+    }
+
+    /// Keys rank in the order they compare: a list sorted by rank is sorted by key.
+    #[kani::proof]
+    fn keys_rank_in_key_order() {
+        let (a, b) = (any_key(), any_key());
+        assert_eq!(a.rank().cmp(&b.rank()), a.cmp(&b));
+    }
+
+    /// Any six bytes decode to a list reference that encodes back to itself.
+    #[kani::proof]
+    fn references_round_trip() {
+        let list = decode_ref(kani::any());
+        assert_eq!(decode_ref(encode_ref(list)), list);
+    }
+}

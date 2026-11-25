@@ -312,3 +312,18 @@ fn to_bitmap<M: Memory>(
         members: members + 1,
     })
 }
+
+/// Proofs over every input, checked by Kani (`cargo kani -p lara-graph`).
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// Any cell of a known kind decodes to a container that encodes back to itself.
+    #[kani::proof]
+    fn chunk_cells_round_trip() {
+        let bytes: [u8; CHUNK_CELL] = kani::any();
+        kani::assume(bytes[2] == EMPTY || bytes[2] == LISTED || bytes[2] == BITMAP);
+        let chunk = Chunk::decode(bytes);
+        assert!(Chunk::decode(chunk.encode()) == chunk);
+    }
+}

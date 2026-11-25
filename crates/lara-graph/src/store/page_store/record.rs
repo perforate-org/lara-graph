@@ -139,3 +139,19 @@ impl PageRecord {
         }
     }
 }
+
+/// Proofs over every input, checked by Kani (`cargo kani -p lara-graph`).
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// Any page id an extent can name survives a link's encoding.
+    #[kani::proof]
+    fn links_round_trip() {
+        let raw: u32 = kani::any();
+        kani::assume(raw < crate::store::page_store::MAX_PAGES);
+        let link = Some(PageId::new(raw));
+        assert_eq!(decode_link(encode_link(link)), link);
+        assert_eq!(decode_link(encode_link(None)), None);
+    }
+}

@@ -398,3 +398,18 @@ pub(super) fn merge(postings: &[Posting], changes: &[Change]) -> Vec<Posting> {
     }
     out
 }
+
+/// Proofs over every input, checked by Kani (`cargo kani -p lara-graph`).
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+    use crate::bucket::target_index::BLOCK;
+
+    /// A block's code gives the block back, for any two blocks a bucket's positions can name.
+    #[kani::proof]
+    fn block_codes_round_trip() {
+        let (block, base): (u32, u32) = (kani::any(), kani::any());
+        kani::assume(block <= u32::MAX / BLOCK && base <= u32::MAX / BLOCK);
+        assert_eq!(block_of(block_code(block, base), base), block);
+    }
+}
