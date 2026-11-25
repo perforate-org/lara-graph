@@ -134,10 +134,6 @@ crates/lara-graph/        the crate
 crates/lara-graph-bench/  canbench instruction counts on the IC
 ```
 
-The original lara-graph, which ported DGAP's PMA to relocatable spans, is kept under the tag
-`lara-graph-legacy` (branch `legacy`), with its DGAP port, benchmarks, paper, experiments and
-design notes.
-
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT)
