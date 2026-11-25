@@ -5,6 +5,7 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::fmt;
+use core::mem::MaybeUninit;
 
 /// Bytes per page; [`Memory::grow`] counts in pages.
 pub const PAGE_SIZE: u64 = 65_536;
@@ -30,6 +31,15 @@ pub trait Memory {
     /// current size.
     fn read(&self, offset: u64, buf: &mut [u8]);
 
+    /// [`Self::read`] into a buffer that need not be initialized, returning it filled. The
+    /// default zeroes `buf` first; the IC's stable memory copies into it directly, skipping that,
+    /// which was most of the cost of reading a small bucket's slots.
+    fn read_uninit<'b>(&self, offset: u64, buf: &'b mut [MaybeUninit<u8>]) -> &'b mut [u8] {
+        let buf = zeroed(buf);
+        self.read(offset, buf);
+        buf
+    }
+
     /// Copies `buf` to `offset`. The range must lie within the current size.
     fn write(&self, offset: u64, buf: &[u8]);
 }
@@ -51,6 +61,27 @@ impl<M: ic_stable_structures::Memory> Memory for M {
 
     fn read(&self, offset: u64, buf: &mut [u8]) {
         ic_stable_structures::Memory::read(self, offset, buf);
+    }
+
+    #[expect(
+        unsafe_code,
+        reason = "a read into uninitialized bytes, as the backend offers it"
+    )]
+    fn read_uninit<'b>(&self, offset: u64, buf: &'b mut [MaybeUninit<u8>]) -> &'b mut [u8] {
+        // SAFETY: `buf` is valid for writes of `buf.len()` bytes and is not the memory's own
+        // storage, as `read_unsafe` requires. Its contract is to copy `count` bytes into `dst`
+        // (the default zeroes them first; the IC's stable memory writes them with `stable64_read`;
+        // a virtual memory forwards each segment), else to trap, so on return every byte is
+        // initialized.
+        unsafe {
+            ic_stable_structures::Memory::read_unsafe(
+                self,
+                offset,
+                buf.as_mut_ptr().cast::<u8>(),
+                buf.len(),
+            );
+            assume_init(buf)
+        }
     }
 
     fn write(&self, offset: u64, buf: &[u8]) {
@@ -218,6 +249,15 @@ impl<'m, M: Memory> Region<'m, M> {
         self.memory.read(offset.get(), buf);
     }
 
+    /// Reads `buf.len()` bytes at `offset` into `buf`, which need not be initialized.
+    pub(crate) fn read_uninit<'b>(
+        &self,
+        offset: ByteOffset,
+        buf: &'b mut [MaybeUninit<u8>],
+    ) -> &'b mut [u8] {
+        self.memory.read_uninit(offset.get(), buf)
+    }
+
     /// Reads `N` bytes at `offset`.
     pub(crate) fn read_array<const N: usize>(&self, offset: ByteOffset) -> [u8; N] {
         let mut buf = [0; N];
@@ -250,9 +290,33 @@ impl<'m, M: Memory> Region<'m, M> {
     }
 }
 
+/// `buf` zeroed, as initialized bytes.
+#[expect(unsafe_code, reason = "viewing bytes just written as initialized")]
+pub(crate) fn zeroed(buf: &mut [MaybeUninit<u8>]) -> &mut [u8] {
+    buf.fill(MaybeUninit::new(0));
+    // SAFETY: every byte of `buf` was just written.
+    unsafe { assume_init(buf) }
+}
+
+/// `buf` as initialized bytes.
+///
+/// # Safety
+///
+/// Every byte of `buf` must have been written.
+#[expect(
+    unsafe_code,
+    reason = "the one conversion of written bytes to initialized ones"
+)]
+const unsafe fn assume_init(buf: &mut [MaybeUninit<u8>]) -> &mut [u8] {
+    // SAFETY: `MaybeUninit<u8>` has the layout of `u8`, and the caller guarantees every byte is
+    // initialized; the borrow is carried over, so nothing else can reach `buf` meanwhile.
+    unsafe { core::slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<u8>(), buf.len()) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn region_grows_on_write_and_reads_back() {
@@ -280,6 +344,57 @@ mod tests {
         let region = Region::new(&memory);
         let error = region.write(ByteOffset::new(u64::MAX), &[0]);
         assert_eq!(error, Err(WriteError::Overflow(Overflow)));
+    }
+
+    /// Ranges a read into uninitialized bytes is checked on: empty, within a page, across one
+    /// page boundary and across two.
+    const RANGES: [(u64, usize); 5] = [
+        (0, 0),
+        (5, 10),
+        (PAGE_SIZE - 3, 7),
+        (PAGE_SIZE - 100, 300),
+        (PAGE_SIZE - 2, 65_540),
+    ];
+
+    /// Fills three pages of `memory` with a pattern, then checks that `read_uninit` returns what
+    /// `read` does over [`RANGES`], into a buffer never initialized. Small enough for Miri, which
+    /// checks the conversion of the bytes read to initialized ones.
+    fn read_uninit_matches_read<M: Memory>(memory: &M) {
+        let pattern: Vec<u8> = (0..PAGE_SIZE * 3)
+            .map(|i| u8::try_from(i * 7 % 251).unwrap())
+            .collect();
+        Region::new(memory)
+            .write(ByteOffset::new(0), &pattern)
+            .unwrap();
+        for (offset, len) in RANGES {
+            let mut want = vec![0; len];
+            memory.read(offset, &mut want);
+            let mut buf = vec![MaybeUninit::<u8>::uninit(); len];
+            let got = memory.read_uninit(offset, &mut buf);
+            assert_eq!(got, want.as_slice(), "{len} bytes at {offset}");
+        }
+    }
+
+    #[test]
+    fn a_default_read_uninit_reads_what_read_does() {
+        read_uninit_matches_read(&VecMemory::new());
+    }
+
+    #[cfg(feature = "ic-stable-structures")]
+    #[test]
+    fn an_ic_read_uninit_reads_what_read_does_across_segments() {
+        use ic_stable_structures::memory_manager::{MemoryId, MemoryManager};
+        use ic_stable_structures::{DefaultMemoryImpl, VectorMemory};
+        read_uninit_matches_read(&VectorMemory::default());
+        // One-page buckets, grown in turn with another memory: a virtual page's neighbours lie
+        // apart in real memory, so a read across pages is several real reads.
+        let manager = MemoryManager::init_with_bucket_size(DefaultMemoryImpl::default(), 1);
+        let (ours, other) = (manager.get(MemoryId::new(0)), manager.get(MemoryId::new(1)));
+        for _ in 0..3 {
+            assert!(ic_stable_structures::Memory::grow(&ours, 1) >= 0);
+            assert!(ic_stable_structures::Memory::grow(&other, 1) >= 0);
+        }
+        read_uninit_matches_read(&ours);
     }
 
     #[test]

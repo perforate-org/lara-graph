@@ -19,7 +19,7 @@ edition = "2024"
 #   [nostd]   the core stays `no_std` + `alloc`
 #   [explain] every exception is local, visible and justified
 [workspace.lints.rust]
-unsafe_code = "forbid"                 # [encap] the seam is safe Rust; no exception yet
+unsafe_code = "deny"                   # [encap] only the memory seam may read into uninitialized bytes, each use expected and justified
 missing_docs = "deny"                  # [encap] every public item is deliberate
 unreachable_pub = "deny"               # [encap] `pub` only where it is actually exported
 unused_qualifications = "deny"

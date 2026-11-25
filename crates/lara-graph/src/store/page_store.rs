@@ -715,6 +715,15 @@ impl<M: Memory> Pages<'_, M> {
     pub(crate) fn read_into(&self, at: ByteOffset, buf: &mut [u8]) {
         Region::new(self.memory).read(at, buf);
     }
+
+    /// Fills `buf`, which need not be initialized, from `at`, and returns it.
+    pub(crate) fn read_uninit<'b>(
+        &self,
+        at: ByteOffset,
+        buf: &'b mut [core::mem::MaybeUninit<u8>],
+    ) -> &'b mut [u8] {
+        Region::new(self.memory).read_uninit(at, buf)
+    }
 }
 
 impl<M: Memory> Allocator for PageStore<M> {

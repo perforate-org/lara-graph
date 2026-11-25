@@ -379,6 +379,7 @@ pub fn lara_graph::VecMemory::new() -> Self
 impl lara_graph::Memory for lara_graph::VecMemory
 pub fn lara_graph::VecMemory::grow(&self, u64) -> core::result::Result<u64, lara_graph::GrowFailed>
 pub fn lara_graph::VecMemory::read(&self, u64, &mut [u8])
+pub fn lara_graph::VecMemory::read_uninit<'b>(&self, u64, &'b mut [core::mem::maybe_uninit::MaybeUninit<u8>]) -> &'b mut [u8]
 pub fn lara_graph::VecMemory::size(&self) -> u64
 pub fn lara_graph::VecMemory::write(&self, u64, &[u8])
 pub struct lara_graph::Width(_)
@@ -390,11 +391,13 @@ pub const lara_graph::PAGE_SIZE: u64
 pub trait lara_graph::Memory
 pub fn lara_graph::Memory::grow(&self, u64) -> core::result::Result<u64, lara_graph::GrowFailed>
 pub fn lara_graph::Memory::read(&self, u64, &mut [u8])
+pub fn lara_graph::Memory::read_uninit<'b>(&self, u64, &'b mut [core::mem::maybe_uninit::MaybeUninit<u8>]) -> &'b mut [u8]
 pub fn lara_graph::Memory::size(&self) -> u64
 pub fn lara_graph::Memory::write(&self, u64, &[u8])
 impl lara_graph::Memory for lara_graph::VecMemory
 pub fn lara_graph::VecMemory::grow(&self, u64) -> core::result::Result<u64, lara_graph::GrowFailed>
 pub fn lara_graph::VecMemory::read(&self, u64, &mut [u8])
+pub fn lara_graph::VecMemory::read_uninit<'b>(&self, u64, &'b mut [core::mem::maybe_uninit::MaybeUninit<u8>]) -> &'b mut [u8]
 pub fn lara_graph::VecMemory::size(&self) -> u64
 pub fn lara_graph::VecMemory::write(&self, u64, &[u8])
 pub type lara_graph::Compaction = lara_graph::Step<lara_graph::Move>

@@ -209,15 +209,23 @@ pub(crate) fn visit<M: Memory, B>(
         if a >= b {
             continue;
         }
-        let chunk = buf.take(usize::try_from(b - a).unwrap_or(0) * w);
+        let len = usize::try_from(b - a).unwrap_or(0) * w;
         // The cells with storage: a run may cover only the front of its chunk.
         let cell = cell_at(view, plane, width, a);
         let stored = stored_cells(plane, width, cell, (a, b));
-        let (head, tail) = chunk.split_at_mut(usize::try_from(stored).unwrap_or(0) * w);
-        if let Some(at) = cell.filter(|_| !head.is_empty()) {
-            view.read_into(at, head);
-        }
-        tail.fill(0);
+        let chunk: &[u8] = match cell {
+            // All stored: read in place, nothing to zero.
+            Some(at) if stored == b - a => buf.fill(view, at, len),
+            _ => {
+                let chunk = buf.take(len);
+                let (head, tail) = chunk.split_at_mut(usize::try_from(stored).unwrap_or(0) * w);
+                if let Some(at) = cell.filter(|_| !head.is_empty()) {
+                    view.read_into(at, head);
+                }
+                tail.fill(0);
+                chunk
+            }
+        };
         if let core::ops::ControlFlow::Break(done) = f(a, chunk) {
             return Some(done);
         }
