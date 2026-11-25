@@ -1,15 +1,15 @@
 //! A batch's node-record and flat-list page reads: dense batches read through the shared
 //! buffers, sparse ones directly.
 
-use super::super::super::{Graph, RecordLines};
-use crate::corrupt::corrupt;
-use crate::descriptor::Descriptor;
+use crate::bucket::stored::Stored;
+use crate::graph::bucket::View;
+use crate::graph::{Graph, RecordLines};
 use crate::id::NodeId;
-use crate::label_bucket_list::{self, LabelBucketKey, LabelBucketList, Listed};
-use crate::memory::Memory;
-use crate::node::Record;
-use crate::page_store::{Extent, PAGE_BYTES, Pages};
-use crate::stored::Stored;
+use crate::node::label_bucket_list::{self, LabelBucketKey, LabelBucketList, Listed};
+use crate::node::record::Record;
+use crate::store::corrupt::corrupt;
+use crate::store::memory::Memory;
+use crate::store::page_store::{Extent, PAGE_BYTES};
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
@@ -40,7 +40,7 @@ impl ListPageCache {
     /// inlined: left a call, it cost a batch of label reads 6 %.
     #[expect(clippy::inline_always, reason = "measured: see the doc")]
     #[inline(always)]
-    fn page<'a, M: Memory>(&'a mut self, pages: &Pages<'_, M>, extent: Extent) -> Option<&'a [u8]> {
+    fn page<'a, M: Memory>(&'a mut self, view: &View<'_, M>, extent: Extent) -> Option<&'a [u8]> {
         let page = extent.page().get();
         if page == self.last_page {
             self.run += 1;
@@ -53,7 +53,7 @@ impl ListPageCache {
         }
         if self.page != Some(page) {
             self.bytes.resize(LIST_PAGE_BYTES, 0);
-            pages.read_into(extent.page().offset(), &mut self.bytes);
+            view.read_list_page(extent.page(), &mut self.bytes);
             self.page = Some(page);
         }
         let at = usize::try_from(extent.offset().get() - extent.page().offset().get())
@@ -64,7 +64,7 @@ impl ListPageCache {
     #[inline]
     fn stored<M: Memory>(
         &mut self,
-        pages: &Pages<'_, M>,
+        view: &View<'_, M>,
         list: LabelBucketList,
         key: LabelBucketKey,
         extent: Extent,
@@ -80,29 +80,29 @@ impl ListPageCache {
         if self.run >= 3 {
             if self.page != Some(page) {
                 self.bytes.resize(LIST_PAGE_BYTES, 0);
-                pages.read_into(extent.page().offset(), &mut self.bytes);
+                view.read_list_page(extent.page(), &mut self.bytes);
                 self.page = Some(page);
             }
             let at = usize::try_from(extent.offset().get() - extent.page().offset().get())
                 .unwrap_or_else(|_| corrupt("list page offset"));
             return label_bucket_list::lookup_stored_in(&self.bytes, at, count, key);
         }
-        label_bucket_list::lookup_stored(pages, Some(list), key)
+        view.lookup(Some(list), key)
     }
 
     #[inline]
     fn for_each<M: Memory, B>(
         &mut self,
-        pages: &Pages<'_, M>,
+        view: &View<'_, M>,
         list: LabelBucketList,
         f: &mut impl FnMut(LabelBucketKey, Listed) -> ControlFlow<B>,
     ) -> Option<B> {
         if let Some((extent, count)) = list.flat()
-            && let Some(bytes) = self.page(pages, extent)
+            && let Some(bytes) = self.page(view, extent)
         {
             return label_bucket_list::for_each_bytes(bytes, 0, count, f);
         }
-        label_bucket_list::for_each(pages, Some(list), f)
+        view.walk(list, f)
     }
 }
 
@@ -146,7 +146,7 @@ pub(super) fn record<M: Memory>(
 
 #[inline]
 pub(super) fn stored<M: Memory>(
-    lists: &Pages<'_, M>,
+    view: &View<'_, M>,
     list_page: &mut ListPageCache,
     list: LabelBucketList,
     key: LabelBucketKey,
@@ -154,31 +154,23 @@ pub(super) fn stored<M: Memory>(
 ) -> Option<Stored> {
     match mode {
         Mode::Dense => match list.flat() {
-            Some((extent, count)) => list_page.stored(lists, list, key, extent, count),
-            None => label_bucket_list::lookup_stored(lists, Some(list), key),
+            Some((extent, count)) => list_page.stored(view, list, key, extent, count),
+            None => view.lookup(Some(list), key),
         },
-        Mode::Sparse => label_bucket_list::lookup_stored(lists, Some(list), key),
+        Mode::Sparse => view.lookup(Some(list), key),
     }
 }
 
 #[inline]
 pub(super) fn for_each_list<M: Memory, B>(
-    lists: &Pages<'_, M>,
+    view: &View<'_, M>,
     list_page: &mut ListPageCache,
     list: LabelBucketList,
     mode: Mode,
     f: &mut impl FnMut(LabelBucketKey, Listed) -> ControlFlow<B>,
 ) -> Option<B> {
     match mode {
-        Mode::Dense => list_page.for_each(lists, list, f),
-        Mode::Sparse => label_bucket_list::for_each(lists, Some(list), f),
-    }
-}
-
-#[inline]
-pub(super) fn slots<M: Memory>(view: &Pages<'_, M>, stored: Stored) -> Descriptor {
-    match stored {
-        Stored::Plain(slots) => slots,
-        Stored::Extended(header) => Descriptor::decode(view.read_array(header.offset())),
+        Mode::Dense => list_page.for_each(view, list, f),
+        Mode::Sparse => view.walk(list, f),
     }
 }

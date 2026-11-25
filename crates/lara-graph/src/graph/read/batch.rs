@@ -3,19 +3,16 @@
 mod halves;
 mod list_page;
 
-use super::super::pair::{Found, LastBucket};
-use super::super::props::visit_joined;
-use super::super::{Error, Graph, RecordLines};
-use crate::descriptor::Descriptor;
+use crate::bucket::descriptor::Descriptor;
+use crate::bucket::stored::{LabelBucket, Stored};
+use crate::graph::bucket::{Found, LastBucket, View};
+use crate::graph::{Error, Graph, RecordLines};
 use crate::id::{Direction, Edge, Label, NodeId, NodeState, Order, Position};
-use crate::label_bucket::{self, Span, Window};
-use crate::label_bucket_list::LabelBucketKey;
-use crate::memory::Memory;
-use crate::page_store::Pages;
-use crate::stored::{LabelBucket, Stored};
+use crate::node::label_bucket_list::LabelBucketKey;
+use crate::store::memory::Memory;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
-use list_page::{ListPageCache, Mode, for_each_list, mode, record, slots, stored};
+use list_page::{ListPageCache, Mode, for_each_list, mode, record, stored};
 
 /// A read-only batch over a list of nodes. The node-record line and flat-list page buffers
 /// live as long as the batch, so several reads in one query share them. Drop it before mutating
@@ -73,18 +70,12 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         let graph = self.graph;
         check_all(graph, nodes.iter().copied())?;
         let mode = mode(nodes);
-        let lists = graph.label_bucket_lists.pages();
-        let view = graph.edges.pages();
+        let view = graph.view();
         for &v in nodes {
-            let Some(stored) = self.stored_at(&lists, v, key, mode) else {
+            let Some(stored) = self.stored_at(&view, v, key, mode) else {
                 continue;
             };
-            let slots = slots(&view, stored);
-            if let Some(found) =
-                label_bucket::visit(&slots, &view, Span::all(&slots, order), Window::Page, |e| {
-                    f(v, e)
-                })
-            {
+            if let Some(found) = view.visit(&view.slots(stored), order, |e| f(v, e)) {
                 return Ok(Some(found));
             }
         }
@@ -105,11 +96,9 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         order: Order,
         mut f: impl FnMut(NodeId, Edge, &[u8]) -> ControlFlow<B>,
     ) -> Result<Option<B>, Error> {
-        let graph = self.graph;
         let key = LabelBucketKey { label, direction };
         self.each_bucket(nodes, key, |v, view, bucket| {
-            let width = graph.widths.get(label);
-            visit_joined(view, bucket, width, order, &mut |e, value| f(v, e, value))
+            view.visit_with_values(bucket, label, order, &mut |e, value| f(v, e, value))
         })
     }
 
@@ -143,18 +132,17 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         &mut self,
         nodes: &[NodeId],
         key: LabelBucketKey,
-        mut f: impl FnMut(NodeId, &Pages<'_, M>, &LabelBucket) -> Option<B>,
+        mut f: impl FnMut(NodeId, &View<'_, M>, &LabelBucket) -> Option<B>,
     ) -> Result<Option<B>, Error> {
         let graph = self.graph;
         check_all(graph, nodes.iter().copied())?;
         let mode = mode(nodes);
+        let view = graph.view();
         for &v in nodes {
-            let Some(stored) = self.stored_at(&graph.label_bucket_lists.pages(), v, key, mode)
-            else {
+            let Some(stored) = self.stored_at(&view, v, key, mode) else {
                 continue;
             };
-            let view = graph.edges.pages();
-            let bucket = LabelBucket::resolve(&view, stored);
+            let bucket = view.resolve(stored);
             if let Some(done) = f(v, &view, &bucket) {
                 return Ok(Some(done));
             }
@@ -182,12 +170,11 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         out.reserve(nodes.len());
         let mode = mode(nodes);
         let key = LabelBucketKey { label, direction };
-        let lists = graph.label_bucket_lists.pages();
-        let view = graph.edges.pages();
+        let view = graph.view();
         for &v in nodes {
             let degree = self
-                .stored_at(&lists, v, key, mode)
-                .map_or(0, |stored| slots(&view, stored).live());
+                .stored_at(&view, v, key, mode)
+                .map_or(0, |stored| view.slots(stored).live());
             out.push(degree);
         }
         Ok(())
@@ -210,11 +197,11 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         let mode = mode(nodes);
         let records = &mut self.records;
         let list_page = &mut self.list_page;
-        let lists = graph.label_bucket_lists.pages();
+        let view = graph.view();
         for &v in nodes {
             let record = record(graph, records, v, mode);
             let Some(list) = record.list else { continue };
-            if let Some(found) = for_each_list(&lists, list_page, list, mode, &mut |key, _| {
+            if let Some(found) = for_each_list(&view, list_page, list, mode, &mut |key, _| {
                 if key.direction == direction {
                     f(v, key.label)
                 } else {
@@ -241,10 +228,9 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         let graph = self.graph;
         check_all(graph, nodes.iter().copied())?;
         let mode = mode(nodes);
-        let lists = graph.label_bucket_lists.pages();
-        let view = graph.edges.pages();
+        let view = graph.view();
         for &v in nodes {
-            let has = self.has_live(&lists, &view, v, mode);
+            let has = self.has_live(&view, v, mode);
             if let ControlFlow::Break(found) = f(v, has) {
                 return Ok(Some(found));
             }
@@ -254,19 +240,13 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
 
     /// Whether `v` has a bucket with a live edge; stops at the first.
     #[inline]
-    fn has_live(
-        &mut self,
-        lists: &Pages<'_, M>,
-        view: &Pages<'_, M>,
-        v: NodeId,
-        mode: Mode,
-    ) -> bool {
+    fn has_live(&mut self, view: &View<'_, M>, v: NodeId, mode: Mode) -> bool {
         let record = record(self.graph, &mut self.records, v, mode);
         let Some(list) = record.list else {
             return false;
         };
-        for_each_list(lists, &mut self.list_page, list, mode, &mut |_, listed| {
-            if slots(view, listed.stored()).live() > 0 {
+        for_each_list(view, &mut self.list_page, list, mode, &mut |_, listed| {
+            if view.slots(listed.stored()).live() > 0 {
                 ControlFlow::Break(())
             } else {
                 ControlFlow::<()>::Continue(())
@@ -302,13 +282,13 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
     #[inline]
     fn stored_at(
         &mut self,
-        lists: &Pages<'_, M>,
+        view: &View<'_, M>,
         v: NodeId,
         key: LabelBucketKey,
         mode: Mode,
     ) -> Option<Stored> {
         let list = record(self.graph, &mut self.records, v, mode).list?;
-        stored(lists, &mut self.list_page, list, key, mode)
+        stored(view, &mut self.list_page, list, key, mode)
     }
 }
 

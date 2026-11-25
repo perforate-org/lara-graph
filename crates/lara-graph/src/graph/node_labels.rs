@@ -5,10 +5,10 @@
 
 use super::{AT_POSTINGS, Error, Graph, label_cell_at, reserved};
 use crate::id::{Label, NodeId, NodeState};
-use crate::label_postings::{self, PAGES_PER_ADD};
-use crate::memory::{Memory, Region};
-use crate::node_labels::{CELL_BYTES, NodeLabels};
-use crate::units::ByteOffset;
+use crate::node::label_postings::{self, PAGES_PER_ADD};
+use crate::node::node_labels::{CELL_BYTES, NodeLabels};
+use crate::store::memory::{Memory, Region};
+use crate::store::units::ByteOffset;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 

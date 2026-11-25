@@ -3,12 +3,12 @@
 //! writes headers only, so it costs the same on every message that might be the first after an
 //! install or an upgrade.
 
-use super::widths::AT_WIDTHS;
+use super::bucket::AT_WIDTHS;
 use super::{AT_COUNT, AT_POSTINGS, Graph, InitError, LABELS_MAGIC, MAGIC, VERSION};
 use crate::memories::Memories;
-use crate::memory::{Memory, Region, WriteError};
-use crate::page_store::{self, PageStore, header};
-use crate::units::{ByteOffset, Overflow};
+use crate::store::memory::{Memory, Region, WriteError};
+use crate::store::page_store::{self, PageStore, header};
+use crate::store::units::{ByteOffset, Overflow};
 
 impl<M: Memory> Graph<M> {
     /// Formats `memories` as an empty graph, overwriting whatever they held.
@@ -76,7 +76,7 @@ impl<M: Memory> Graph<M> {
         // No label postings yet.
         labels_region.overwrite(
             ByteOffset::new(AT_POSTINGS),
-            &crate::values::Plane::Empty.encode(),
+            &crate::bucket::values::Plane::Empty.encode(),
         );
         Ok(Self::assemble(
             (nodes, node_labels),

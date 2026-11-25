@@ -48,19 +48,19 @@
 //! Unallocated space
 //! ```
 
-use crate::corrupt::{corrupt, reservation_exceeded};
-use crate::descriptor::Descriptor;
+use crate::bucket::descriptor::Descriptor;
+use crate::bucket::label_bucket;
+use crate::bucket::stored::LabelBucket;
 use crate::id::{
     Direction, Edge, EdgeRef, Label, Move, NodeId, NodeState, Position, Progress, RemovedEdge,
     Width,
 };
-use crate::label_bucket;
-use crate::label_bucket_list::{self, LabelBucketKey, LabelBucketList};
-use crate::memory::{GrowFailed, Memory, Region, WriteError};
-use crate::node::{RECORD_BYTES, Record};
-use crate::page_store::PageStore;
-use crate::stored::{LabelBucket, Stored};
-use crate::units::{ByteOffset, Overflow};
+use crate::node::label_bucket_list::{self, LabelBucketKey, LabelBucketList};
+use crate::node::record::{RECORD_BYTES, Record};
+use crate::store::corrupt::{corrupt, reservation_exceeded};
+use crate::store::memory::{GrowFailed, Memory, Region, WriteError};
+use crate::store::page_store::PageStore;
+use crate::store::units::{ByteOffset, Overflow};
 use alloc::vec::Vec;
 use core::fmt;
 use core::num::NonZeroU32;
@@ -101,7 +101,7 @@ pub struct Graph<M: Memory> {
     /// Mirrors the label width table.
     widths: Widths,
     /// Mirrors the label postings directory's root, in the node labels memory's header.
-    postings: crate::values::Plane,
+    postings: crate::bucket::values::Plane,
     /// Nodes whose label cells the node labels memory already covers, so that adding a node
     /// grows it only when it must.
     label_room: u32,
@@ -308,7 +308,7 @@ impl<M: Memory> Graph<M> {
     ) -> Self {
         let count = u32::from_le_bytes(Region::new(&nodes).read_array(ByteOffset::new(AT_COUNT)));
         let widths = Widths::load(&nodes, &label_bucket_lists);
-        let postings = crate::values::Plane::decode(
+        let postings = crate::bucket::values::Plane::decode(
             Region::new(&node_labels).read_array(ByteOffset::new(AT_POSTINGS)),
         );
         let label_room = label_room(&node_labels);
@@ -547,17 +547,8 @@ impl<M: Memory> Graph<M> {
     /// only scans slots does not pay for the rest of an extended header.
     fn bucket(&self, v: NodeId, key: LabelBucketKey) -> Result<Option<Descriptor>, Error> {
         let list = self.label_bucket_list(v)?;
-        let view = self.edges.pages();
-        Ok(
-            label_bucket_list::lookup_stored(&self.label_bucket_lists.pages(), list, key).map(
-                |stored| match stored {
-                    Stored::Plain(slots) => slots,
-                    Stored::Extended(header) => {
-                        Descriptor::decode(view.read_array(header.offset()))
-                    }
-                },
-            ),
-        )
+        let view = self.view();
+        Ok(view.lookup(list, key).map(|stored| view.slots(stored)))
     }
 }
 
@@ -588,8 +579,10 @@ impl<M: Memory> Graph<M> {
 
 /// How many nodes' label cells `node_labels` covers as it stands.
 fn label_room<M: Memory>(node_labels: &M) -> u32 {
-    let bytes = node_labels.size().saturating_mul(crate::memory::PAGE_SIZE);
-    let cell = u64::try_from(crate::node_labels::CELL_BYTES).unwrap_or(5);
+    let bytes = node_labels
+        .size()
+        .saturating_mul(crate::store::memory::PAGE_SIZE);
+    let cell = u64::try_from(crate::node::node_labels::CELL_BYTES).unwrap_or(5);
     u32::try_from(bytes.saturating_sub(LABEL_CELLS_START) / cell).unwrap_or(u32::MAX)
 }
 
@@ -600,7 +593,7 @@ fn label_cell_at(v: NodeId) -> ByteOffset {
 
 /// Where node `index`'s label cell starts, and so where the cells before it end.
 fn label_cell_end(index: u32) -> ByteOffset {
-    let cell = u64::try_from(crate::node_labels::CELL_BYTES).unwrap_or(5);
+    let cell = u64::try_from(crate::node::node_labels::CELL_BYTES).unwrap_or(5);
     ByteOffset::new(LABEL_CELLS_START + u64::from(index) * cell)
 }
 
@@ -706,30 +699,20 @@ impl fmt::Display for InitError {
 impl core::error::Error for Error {}
 impl core::error::Error for InitError {}
 
-mod between;
-mod bulk;
-mod compaction;
-mod detach;
-mod index;
-mod insert;
-
-pub use insert::{EdgeKind, NewEdge};
+mod bucket;
 mod lifecycle;
 mod node_labels;
-mod pair;
-mod props;
-
-pub use props::EdgeValue;
 mod read;
+mod write;
 
 pub use read::ReadBatch;
-mod widths;
+pub use write::{EdgeKind, EdgeValue, NewEdge};
 
-use widths::Widths;
-
-use pair::key_of;
+use bucket::{Widths, key_of};
 #[cfg(test)]
-use pair::{opposite, order};
+use bucket::{opposite, order};
+#[cfg(test)]
+use write::pages_per_half;
 
 #[cfg(test)]
 mod tests;

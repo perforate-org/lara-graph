@@ -23,31 +23,13 @@ extern crate alloc;
 #[doc = include_str!("../../../README.md")]
 struct ReadmeDoctests;
 
-mod compact;
-mod corrupt;
-mod descriptor;
+mod bucket;
 mod graph;
 mod id;
-mod label_bucket;
-mod label_bucket_list;
-mod label_postings;
 mod memories;
-mod memory;
-mod page_store;
-mod paged;
-mod read_buf;
-mod scale;
-mod stored;
-mod targets;
-
-mod detaching_set;
 mod node;
-mod node_labels;
-mod txn;
-mod units;
-mod values;
+mod store;
 
-pub use detaching_set::DetachingSet;
 pub use graph::{
     BatchError, Compaction, Detachment, EdgeKind, EdgeValue, Error, Graph, InitError, NewEdge,
     ReadBatch, Removal, Step, Sweep,
@@ -57,4 +39,5 @@ pub use id::{
     Position, Progress, RemovedEdge, Width,
 };
 pub use memories::{Memories, MemoryRole};
-pub use memory::{GrowFailed, Memory, PAGE_SIZE, VecMemory};
+pub use node::detaching_set::DetachingSet;
+pub use store::memory::{GrowFailed, Memory, PAGE_SIZE, VecMemory};

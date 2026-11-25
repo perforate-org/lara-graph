@@ -1,0 +1,13 @@
+# Existing architectural debt suppressed by `deslop-please --allow`.
+# Fixing an entry here never fails CI; new issues not listed here fail.
+#
+# Why these three remain (2026-11-25): the graph's operations are `impl Graph` methods spread
+# over `graph::{bucket, read, write}`, and the lint counts a method at its type's home, so every
+# helper those methods use (bucket caches, the read view, insert's caches and halves) shows as
+# used from outside its module. Moving the steps into per-module types would make them touch
+# `Graph`'s stores from outside `Graph` (field-leak). The fix is to split `Graph` into
+# components (the bucket stores behind small facets of at most seven methods, and one type per
+# write operation borrowing them), with `Graph`'s public methods as entry points only.
+shallow-module lara_graph::graph::bucket
+shallow-module lara_graph::graph::write
+shallow-module lara_graph::graph::write::insert

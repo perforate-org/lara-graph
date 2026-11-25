@@ -1,13 +1,12 @@
 //! Batched reads over edge halves; consecutive halves in one bucket reuse its lookup.
 
-use super::super::super::Error;
-use super::super::super::pair::{key_of, opposite};
-use super::{Mode, ReadBatch, check_all, slots};
-use crate::descriptor::Descriptor;
+use super::{Mode, ReadBatch, check_all};
+use crate::bucket::descriptor::Descriptor;
+use crate::graph::Error;
+use crate::graph::bucket::{key_of, opposite};
 use crate::id::{EdgeRef, NodeId};
-use crate::label_bucket;
-use crate::label_bucket_list::LabelBucketKey;
-use crate::memory::Memory;
+use crate::node::label_bucket_list::LabelBucketKey;
+use crate::store::memory::Memory;
 use alloc::vec::Vec;
 
 impl<M: Memory> ReadBatch<'_, M> {
@@ -39,8 +38,11 @@ impl<M: Memory> ReadBatch<'_, M> {
                 out.push(None);
                 continue;
             };
-            let view = graph.edges.pages();
-            if label_bucket::get(&found.bucket.slots, half.position(), &view).is_none() {
+            if graph
+                .view()
+                .target(&found.bucket.slots, half.position())
+                .is_none()
+            {
                 out.push(None);
                 continue;
             }
@@ -78,20 +80,16 @@ impl<M: Memory> ReadBatch<'_, M> {
                 self.last_bucket.set(node, key, descriptor);
                 descriptor
             });
-            let view = graph.edges.pages();
-            out.push(
-                descriptor
-                    .and_then(|descriptor| label_bucket::get(&descriptor, half.position(), &view)),
-            );
+            let view = graph.view();
+            out.push(descriptor.and_then(|descriptor| view.target(&descriptor, half.position())));
         }
         Ok(())
     }
 
     fn bucket(&mut self, v: NodeId, key: LabelBucketKey) -> Option<Descriptor> {
-        let lists = self.graph.label_bucket_lists.pages();
-        let stored = self.stored_at(&lists, v, key, Mode::Sparse)?;
-        let view = self.graph.edges.pages();
-        Some(slots(&view, stored))
+        let view = self.graph.view();
+        let stored = self.stored_at(&view, v, key, Mode::Sparse)?;
+        Some(view.slots(stored))
     }
 
     /// Replaces `out` with the other half of each edge, or `None` when the half is not live.
@@ -121,8 +119,7 @@ impl<M: Memory> ReadBatch<'_, M> {
                 out.push(None);
                 continue;
             };
-            let view = graph.edges.pages();
-            let Some(other) = label_bucket::get(&own.bucket.slots, half.position(), &view) else {
+            let Some(other) = graph.view().target(&own.bucket.slots, half.position()) else {
                 out.push(None);
                 continue;
             };

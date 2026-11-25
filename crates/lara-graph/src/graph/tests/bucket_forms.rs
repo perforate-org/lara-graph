@@ -72,7 +72,7 @@ fn the_page_index_deepens_past_one_page_of_entries() {
         .unwrap();
         most = most.max(g.edges.minted() - before);
     }
-    let bound = insert::pages_per_half(None);
+    let bound = pages_per_half(None);
     assert!(
         most <= bound,
         "an insert took {most} pages, more than {bound}"

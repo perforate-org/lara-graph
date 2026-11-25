@@ -11,7 +11,7 @@ extern crate std;
 use super::model::Rng;
 use super::*;
 use crate::id::Progress;
-use crate::scale::Scale;
+use crate::store::scale::Scale;
 use std::println;
 
 const EDGES: u32 = 65536;

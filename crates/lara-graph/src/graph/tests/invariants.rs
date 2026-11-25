@@ -1,7 +1,7 @@
 //! The structural invariants every graph test checks.
 
 use super::*;
-use crate::node_labels::NodeLabels;
+use crate::node::node_labels::NodeLabels;
 
 /// Every structural invariant: sorted bucket keys, consistent counts, per-page tombstone counts,
 /// paired halves, and exactly the extents the label buckets and label bucket lists own are
@@ -70,7 +70,7 @@ fn check_postings<M: Memory>(g: &Graph<M>, seen: &mut Seen) {
         }
     }
     let view = g.label_bucket_lists.pages();
-    let listed: Vec<(Label, u32)> = crate::label_postings::labels(&view, g.postings);
+    let listed: Vec<(Label, u32)> = crate::node::label_postings::labels(&view, g.postings);
     let counts: Vec<(Label, u32)> = want
         .iter()
         .map(|(&l, nodes)| (l, u32::try_from(nodes.len()).unwrap()))
@@ -84,7 +84,7 @@ fn check_postings<M: Memory>(g: &Graph<M>, seen: &mut Seen) {
         });
         assert_eq!(&got, nodes, "postings of {label:?}");
     }
-    for extent in crate::label_postings::extents(&view, g.postings, g.node_count()) {
+    for extent in crate::node::label_postings::extents(&view, g.postings, g.node_count()) {
         assert!(
             seen.label_bucket_lists.insert(key(extent)),
             "label postings extent shared"
