@@ -7,6 +7,7 @@ use crate::edge::Writes;
 use crate::error::{BatchError, Error};
 use crate::graph::locate::Found;
 use crate::graph::locate::LastBucket;
+use crate::graph::locate::Pair;
 use crate::graph::{Graph, corrupt};
 use crate::id::{Direction, EdgeRef, Halves, NodeId};
 use crate::id::{Label, Position, ValueVersion, Width};
@@ -160,11 +161,11 @@ impl<M: Memory> Graph<M> {
         let Some(width) = self.value_schema(half.label(), edge.value())? else {
             return Ok(SetValue::Kept(old));
         };
+        if width.version != ValueVersion::FIRST {
+            Self::ensure_pair_current(half, &pair, width)?;
+        }
         let mut targets = [(half, pair.own), (pair.other, pair.theirs)];
         let count = if pair.other == half { 1 } else { 2 };
-        for (h, found) in targets.iter().take(count) {
-            Self::ensure_current(*h, &found.bucket, width)?;
-        }
         self.edges.reserve(Writes::Values {
             count: u32::try_from(count).unwrap_or(2),
         })?;
@@ -211,6 +212,20 @@ impl<M: Memory> Graph<M> {
 }
 
 impl<M: Memory> Graph<M> {
+    /// [`Self::ensure_current`] for both buckets of `half`'s edge, or its one bucket for a loop.
+    /// Kept out of line and called only for a changed label: checked over the array of targets
+    /// instead, the value write built that array early, 340 bytes of copies per write (batched
+    /// `set_edge_value` 9 %).
+    #[cold]
+    #[inline(never)]
+    fn ensure_pair_current(half: EdgeRef, pair: &Pair, schema: Schema) -> Result<(), Error> {
+        Self::ensure_current(half, &pair.own.bucket, schema)?;
+        if pair.other != half {
+            Self::ensure_current(pair.other, &pair.theirs.bucket, schema)?;
+        }
+        Ok(())
+    }
+
     /// Fails with [`Error::StaleValues`] when `bucket`, `half`'s, holds values in an older
     /// version than `schema`'s or is being migrated: they take no writes until migrated.
     pub(in crate::graph) fn ensure_current(

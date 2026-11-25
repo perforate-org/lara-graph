@@ -949,7 +949,7 @@ benches:
   set_edge_value_1024_batched:
     total:
       calls: 1
-      instructions: 8014705
+      instructions: 7511893
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
