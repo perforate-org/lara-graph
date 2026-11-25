@@ -1,8 +1,8 @@
 //! The places an insert batch remembers between edges, so a hot bucket is not read again.
 
 use super::{Half, Place};
+use crate::bucket::LabelBucketKey;
 use crate::id::NodeId;
-use crate::node::label_bucket_list::LabelBucketKey;
 
 /// Target places an `add_edges` batch remembers. Eight covers the common fan-in/fan-out set.
 pub(super) const TARGET_CACHE: usize = 8;

@@ -68,7 +68,7 @@ fn expand_label_filter_1024_stable() -> BenchResult {
     }
     bench_fn(|| {
         let mut kept = 0u32;
-        g.visit_neighbors(hub, LABEL, Direction::Outgoing, Order::Ascending, |e| {
+        g.visit_neighbors(hub, (LABEL, Direction::Outgoing), Order::Ascending, |e| {
             if g.has_node_label(e.target(), Label::new(0))
                 .unwrap_or_else(|err| panic!("label: {err}"))
             {

@@ -2,7 +2,7 @@
 
 use super::Root;
 use super::node::{child_of, key_at, node_len, page_at, read_into};
-use crate::bucket::targets::leaf;
+use crate::bucket::target_index::leaf;
 use crate::store::memory::Memory;
 use crate::store::page_store::{PageId, Pages};
 

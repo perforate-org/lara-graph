@@ -191,7 +191,7 @@ fn node_state_1024_batched() -> BenchResult {
 fn labels_1024() -> BenchResult {
     per_satellite(|g, s| {
         let mut labels = Vec::new();
-        g.labels(s, Direction::Outgoing, &mut labels)
+        g.edge_labels(s, Direction::Outgoing, &mut labels)
             .unwrap_or_else(|err| panic!("labels: {err}"));
         labels.len()
     })

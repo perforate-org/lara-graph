@@ -1,21 +1,24 @@
-//! What a read sees of the graph's stores, as the operations reads need: a node's bucket list
+//! What a batch read sees of the graph's stores, as the operations batches need: a node's bucket list
 //! looked up or walked, a bucket's descriptor or whole state from its list entry, its live edges
-//! in order, the target at a position, and its edges with their values. Reads go through it
+//! in order, the target at a position, and its edges with their values. Batches go through it
 //! instead of the stores, so they cannot write or reach allocation metadata.
 
+use crate::bucket::LabelBucket;
+use crate::bucket::LabelBucketKey;
 use crate::bucket::descriptor::Descriptor;
-use crate::bucket::label_bucket::{self, Span, Window};
-use crate::bucket::stored::{LabelBucket, Stored};
+use crate::bucket::slots::{self, Span, Window};
+use crate::bucket::stored::Stored;
+use crate::edge::{Widths, visit_joined};
 use crate::graph::Graph;
-use crate::graph::bucket::{Widths, visit_joined};
-use crate::id::{Edge, Label, NodeId, Order, Position};
-use crate::node::label_bucket_list::{self, LabelBucketKey, LabelBucketList, Listed};
+use crate::id::{Label, Neighbor, NodeId, Position};
+use crate::input::Order;
+use crate::node::label_bucket_list::{self, LabelBucketList, Listed};
 use crate::store::memory::Memory;
 use crate::store::page_store::{PageId, Pages};
 use core::ops::ControlFlow;
 
-/// A read's view of the graph: its label bucket lists, its edge pages and its width table.
-pub(super) struct View<'g, M: Memory> {
+/// A batch read's view of the graph: its label bucket lists, its edge pages and its width table.
+pub(super) struct BatchView<'g, M: Memory> {
     lists: Pages<'g, M>,
     edges: Pages<'g, M>,
     widths: &'g Widths,
@@ -24,16 +27,16 @@ pub(super) struct View<'g, M: Memory> {
 impl<M: Memory> Graph<M> {
     /// The view reads go through.
     #[inline]
-    pub(super) fn view(&self) -> View<'_, M> {
-        View {
+    pub(super) fn view(&self) -> BatchView<'_, M> {
+        BatchView {
             lists: self.label_bucket_lists.pages(),
-            edges: self.edges.pages(),
+            edges: self.edge_view().pages(),
             widths: &self.widths,
         }
     }
 }
 
-impl<M: Memory> View<'_, M> {
+impl<M: Memory> BatchView<'_, M> {
     /// The list entry of `list`'s bucket `key`, if it has one.
     #[inline]
     pub(super) fn lookup(
@@ -78,15 +81,15 @@ impl<M: Memory> View<'_, M> {
         &self,
         slots: &Descriptor,
         order: Order,
-        f: impl FnMut(Edge) -> ControlFlow<B>,
+        f: impl FnMut(Neighbor) -> ControlFlow<B>,
     ) -> Option<B> {
-        label_bucket::visit(slots, &self.edges, Span::all(slots, order), Window::Page, f)
+        slots::visit(slots, &self.edges, Span::all(slots, order), Window::Page, f)
     }
 
     /// The live target at `at` of `slots`, if any.
     #[inline]
     pub(super) fn target(&self, slots: &Descriptor, at: Position) -> Option<NodeId> {
-        label_bucket::get(slots, at, &self.edges)
+        slots::get(slots, at, &self.edges)
     }
 
     /// Calls `f` with each live edge of `bucket` (of `label`) and its value, in `order`, until it
@@ -97,7 +100,7 @@ impl<M: Memory> View<'_, M> {
         bucket: &LabelBucket,
         label: Label,
         order: Order,
-        f: &mut impl FnMut(Edge, &[u8]) -> ControlFlow<B>,
+        f: &mut impl FnMut(Neighbor, &[u8]) -> ControlFlow<B>,
     ) -> Option<B> {
         visit_joined(&self.edges, bucket, self.widths.get(label), order, f)
     }

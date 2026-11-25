@@ -24,7 +24,7 @@ fn ring() -> (Graph<VecMemory>, Vec<NodeId>) {
 }
 
 fn contains(g: &Graph<VecMemory>, u: NodeId, v: NodeId) -> bool {
-    g.contains_edge(u, OUT, v)
+    g.contains_edge(u, (OUT.0, OUT.1), v)
         .unwrap_or_else(|e| panic!("contains: {e}"))
 }
 
@@ -99,7 +99,7 @@ fn edges_between_hubs_4096() -> BenchResult {
 
 fn visit_all(g: &Graph<VecMemory>, u: NodeId, v: NodeId) -> u32 {
     let mut n = 0;
-    g.visit_edges_between(u, OUT, v, Order::Ascending, |_| {
+    g.visit_edges_between(u, (OUT.0, OUT.1), v, Order::Ascending, |_| {
         n += 1;
         ControlFlow::<()>::Continue(())
     })

@@ -3,12 +3,14 @@
 //! writes headers only, so it costs the same on every message that might be the first after an
 //! install or an upgrade.
 
-use super::bucket::AT_WIDTHS;
-use super::{AT_COUNT, AT_POSTINGS, Graph, InitError, LABELS_MAGIC, MAGIC, VERSION};
-use crate::memories::Memories;
-use crate::store::memory::{Memory, Region, WriteError};
+use super::{Graph, VERSION};
+use crate::error::InitError;
+use crate::graph::memories::Memories;
+use crate::node::labels::{LabelStore, MAGIC as LABELS_MAGIC};
+use crate::node::store::{MAGIC as NODES_MAGIC, NodeStore};
+use crate::store::memory::{Memory, WriteError};
 use crate::store::page_store::{self, PageStore, header};
-use crate::store::units::{ByteOffset, Overflow};
+use crate::store::units::Overflow;
 
 impl<M: Memory> Graph<M> {
     /// Formats `memories` as an empty graph, overwriting whatever they held.
@@ -60,29 +62,9 @@ impl<M: Memory> Graph<M> {
         let label_bucket_lists =
             PageStore::format(label_bucket_list_pages, label_bucket_list_directory)
                 .map_err(init_error)?;
-        let region = Region::new(&nodes);
-        let [m0, m1, m2] = MAGIC;
-        region
-            .write(ByteOffset::new(0), &[m0, m1, m2, VERSION])
-            .map_err(init_error)?;
-        region.overwrite(ByteOffset::new(AT_COUNT), &0u32.to_le_bytes());
-        // No label width table yet.
-        region.overwrite(ByteOffset::new(AT_WIDTHS), &[0; 8]);
-        let [l0, l1, l2] = LABELS_MAGIC;
-        let labels_region = Region::new(&node_labels);
-        labels_region
-            .write(ByteOffset::new(0), &[l0, l1, l2, VERSION])
-            .map_err(init_error)?;
-        // No label postings yet.
-        labels_region.overwrite(
-            ByteOffset::new(AT_POSTINGS),
-            &crate::bucket::values::Plane::Empty.encode(),
-        );
-        Ok(Self::assemble(
-            (nodes, node_labels),
-            edges,
-            label_bucket_lists,
-        ))
+        let nodes = NodeStore::format(nodes, VERSION).map_err(init_error)?;
+        let labels = LabelStore::format(node_labels, VERSION).map_err(init_error)?;
+        Ok(Self::assemble((nodes, labels), edges, label_bucket_lists))
     }
 
     /// [`Self::load`], returning the error.
@@ -96,7 +78,7 @@ impl<M: Memory> Graph<M> {
             [edge_pages, edge_directory],
             [label_bucket_list_pages, label_bucket_list_directory],
         ) = memories.into_parts();
-        match header(&nodes, MAGIC) {
+        match header(&nodes, NODES_MAGIC) {
             None => return Err(InitError::NotAGraph),
             Some(VERSION) => {}
             Some(version) => return Err(InitError::UnsupportedVersion(version)),
@@ -111,7 +93,7 @@ impl<M: Memory> Graph<M> {
             PageStore::open(label_bucket_list_pages, label_bucket_list_directory)
                 .map_err(open_error)?;
         Ok(Self::assemble(
-            (nodes, node_labels),
+            (NodeStore::open(nodes), LabelStore::open(node_labels)),
             edges,
             label_bucket_lists,
         ))
@@ -124,7 +106,7 @@ impl<M: Memory> Graph<M> {
     /// [`InitError::UnsupportedVersion`], [`InitError::OutOfMemory`], or
     /// [`InitError::NotAGraph`] when the nodes memory holds a graph and the others do not.
     pub fn try_init(memories: Memories<M>) -> Result<Self, InitError> {
-        if header(memories.nodes(), MAGIC).is_some() {
+        if header(memories.nodes(), NODES_MAGIC).is_some() {
             Self::try_load(memories)
         } else {
             Self::try_new(memories)
@@ -138,7 +120,7 @@ impl<M: Memory> Graph<M> {
         let (label_bucket_list_pages, label_bucket_list_directory) =
             self.label_bucket_lists.into_memories();
         Memories::from_parts(
-            (self.nodes, self.node_labels),
+            (self.nodes.into_memory(), self.labels.into_memory()),
             [edge_pages, edge_directory],
             [label_bucket_list_pages, label_bucket_list_directory],
         )

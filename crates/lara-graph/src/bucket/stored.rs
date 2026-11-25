@@ -1,5 +1,5 @@
-//! How a label bucket is stored in its label bucket list entry: a plain descriptor, or a header
-//! for a bucket with more to it.
+//! How a [`LabelBucket`] is stored in its label bucket list entry: a plain descriptor, or a
+//! header for a bucket with more to it.
 //!
 //! A list entry's 13 bytes after its key hold a [`Descriptor`] for a plain bucket, including a run that keeps
 //! its values beside its slots (see `descriptor`). A bucket whose values are in a value plane (a
@@ -41,8 +41,9 @@
 //! ```
 
 use crate::bucket::descriptor::{DESCRIPTOR_BYTES, Descriptor, KIND_HEADER, KIND_SHIFT, kind_of};
-use crate::bucket::targets::Root;
+use crate::bucket::target_index::Root;
 use crate::bucket::values::{Plane, ROOT_BYTES};
+use crate::bucket::{Index, LabelBucket, Values};
 use crate::id::Width;
 use crate::store::corrupt::corrupt;
 use crate::store::memory::Memory;
@@ -95,74 +96,8 @@ impl Stored {
     }
 }
 
-/// A bucket's values: the plane and the width.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Values {
-    pub(crate) plane: Plane,
-    pub(crate) width: Width,
-}
-
-/// A bucket's target index.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Index {
-    /// No postings: a bucket too small for an index, or a paged one whose complete blocks hold
-    /// no live edges.
-    Empty,
-    /// The tree of postings.
-    Tree(Root),
-    /// Released while its node detaches, as all its edges are going: lookups scan the bucket.
-    Dropped,
-}
-
-impl Index {
-    /// The tree, if there is one.
-    pub(crate) const fn tree(self) -> Option<Root> {
-        match self {
-            Self::Tree(root) => Some(root),
-            Self::Empty | Self::Dropped => None,
-        }
-    }
-
-    /// The index holding `root`.
-    pub(crate) const fn of(root: Option<Root>) -> Self {
-        match root {
-            Some(root) => Self::Tree(root),
-            None => Self::Empty,
-        }
-    }
-}
-
-/// A label bucket resolved from its label bucket list entry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct LabelBucket {
-    pub(crate) slots: Descriptor,
-    /// The header, while the bucket has values in a plane or an index.
-    pub(crate) header: Option<Extent>,
-    /// Values in a value plane; values beside a run's slots are not here (see [`Self::cells`]).
-    pub(crate) values: Option<Values>,
-    pub(crate) index: Index,
-}
-
+/// The bucket as its list entry and header store it.
 impl LabelBucket {
-    /// The end of the positions the index covers; `None` when lookups scan the whole bucket (too
-    /// small for an index, or its index dropped).
-    pub(crate) fn indexed(&self) -> Option<u32> {
-        match self.index {
-            Index::Dropped => None,
-            Index::Empty | Index::Tree(_) => self.slots.indexed_end(),
-        }
-    }
-
-    /// A bucket with only slots.
-    pub(crate) const fn plain(slots: Descriptor) -> Self {
-        Self {
-            slots,
-            header: None,
-            values: None,
-            index: Index::Empty,
-        }
-    }
-
     /// Reads an extended bucket's header (one 32-byte read); a plain one needs nothing.
     pub(crate) fn resolve<M: Memory>(view: &Pages<'_, M>, stored: Stored) -> Self {
         let header = match stored {
@@ -191,31 +126,6 @@ impl LabelBucket {
             values,
             index,
         }
-    }
-
-    /// The bucket's values: beside a run's slots, or in the value plane its header holds.
-    pub(crate) fn cells(&self) -> Option<Values> {
-        match self.slots {
-            Descriptor::Run(run) => run.values.map_or(self.values, |width| {
-                Some(Values {
-                    plane: Plane::beside(run.extent.page(), run.cells_offset(), run.stored),
-                    width,
-                })
-            }),
-            Descriptor::Tiny(_) | Descriptor::Paged(_) => self.values,
-        }
-    }
-
-    /// Records the plane a value write left: values beside a run's slots never move.
-    pub(crate) fn set_plane(&mut self, plane: Plane) {
-        if let Some(values) = self.values.as_mut() {
-            values.plane = plane;
-        }
-    }
-
-    /// Whether the bucket needs a header: it has values in a plane, or an index.
-    pub(crate) const fn extended(&self) -> bool {
-        self.values.is_some() || !matches!(self.index, Index::Empty)
     }
 
     /// What the list entry holds for this bucket.

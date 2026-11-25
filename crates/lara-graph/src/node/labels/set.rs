@@ -74,7 +74,7 @@ const _: () = assert!(MAX_LISTED < 0xFFFF);
 
 /// A node's label cell, decoded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum NodeLabels {
+pub(crate) enum LabelSet {
     None,
     One(Label),
     Two(Label, Label),
@@ -87,7 +87,7 @@ enum Spill {
     Bitmap([PageId; 2]),
 }
 
-impl NodeLabels {
+impl LabelSet {
     /// As the module's Cell diagram shows.
     pub(crate) fn encode(self) -> [u8; CELL_BYTES] {
         match self {
@@ -311,16 +311,16 @@ mod tests {
 
     #[test]
     fn cells_round_trip_and_zero_is_no_labels() {
-        assert_eq!(NodeLabels::decode([0; CELL_BYTES]), NodeLabels::None);
+        assert_eq!(LabelSet::decode([0; CELL_BYTES]), LabelSet::None);
         let extent = Extent::new(PageId::new(77), 5, ByteClass::SMALLEST);
         for cell in [
-            NodeLabels::None,
-            NodeLabels::One(Label::new(0)),
-            NodeLabels::One(Label::new(u16::MAX)),
-            NodeLabels::Two(Label::new(3), Label::new(u16::MAX)),
-            NodeLabels::Spilled(extent),
+            LabelSet::None,
+            LabelSet::One(Label::new(0)),
+            LabelSet::One(Label::new(u16::MAX)),
+            LabelSet::Two(Label::new(3), Label::new(u16::MAX)),
+            LabelSet::Spilled(extent),
         ] {
-            assert_eq!(NodeLabels::decode(cell.encode()), cell);
+            assert_eq!(LabelSet::decode(cell.encode()), cell);
         }
     }
 }

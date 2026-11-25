@@ -115,11 +115,10 @@ pub fn build<M: Memory>(g: &mut Graph<M>, layout: Layout) -> NodeId {
 /// If `hub` is not a node of `g`.
 pub fn visit<M: Memory>(g: &Graph<M>, hub: NodeId) -> u64 {
     let mut seen = 0u64;
-    let first = g.visit_neighbors(hub, LABEL, Direction::Outgoing, Order::Ascending, |e| {
+    let first = g.visit_neighbors(hub, (LABEL, Direction::Outgoing), Order::Ascending, |e| {
         let second = g.visit_neighbors(
             e.target(),
-            LABEL,
-            Direction::Outgoing,
+            (LABEL, Direction::Outgoing),
             Order::Ascending,
             |_| {
                 seen += 1;
@@ -140,7 +139,7 @@ pub fn visit<M: Memory>(g: &Graph<M>, hub: NodeId) -> u64 {
 /// If `hub` is not a node of `g`.
 pub fn satellites<M: Memory>(g: &Graph<M>, hub: NodeId) -> Vec<NodeId> {
     let mut out = Vec::new();
-    g.visit_neighbors(hub, LABEL, Direction::Outgoing, Order::Ascending, |e| {
+    g.visit_neighbors(hub, (LABEL, Direction::Outgoing), Order::Ascending, |e| {
         out.push(e.target());
         ControlFlow::<()>::Continue(())
     })
@@ -155,7 +154,7 @@ pub fn satellites<M: Memory>(g: &Graph<M>, hub: NodeId) -> Vec<NodeId> {
 /// If `v` is not a node of `g`.
 pub fn visit_one<M: Memory>(g: &Graph<M>, v: NodeId, direction: Direction) -> u64 {
     let mut seen = 0u64;
-    g.visit_neighbors(v, LABEL, direction, Order::Ascending, |_| {
+    g.visit_neighbors(v, (LABEL, direction), Order::Ascending, |_| {
         seen += 1;
         ControlFlow::<()>::Continue(())
     })
@@ -169,7 +168,7 @@ pub fn visit_one<M: Memory>(g: &Graph<M>, v: NodeId, direction: Direction) -> u6
 ///
 /// If `v` is not a node of `g`.
 pub fn degree<M: Memory>(g: &Graph<M>, v: NodeId, direction: Direction) -> u32 {
-    g.degree(v, LABEL, direction)
+    g.degree(v, (LABEL, direction))
         .unwrap_or_else(|err| panic!("degree: {err}"))
 }
 
@@ -182,7 +181,7 @@ pub fn visit_many<M: Memory>(g: &Graph<M>, nodes: &[NodeId], direction: Directio
     let mut seen = 0u64;
     let mut batch = g.read_batch();
     batch
-        .visit_neighbors_each(nodes, LABEL, direction, Order::Ascending, |_, _| {
+        .visit_neighbors_each(nodes, (LABEL, direction), Order::Ascending, |_, _| {
             seen += 1;
             ControlFlow::<()>::Continue(())
         })
@@ -202,7 +201,7 @@ pub fn visit_many_batch<M: Memory>(
 ) -> u64 {
     let mut seen = 0u64;
     batch
-        .visit_neighbors_each(nodes, LABEL, direction, Order::Ascending, |_, _| {
+        .visit_neighbors_each(nodes, (LABEL, direction), Order::Ascending, |_, _| {
             seen += 1;
             ControlFlow::<()>::Continue(())
         })
@@ -219,7 +218,7 @@ pub fn degree_many<M: Memory>(g: &Graph<M>, nodes: &[NodeId], direction: Directi
     let mut batch = g.read_batch();
     let mut degrees = Vec::new();
     batch
-        .degree_each(nodes, LABEL, direction, &mut degrees)
+        .degree_each(nodes, (LABEL, direction), &mut degrees)
         .unwrap_or_else(|err| panic!("degree batch: {err}"));
     degrees.into_iter().map(u64::from).sum()
 }
@@ -253,7 +252,7 @@ pub fn labels_many<M: Memory>(g: &Graph<M>, nodes: &[NodeId], direction: Directi
     let mut batch = g.read_batch();
     let mut seen = 0u64;
     batch
-        .labels_each(nodes, direction, |_, _| {
+        .edge_labels_each(nodes, direction, |_, _| {
             seen += 1;
             ControlFlow::<()>::Continue(())
         })
@@ -268,14 +267,9 @@ pub fn labels_many<M: Memory>(g: &Graph<M>, nodes: &[NodeId], direction: Directi
 /// If a node is not in `g`.
 pub fn has_edges_many<M: Memory>(g: &Graph<M>, nodes: &[NodeId]) -> u64 {
     let mut batch = g.read_batch();
-    let mut seen = 0u64;
+    let mut has = Vec::new();
     batch
-        .has_edges_each(nodes, |_, has| {
-            if has {
-                seen += 1;
-            }
-            ControlFlow::<()>::Continue(())
-        })
+        .has_edges_each(nodes, &mut has)
         .unwrap_or_else(|err| panic!("has_edges batch: {err}"));
-    seen
+    u64::try_from(has.iter().filter(|&&h| h).count()).unwrap_or(u64::MAX)
 }

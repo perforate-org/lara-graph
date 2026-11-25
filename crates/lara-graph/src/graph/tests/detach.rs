@@ -121,7 +121,7 @@ fn detaching_removes_every_edge_and_reports_its_true_halves() {
         Direction::Undirected,
     ] {
         let mut labels = Vec::new();
-        g.labels(x, direction, &mut labels).unwrap();
+        g.edge_labels(x, direction, &mut labels).unwrap();
         assert_eq!(labels, Vec::<Label>::new(), "{direction:?}");
     }
     assert_eq!(g.counterpart(other.canonical()), Ok(Some(other.other())));
@@ -205,7 +205,7 @@ fn a_hub_detaches_in_bounded_steps_across_reopens() {
     assert_eq!(left, [2]);
     for x in 1..5 {
         assert_eq!(
-            g.degree(v(x), l(0), Direction::Incoming),
+            g.degree(v(x), (l(0), Direction::Incoming)),
             Ok(u32::from(x == 2))
         );
     }

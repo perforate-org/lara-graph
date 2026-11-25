@@ -100,7 +100,7 @@ fn hub_visit_values_65536() -> BenchResult {
     bench_fn(|| {
         for _ in 0..51 {
             let mut sum = 0u64;
-            g.visit_values(hub, OUT, Order::Ascending, |_, v| {
+            g.visit_values(hub, (OUT.0, OUT.1), Order::Ascending, |_, v| {
                 sum = sum.wrapping_add(u64::from(v.first().copied().unwrap_or(0)));
                 ControlFlow::<()>::Continue(())
             })
@@ -118,8 +118,10 @@ fn hub_visit_with_values_1024() -> BenchResult {
     bench_fn(|| {
         for _ in 0..51 {
             let mut count = 0u32;
-            g.visit_neighbors_with_values(hub, OUT, Order::Ascending, |_, _| tick(&mut count))
-                .unwrap_or_else(|e| panic!("visit: {e}"));
+            g.visit_neighbors_with_values(hub, (OUT.0, OUT.1), Order::Ascending, |_, _| {
+                tick(&mut count)
+            })
+            .unwrap_or_else(|e| panic!("visit: {e}"));
             black_box(count);
         }
     })
@@ -131,7 +133,9 @@ fn visit_with_values_many_1024_loop() -> BenchResult {
     let (g, sources) = one_valued_edge_per_source();
     bench_fn(|| {
         black_box(count_each(&sources, |source, count| {
-            g.visit_neighbors_with_values(source, OUT, Order::Ascending, |_, _| tick(count))
+            g.visit_neighbors_with_values(source, (OUT.0, OUT.1), Order::Ascending, |_, _| {
+                tick(count)
+            })
         }))
     })
 }
@@ -146,8 +150,7 @@ fn visit_with_values_many_1024_batched() -> BenchResult {
         batch
             .visit_neighbors_with_values_each(
                 &sources,
-                OUT.0,
-                OUT.1,
+                (OUT.0, OUT.1),
                 Order::Ascending,
                 |_, _, _| tick(&mut count),
             )
@@ -161,7 +164,7 @@ fn visit_values_many_1024_loop() -> BenchResult {
     let (g, sources) = one_valued_edge_per_source();
     bench_fn(|| {
         black_box(count_each(&sources, |source, count| {
-            g.visit_values(source, OUT, Order::Ascending, |_, _| tick(count))
+            g.visit_values(source, (OUT.0, OUT.1), Order::Ascending, |_, _| tick(count))
         }))
     })
 }
@@ -173,7 +176,7 @@ fn visit_values_many_1024_batched() -> BenchResult {
         let mut batch = g.read_batch();
         let mut count = 0u32;
         batch
-            .visit_values_each(&sources, OUT.0, OUT.1, Order::Ascending, |_, _, _| {
+            .visit_values_each(&sources, (OUT.0, OUT.1), Order::Ascending, |_, _, _| {
                 tick(&mut count)
             })
             .unwrap_or_else(|e| panic!("batch: {e}"));

@@ -15,8 +15,7 @@ fn visiting_many_neighbors_matches_one_by_one_and_stops() {
     let mut batch = g.read_batch();
     let none = batch.visit_neighbors_each(
         &nodes,
-        l(0),
-        Direction::Outgoing,
+        (l(0), Direction::Outgoing),
         Order::Ascending,
         |node, e| {
             batched.push((node.index(), e.position().index(), e.target().index()));
@@ -28,7 +27,7 @@ fn visiting_many_neighbors_matches_one_by_one_and_stops() {
     let mut one_by_one = Vec::new();
     for &node in &nodes {
         let mut out = Vec::new();
-        g.neighbors_directed(node, l(0), Direction::Outgoing, &mut out)
+        g.neighbors(node, (l(0), Direction::Outgoing), &mut out)
             .unwrap();
         for e in out {
             one_by_one.push((node.index(), e.position().index(), e.target().index()));
@@ -40,8 +39,7 @@ fn visiting_many_neighbors_matches_one_by_one_and_stops() {
     let mut batch = g.read_batch();
     let stopped = batch.visit_neighbors_each(
         &nodes,
-        l(0),
-        Direction::Outgoing,
+        (l(0), Direction::Outgoing),
         Order::Ascending,
         |_, _| {
             seen += 1;
@@ -60,8 +58,7 @@ fn visiting_many_neighbors_matches_one_by_one_and_stops() {
     assert_eq!(
         batch.visit_neighbors_each(
             &[v(0), v(9)],
-            l(0),
-            Direction::Outgoing,
+            (l(0), Direction::Outgoing),
             Order::Ascending,
             |_, _| {
                 called = true;
@@ -88,8 +85,7 @@ fn visiting_many_reads_dense_ids_in_lines() {
     batch
         .visit_neighbors_each(
             &nodes,
-            l(0),
-            Direction::Incoming,
+            (l(0), Direction::Incoming),
             Order::Ascending,
             |node, e| {
                 seen.push((node.index(), e.target().index()));
@@ -116,7 +112,7 @@ fn read_batch_shares_buffers_across_reads() {
     let mut batch = g.read_batch();
     let mut degrees = Vec::new();
     batch
-        .degree_each(&nodes, l(0), Direction::Incoming, &mut degrees)
+        .degree_each(&nodes, (l(0), Direction::Incoming), &mut degrees)
         .unwrap();
     assert_eq!(degrees, vec![1; 12]);
     let mut states = Vec::new();
@@ -126,8 +122,7 @@ fn read_batch_shares_buffers_across_reads() {
     batch
         .visit_neighbors_each(
             &nodes,
-            l(0),
-            Direction::Incoming,
+            (l(0), Direction::Incoming),
             Order::Ascending,
             |_, _| {
                 seen += 1;
@@ -138,23 +133,18 @@ fn read_batch_shares_buffers_across_reads() {
     assert_eq!(seen, 12);
     let mut labels = Vec::new();
     batch
-        .labels_each(&nodes, Direction::Incoming, |node, label| {
+        .edge_labels_each(&nodes, Direction::Incoming, |node, label| {
             labels.push((node.index(), label.get()));
             ControlFlow::<()>::Continue(())
         })
         .unwrap();
     assert_eq!(labels, (1..=12).map(|v| (v, 0)).collect::<Vec<_>>());
     let mut edges = Vec::new();
-    batch
-        .has_edges_each(&nodes, |node, has| {
-            edges.push((node.index(), has));
-            ControlFlow::<()>::Continue(())
-        })
-        .unwrap();
-    assert_eq!(edges, (1..=12).map(|v| (v, true)).collect::<Vec<_>>());
+    batch.has_edges_each(&nodes, &mut edges).unwrap();
+    assert_eq!(edges, alloc::vec![true; 12]);
     let mut degrees = Vec::new();
     assert_eq!(
-        batch.degree_each(&[v(0), v(99)], l(0), Direction::Outgoing, &mut degrees),
+        batch.degree_each(&[v(0), v(99)], (l(0), Direction::Outgoing), &mut degrees),
         Err(Error::UnknownNode(v(99)))
     );
     assert_eq!(degrees, Vec::<u32>::new());
@@ -171,7 +161,7 @@ fn batch_edge_targets_match_one_by_one() {
         insert(&mut g, v(0), l(0), v(target));
     }
     let mut edges = Vec::new();
-    g.neighbors_directed(v(0), l(0), Direction::Outgoing, &mut edges)
+    g.neighbors(v(0), (l(0), Direction::Outgoing), &mut edges)
         .unwrap();
     let halves: Vec<EdgeRef> = edges
         .iter()
@@ -220,7 +210,7 @@ fn batch_counterparts_match_one_by_one() {
         insert(&mut g, v(0), l(0), v(target));
     }
     let mut edges = Vec::new();
-    g.neighbors_directed(v(0), l(0), Direction::Outgoing, &mut edges)
+    g.neighbors(v(0), (l(0), Direction::Outgoing), &mut edges)
         .unwrap();
     let halves: Vec<EdgeRef> = edges
         .iter()
@@ -257,7 +247,7 @@ fn batch_counterparts_reuses_parallel_target_buckets() {
         insert(&mut g, v(0), l(0), v(1));
     }
     let mut edges = Vec::new();
-    g.neighbors_directed(v(0), l(0), Direction::Outgoing, &mut edges)
+    g.neighbors(v(0), (l(0), Direction::Outgoing), &mut edges)
         .unwrap();
     let halves: Vec<EdgeRef> = edges
         .iter()

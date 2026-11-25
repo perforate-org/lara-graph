@@ -1,12 +1,12 @@
-//! Writes: inserting and removing edges, bulk load, edge values, detaching nodes and compaction.
-//! Writes stand on the bucket layer only.
+//! Writes: adding nodes, inserting and removing edges, bulk load, edge values, detaching nodes and compaction.
+//! Writes stand on the node and edge stores.
 
 mod bulk;
-mod compaction;
+mod compact;
 mod detach;
 mod insert;
+mod nodes;
 mod remove;
 mod values;
 
-pub use insert::{EdgeKind, NewEdge};
-pub use values::EdgeValue;
+pub use detach::DetachingSet;

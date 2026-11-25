@@ -1,7 +1,7 @@
 //! The label width table: which labels' edges carry a value, and how wide it is.
 //!
 //! The table is one extent in the label bucket list store, its entries sorted by label, referenced
-//! from the nodes header (see `graph`). The graph keeps a copy in the heap: it owns its memories.
+//! from the nodes header (see `node::store`). The graph keeps a copy in the heap: it owns its memories.
 //!
 //! # Table
 //!
@@ -20,36 +20,52 @@
 //! Unused space
 //! ```
 
-use crate::graph::{Error, Graph};
+use crate::error::Error;
 use crate::id::{Label, Width};
 use crate::store::corrupt::corrupt;
-use crate::store::memory::{Memory, Region};
-use crate::store::page_store::{ByteClass, EXTENT_BYTES, Extent, PageStore};
+use crate::store::memory::Memory;
+use crate::store::page_store::{ByteClass, Extent, PageStore};
 use crate::store::units::ByteOffset;
 use alloc::vec::Vec;
 
-/// Where the table's reference sits in the nodes header.
-pub(in crate::graph) const AT_WIDTHS: u64 = 8;
 const ENTRY_BYTES: usize = 4;
 /// Labels with a width: one page of entries.
 const MAX_WIDTHS: usize = (4096 - 2) / ENTRY_BYTES;
 
 /// The table and where it is stored: its entries in label order, as they are stored.
 #[derive(Default)]
-pub(in crate::graph) struct Widths {
+pub(crate) struct Widths {
     sorted: Vec<(Label, Width)>,
     at: Option<Extent>,
 }
 
 impl Widths {
-    /// Reads the table referenced from the nodes header.
-    pub(in crate::graph) fn load<M: Memory>(nodes: &M, label_bucket_lists: &PageStore<M>) -> Self {
-        let [present, e @ ..]: [u8; 1 + EXTENT_BYTES] =
-            Region::new(nodes).read_array(ByteOffset::new(AT_WIDTHS));
-        if present == 0 {
-            return Self::default();
+    /// The table's extent (test invariant checks).
+    #[cfg(test)]
+    pub(crate) const fn extent(&self) -> Option<Extent> {
+        self.at
+    }
+
+    /// `label`'s width, checking that `value` matches it.
+    pub(crate) fn check(&self, label: Label, value: &[u8]) -> Result<Option<Width>, Error> {
+        let width = self.get(label);
+        let expected = width.map_or(0, Width::get);
+        if usize::from(expected) == value.len() {
+            Ok(width)
+        } else {
+            Err(Error::WrongValueLength {
+                label,
+                expected,
+                actual: value.len(),
+            })
         }
-        let at = Extent::decode(e);
+    }
+
+    /// Reads the table at `at`, which the nodes header names; an empty one for `None`.
+    pub(crate) fn load<M: Memory>(at: Option<Extent>, label_bucket_lists: &PageStore<M>) -> Self {
+        let Some(at) = at else {
+            return Self::default();
+        };
         let view = label_bucket_lists.pages();
         let count = usize::from(u16::from_le_bytes(view.read_array(at.offset())));
         let bytes = view.read(ByteOffset::new(at.offset().get() + 2), count * ENTRY_BYTES);
@@ -69,29 +85,29 @@ impl Widths {
         }
     }
 
-    pub(in crate::graph) fn get(&self, label: Label) -> Option<Width> {
+    pub(crate) fn get(&self, label: Label) -> Option<Width> {
         let i = self.sorted.binary_search_by_key(&label, |&(l, _)| l).ok()?;
         self.sorted.get(i).map(|&(_, width)| width)
     }
 }
 
-impl<M: Memory> Graph<M> {
-    /// Declares that `label`'s edges carry a value of `width` bytes, on every side. Constant
-    /// time: existing edges read as zeros until a value is written to them. Declaring the same
-    /// width again changes nothing.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::WidthConflict`] if `label` already has another width, [`Error::TooManyWidths`]
-    /// past 1023 labels, [`Error::OutOfMemory`]. On error nothing changes.
-    pub fn declare_width(&mut self, label: Label, width: Width) -> Result<(), Error> {
-        match self.widths.get(label) {
-            Some(declared) if declared == width => return Ok(()),
+impl Widths {
+    /// Gives `label` values of `width` bytes: writes a new table to `lists`, releases the old
+    /// one, and returns where the new table is, for the nodes header; `None` when `label` already has
+    /// `width`. On error nothing changes.
+    pub(crate) fn declare<M: Memory>(
+        &mut self,
+        lists: &mut PageStore<M>,
+        label: Label,
+        width: Width,
+    ) -> Result<Option<Extent>, Error> {
+        match self.get(label) {
+            Some(declared) if declared == width => return Ok(None),
             Some(declared) => return Err(Error::WidthConflict { label, declared }),
-            None if self.widths.sorted.len() >= MAX_WIDTHS => return Err(Error::TooManyWidths),
+            None if self.sorted.len() >= MAX_WIDTHS => return Err(Error::TooManyWidths),
             None => {}
         }
-        let mut sorted = self.widths.sorted.clone();
+        let mut sorted = self.sorted.clone();
         let place = sorted.partition_point(|&(l, _)| l < label);
         sorted.insert(place, (label, width));
         let count = u16::try_from(sorted.len()).map_err(|_| Error::TooManyWidths)?;
@@ -106,30 +122,15 @@ impl<M: Memory> Graph<M> {
             .collect();
         let class = ByteClass::for_bytes(u32::try_from(bytes.len()).unwrap_or(u32::MAX))
             .unwrap_or_else(|| corrupt("width table beyond a page"));
-        let at = self.label_bucket_lists.allocate(class)?;
-        self.label_bucket_lists.write(at.offset(), &bytes);
-        let reference: Vec<u8> = [1].into_iter().chain(at.encode()).collect();
-        self.region()
-            .overwrite(ByteOffset::new(AT_WIDTHS), &reference);
-        if let Some(old) = self.widths.at {
-            self.label_bucket_lists.release(old);
+        let at = lists.allocate(class)?;
+        lists.write(at.offset(), &bytes);
+        if let Some(old) = self.at {
+            lists.release(old);
         }
-        self.widths = Widths {
+        *self = Self {
             sorted,
             at: Some(at),
         };
-        Ok(())
-    }
-
-    /// The width of `label`'s values, if it has been declared.
-    #[must_use]
-    pub fn width(&self, label: Label) -> Option<Width> {
-        self.widths.get(label)
-    }
-
-    /// The width table's extent (test invariant checks).
-    #[cfg(test)]
-    pub(in crate::graph) const fn widths_extent(&self) -> Option<Extent> {
-        self.widths.at
+        Ok(Some(at))
     }
 }

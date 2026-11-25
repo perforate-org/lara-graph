@@ -1,28 +1,18 @@
 //! Writing edge values, one edge or a batch that is all-or-none.
 
-use crate::bucket::{label_bucket, values};
-use crate::graph::bucket::{Found, LastBucket};
-use crate::graph::{BatchError, Error, Graph, corrupt};
+use crate::bucket::LabelBucketKey;
+use crate::bucket::slots;
+use crate::edge::Writes;
+use crate::error::{BatchError, Error};
+use crate::graph::locate::Found;
+use crate::graph::locate::LastBucket;
+use crate::graph::{Graph, corrupt};
 use crate::id::{EdgeRef, Halves};
-use crate::node::label_bucket_list::LabelBucketKey;
+use crate::id::{Label, Position, Width};
+use crate::input::EdgeValue;
 use crate::store::memory::Memory;
 use alloc::vec;
 use alloc::vec::Vec;
-
-/// One edge value to write in [`Graph::set_edge_values`].
-#[derive(Clone, Copy, Debug)]
-pub struct EdgeValue<'a> {
-    half: EdgeRef,
-    value: &'a [u8],
-}
-
-impl<'a> EdgeValue<'a> {
-    /// Writes `value` to the edge `half` belongs to.
-    #[must_use]
-    pub const fn new(half: EdgeRef, value: &'a [u8]) -> Self {
-        Self { half, value }
-    }
-}
 
 /// What one write of a batch did to its edge, with the old canonical value.
 enum SetValue {
@@ -67,14 +57,15 @@ impl<M: Memory> Graph<M> {
             .iter()
             .find(|(h, _)| *h == halves.canonical())
             .map_or_else(Vec::new, |(h, found)| {
-                self.read_value(found, h.label(), h.position())
+                self.edge_view()
+                    .read_value(&found.bucket, h.label(), h.position())
             });
         let Some(width) = width else {
             return Ok(Some(old));
         };
-        let pages = 2 + values::PAGES_PER_WRITE;
-        self.edges
-            .reserve(pages * u32::try_from(targets.len()).unwrap_or(2))?;
+        self.edges.reserve(Writes::Values {
+            count: u32::try_from(targets.len()).unwrap_or(2),
+        })?;
         let first = half.node();
         for (i, (h, found)) in targets.into_iter().enumerate() {
             // The second half is looked up again only on the first's node, the one list the
@@ -102,8 +93,8 @@ impl<M: Memory> Graph<M> {
         values: &[EdgeValue<'_>],
     ) -> Result<Vec<Option<Vec<u8>>>, BatchError> {
         for (index, edge) in values.iter().enumerate() {
-            self.check(edge.half.node())
-                .and_then(|()| self.value_width(edge.half.label(), edge.value))
+            self.check(edge.half().node())
+                .and_then(|()| self.value_width(edge.half().label(), edge.value()))
                 .map_err(|error| BatchError::unchanged(index, error))?;
         }
         let mut out = Vec::with_capacity(values.len());
@@ -114,7 +105,7 @@ impl<M: Memory> Graph<M> {
                 Ok(SetValue::Absent) => out.push(None),
                 Ok(SetValue::Kept(old)) => out.push(Some(old)),
                 Ok(SetValue::Written(old)) => {
-                    journal.push((edge.half, out.len()));
+                    journal.push((edge.half(), out.len()));
                     out.push(Some(old));
                 }
                 Err(error) => {
@@ -132,7 +123,7 @@ impl<M: Memory> Graph<M> {
         edge: &EdgeValue<'_>,
         last: &mut LastPair,
     ) -> Result<SetValue, Error> {
-        let half = edge.half;
+        let half = edge.half();
         let node = half.node();
         let key = LabelBucketKey::of(half);
         let own = last
@@ -141,8 +132,8 @@ impl<M: Memory> Graph<M> {
         let Some(own) = own else {
             return Ok(SetValue::Absent);
         };
-        let view = self.edges.pages();
-        let Some(other) = label_bucket::get(&own.bucket.slots, half.position(), &view) else {
+        let view = self.edge_view().pages();
+        let Some(other) = slots::get(&own.bucket.slots, half.position(), &view) else {
             return Ok(SetValue::Absent);
         };
         let theirs_key = LabelBucketKey::of(half).opposite();
@@ -152,19 +143,25 @@ impl<M: Memory> Graph<M> {
         let pair = self.pair_with_theirs(half, own, other, theirs_key, theirs);
         let halves = Halves::of(half, pair.other);
         let old = if halves.canonical() == half {
-            self.read_value(&pair.own, half.label(), half.position())
+            self.edge_view()
+                .read_value(&pair.own.bucket, half.label(), half.position())
         } else {
-            self.read_value(&pair.theirs, pair.other.label(), pair.other.position())
+            self.edge_view().read_value(
+                &pair.theirs.bucket,
+                pair.other.label(),
+                pair.other.position(),
+            )
         };
-        let Some(width) = self.value_width(half.label(), edge.value)? else {
+        let Some(width) = self.value_width(half.label(), edge.value())? else {
             return Ok(SetValue::Kept(old));
         };
         let mut targets = [(half, pair.own), (pair.other, pair.theirs)];
         let count = if pair.other == half { 1 } else { 2 };
-        self.edges
-            .reserve((2 + values::PAGES_PER_WRITE) * u32::try_from(count).unwrap_or(2))?;
+        self.edges.reserve(Writes::Values {
+            count: u32::try_from(count).unwrap_or(2),
+        })?;
         for (h, found) in targets.iter_mut().take(count) {
-            let updated = self.write_value(*found, (width, h.position()), edge.value);
+            let updated = self.write_value(*found, (width, h.position()), edge.value());
             if *h == half {
                 last.own.set(node, key, Some(updated));
             } else {
@@ -202,5 +199,52 @@ impl<M: Memory> Graph<M> {
         for (h, found) in targets.iter().take(count) {
             self.write_value(*found, (width, h.position()), old);
         }
+    }
+}
+
+impl<M: Memory> Graph<M> {
+    /// `label`'s width, checking that `value` matches it.
+    pub(in crate::graph) fn value_width(
+        &self,
+        label: Label,
+        value: &[u8],
+    ) -> Result<Option<Width>, Error> {
+        self.widths.check(label, value)
+    }
+
+    /// Writes `value` at `position` of `found`, giving the bucket a value plane if it has none.
+    /// Within reserved memory.
+    pub(in crate::graph) fn write_value(
+        &mut self,
+        found: Found,
+        (width, position): (Width, Position),
+        value: &[u8],
+    ) -> Found {
+        let bucket = self.edges.put_value(found.bucket, (width, position), value);
+        let bucket = self.publish(found.entry, bucket);
+        Found {
+            entry: found.entry,
+            bucket,
+        }
+    }
+}
+
+impl<M: Memory> Graph<M> {
+    /// Declares that `label`'s edges carry a value of `width` bytes, on every side. Constant
+    /// time: existing edges read as zeros until a value is written to them. Declaring the same
+    /// width again changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::WidthConflict`] if `label` already has another width, [`Error::TooManyWidths`]
+    /// past 1023 labels, [`Error::OutOfMemory`]. On error nothing changes.
+    pub fn declare_width(&mut self, label: Label, width: Width) -> Result<(), Error> {
+        if let Some(at) = self
+            .widths
+            .declare(&mut self.label_bucket_lists, label, width)?
+        {
+            self.nodes.set_widths_at(at);
+        }
+        Ok(())
     }
 }

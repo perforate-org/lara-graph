@@ -13,7 +13,7 @@ fn between_at_a(
     order: Order,
 ) -> Vec<Position> {
     let mut out = Vec::new();
-    g.visit_edges_between(a, key, b, order, |half| {
+    g.visit_edges_between(a, (key.0, key.1), b, order, |half| {
         let at_a = if half.node() == a && half.direction() == key.1 {
             half
         } else {
@@ -39,7 +39,7 @@ fn brute(
     order: Order,
 ) -> Vec<Position> {
     let mut out = Vec::new();
-    g.visit_neighbors(a, key.0, key.1, order, |e| {
+    g.visit_neighbors(a, (key.0, key.1), order, |e| {
         if e.target() == b {
             out.push(e.position());
         }
@@ -137,7 +137,10 @@ fn edges_between_two_nodes_match_a_filter_of_either_end() {
                         want,
                         "{a:?} {key:?} {b:?} {order:?}"
                     );
-                    assert_eq!(g.contains_edge(a, key, b).unwrap(), !want.is_empty());
+                    assert_eq!(
+                        g.contains_edge(a, (key.0, key.1), b).unwrap(),
+                        !want.is_empty()
+                    );
                 }
             }
         }
@@ -146,7 +149,7 @@ fn edges_between_two_nodes_match_a_filter_of_either_end() {
     for key in [(l(0), Direction::Outgoing), (l(2), Direction::Outgoing)] {
         for a in [hub, rest[0]] {
             assert_eq!(
-                g.contains_edge(a, key, v(1000)),
+                g.contains_edge(a, (key.0, key.1), v(1000)),
                 Err(Error::UnknownNode(v(1000)))
             );
         }

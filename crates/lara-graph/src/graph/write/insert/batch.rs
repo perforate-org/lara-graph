@@ -1,11 +1,13 @@
 //! [`Graph::add_edges`]: one path per kind of batch, each with the cache that suits it.
 
-use super::apply::HoleCursor;
 use super::cache::{EdgeCache, EndCache, MIXED_CACHE, PlaceCache};
-use super::{EdgeKind, Half, NewEdge, Place};
-use crate::graph::{BatchError, Error, Graph};
+use super::{Half, Place};
+use crate::bucket::LabelBucketKey;
+use crate::edge::HoleCursor;
+use crate::error::{BatchError, Error};
+use crate::graph::Graph;
 use crate::id::{EdgeRef, Halves, NodeId};
-use crate::node::label_bucket_list::LabelBucketKey;
+use crate::input::{EdgeKind, NewEdge};
 use crate::store::memory::Memory;
 use alloc::vec::Vec;
 
@@ -20,7 +22,7 @@ fn repeated_targets(edges: &[NewEdge<'_>]) -> bool {
     let mut slots: Vec<u32> = Vec::new();
     slots.resize(size, u32::MAX);
     for edge in sample {
-        if seen_before(&mut slots, mask, edge.to) {
+        if seen_before(&mut slots, mask, edge.to()) {
             return true;
         }
     }
@@ -70,16 +72,16 @@ fn add_edges<M: Memory>(
 ) -> Result<Vec<Halves>, BatchError> {
     for (index, edge) in edges.iter().enumerate() {
         graph
-            .check(edge.from)
-            .and_then(|()| graph.check(edge.to))
-            .and_then(|()| graph.value_width(edge.label, edge.value))
+            .check(edge.from())
+            .and_then(|()| graph.check(edge.to()))
+            .and_then(|()| graph.value_width(edge.label(), edge.value()))
             .map_err(|error| BatchError::unchanged(index, error))?;
     }
-    let all_directed = edges.iter().all(|edge| edge.kind == EdgeKind::Directed);
+    let all_directed = edges.iter().all(|edge| edge.kind() == EdgeKind::Directed);
     if all_directed && repeated_targets(edges) {
         return add_repeated(graph, edges);
     }
-    if edges.iter().all(|edge| edge.kind == EdgeKind::Undirected) {
+    if edges.iter().all(|edge| edge.kind() == EdgeKind::Undirected) {
         return add_undirected(graph, edges);
     }
     if !all_directed {
@@ -97,14 +99,14 @@ fn add_directed<M: Memory>(
     let mut cache: Option<(NodeId, LabelBucketKey, Place)> = None;
     let mut holes = HoleCursor::default();
     for (index, edge) in edges.iter().enumerate() {
-        let [from, to] = edge.directed_halves();
+        let [from, to] = Half::directed(edge);
         let cached = cache
-            .filter(|(last_node, last_key, _)| *last_node == edge.from && *last_key == from.key)
+            .filter(|(last_node, last_key, _)| *last_node == edge.from() && *last_key == from.key)
             .map(|(_, _, place)| place);
         let (halves, updated) = graph
             .insert_halves_with(
                 [from, to],
-                edge.value,
+                edge.value(),
                 &[cached, None],
                 Some((0, &mut holes)),
             )
@@ -114,7 +116,7 @@ fn add_directed<M: Memory>(
         cache = updated
             .first()
             .and_then(|place| *place)
-            .map(|place| (edge.from, from.key, place));
+            .map(|place| (edge.from(), from.key, place));
     }
     Ok(out)
 }
@@ -129,16 +131,16 @@ fn add_mixed<M: Memory>(
     let mut out = Vec::with_capacity(edges.len());
     let mut cache = PlaceCache::<MIXED_CACHE>::EMPTY;
     for (index, edge) in edges.iter().enumerate() {
-        let halves = match edge.kind {
+        let halves = match edge.kind() {
             EdgeKind::Directed => {
-                insert_remembered(graph, edge.directed_halves(), edge.value, &mut cache)
+                insert_remembered(graph, Half::directed(edge), edge.value(), &mut cache)
                     .map(|[canonical, other]| Halves::new(canonical, other))
             }
-            EdgeKind::Undirected => match edge.undirected_halves() {
-                (at_high, None) => insert_remembered(graph, [at_high], edge.value, &mut cache)
+            EdgeKind::Undirected => match Half::undirected(edge) {
+                (at_high, None) => insert_remembered(graph, [at_high], edge.value(), &mut cache)
                     .map(|[half]| Halves::new(half, half)),
                 (at_high, Some(at_low)) => {
-                    insert_remembered(graph, [at_high, at_low], edge.value, &mut cache)
+                    insert_remembered(graph, [at_high, at_low], edge.value(), &mut cache)
                         .map(|[canonical, other]| Halves::new(canonical, other))
                 }
             },
@@ -169,13 +171,13 @@ fn add_undirected<M: Memory>(
     let mut out = Vec::with_capacity(edges.len());
     let mut cache = EndCache::EMPTY;
     for (index, edge) in edges.iter().enumerate() {
-        let (at_high, at_low) = edge.undirected_halves();
+        let (at_high, at_low) = Half::undirected(edge);
         let ends = (at_high.node, at_high.target);
         let key = at_high.key;
         let [cache_high, cache_low] = cache.places(ends, key);
         let Some(at_low) = at_low else {
             let (halves, updated) = graph
-                .insert_halves_with([at_high], edge.value, &[cache_high], None)
+                .insert_halves_with([at_high], edge.value(), &[cache_high], None)
                 .map_err(|error| BatchError::after_prefix(index, error))?;
             let [half] = halves;
             out.push(Halves::new(half, half));
@@ -186,7 +188,7 @@ fn add_undirected<M: Memory>(
         let (halves, updated) = graph
             .insert_halves_with(
                 [at_high, at_low],
-                edge.value,
+                edge.value(),
                 &[cache_high, cache_low],
                 None,
             )
@@ -208,10 +210,10 @@ fn add_repeated<M: Memory>(
     let mut out = Vec::with_capacity(edges.len());
     let mut cache = EdgeCache::EMPTY;
     for (index, edge) in edges.iter().enumerate() {
-        let halves = edge.directed_halves();
+        let halves = Half::directed(edge);
         let cached = cache.places(halves);
         let (inserted, updated) = graph
-            .insert_halves_with(halves, edge.value, &cached, None)
+            .insert_halves_with(halves, edge.value(), &cached, None)
             .map_err(|error| BatchError::after_prefix(index, error))?;
         let [canonical, other] = inserted;
         out.push(Halves::new(canonical, other));

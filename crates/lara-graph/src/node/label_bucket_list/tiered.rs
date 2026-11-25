@@ -38,9 +38,10 @@
 //! ```
 
 use super::{
-    EntryAt, LEAF_ENTRIES, LabelBucketKey, LabelBucketList, Listed, Lookup, Shape, class_len,
-    encode_entry, flat, read_entries, search, shift_in, shift_out,
+    EntryAt, LEAF_ENTRIES, LabelBucketList, Listed, Lookup, Shape, class_len, encode_entry, flat,
+    read_entries, search, shift_in, shift_out,
 };
+use crate::bucket::LabelBucketKey;
 use crate::bucket::stored::Stored;
 use crate::store::corrupt::corrupt;
 use crate::store::memory::{Memory, WriteError};

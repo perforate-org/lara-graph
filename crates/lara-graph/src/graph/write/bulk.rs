@@ -1,20 +1,19 @@
 //! Building a graph from an edge list in one pass.
 
-mod bucket;
 mod halves;
 
+use crate::bucket::LabelBucketKey;
 use crate::bucket::stored::Stored;
-use crate::graph::{Error, Graph, NewEdge};
+use crate::error::Error;
+use crate::graph::Graph;
 use crate::id::{Halves, NodeId, NodeState};
-use crate::node::label_bucket_list::{self, LabelBucketKey, LabelBucketList, Lookup};
+use crate::input::NewEdge;
+use crate::node::label_bucket_list::{self, LabelBucketList, Lookup};
 use crate::node::record::{RECORD_BYTES, Record};
 use crate::store::memory::Memory;
 use crate::store::page_store::PageStore;
 use alloc::vec::Vec;
 use halves::Half;
-
-/// Node records written per line while bulk load flushes them.
-const RECORDS_PER_LINE_USIZE: usize = 8;
 
 /// Single-bucket nodes whose label bucket lists are built in one batch.
 const SINGLES_PER_BATCH: usize = 1024;
@@ -45,7 +44,7 @@ impl<M: Memory> Graph<M> {
         let halves = halves::split(edges);
         let positions = halves::positions(&halves, edges.len());
         let records = self.build_lists(&halves, edges)?;
-        self.write_records(&records);
+        self.nodes.write_all(&records);
         Ok(halves::edge_halves(edges, &positions))
     }
 
@@ -133,22 +132,6 @@ impl<M: Memory> Graph<M> {
         }
         Ok(list)
     }
-
-    #[expect(clippy::indexing_slicing, reason = "each line covers records in range")]
-    fn write_records(&self, records: &[[u8; RECORD_BYTES]]) {
-        for base in (0..records.len()).step_by(RECORDS_PER_LINE_USIZE) {
-            let end = (base + RECORDS_PER_LINE_USIZE).min(records.len());
-            let mut line = [0u8; RECORDS_PER_LINE_USIZE * RECORD_BYTES];
-            for (offset, record) in records[base..end].iter().enumerate() {
-                let start = offset * RECORD_BYTES;
-                line[start..start + RECORD_BYTES].copy_from_slice(record);
-            }
-            self.region().overwrite(
-                crate::graph::record_at_index(u32::try_from(base).unwrap_or(u32::MAX)),
-                &line[..(end - base) * RECORD_BYTES],
-            );
-        }
-    }
 }
 
 fn flush_singles<M: Memory>(
@@ -182,5 +165,18 @@ fn set_record(records: &mut [[u8; RECORD_BYTES]], node: NodeId, list: Option<Lab
             ..Record::NEW
         }
         .encode();
+    }
+}
+
+impl<M: Memory> Graph<M> {
+    /// Writes the bucket of `halves`, one label's halves at one node, with their edges' values.
+    #[expect(clippy::indexing_slicing, reason = "a bucket's group is non-empty")]
+    fn build_bucket(&mut self, halves: &[Half], edges: &[NewEdge<'_>]) -> Result<Stored, Error> {
+        let width = self.widths.get(halves[0].key.label);
+        self.edges.build_bucket(halves, width, |half: &Half| {
+            edges
+                .get(usize::try_from(half.edge).unwrap_or(usize::MAX))
+                .map_or(&[], NewEdge::value)
+        })
     }
 }

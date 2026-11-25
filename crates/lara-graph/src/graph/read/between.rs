@@ -6,14 +6,14 @@
 //! blocks its index lists for the other end. Parallel edges keep the same order at both ends
 //! (their halves pair by rank), so either end lists them in the same order.
 
-use crate::bucket::label_bucket::{self, Span, Window};
-use crate::bucket::stored::LabelBucket;
-use crate::bucket::targets::{self, BLOCK};
-use crate::graph::{Error, Graph};
-use crate::id::{Direction, EdgeRef, Label, NodeId, Order, Position};
-use crate::node::label_bucket_list::LabelBucketKey;
+use crate::bucket::LabelBucket;
+use crate::bucket::LabelBucketKey;
+use crate::bucket::slots::{self, Span, Window};
+use crate::error::Error;
+use crate::graph::Graph;
+use crate::id::{Direction, EdgeRef, Label, NodeId, Position};
+use crate::input::Order;
 use crate::store::memory::Memory;
-use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
 impl<M: Memory> Graph<M> {
@@ -47,9 +47,9 @@ impl<M: Memory> Graph<M> {
         };
         let half = |at: Position| EdgeRef::new(node, label, direction, at);
         let slots = &bucket.slots;
-        let view = self.edges.pages();
+        let view = self.edge_view().pages();
         let mut visit_span = |&(low, high): &(u32, u32)| {
-            label_bucket::visit(
+            slots::visit(
                 slots,
                 &view,
                 Span::new(low, high, order),
@@ -64,7 +64,7 @@ impl<M: Memory> Graph<M> {
             )
         };
         // A bucket without an index is one span, read with no list of spans.
-        let Some(spans) = self.indexed_spans_to(&bucket, other) else {
+        let Some(spans) = self.edge_view().indexed_spans_to(&bucket, other) else {
             return Ok(visit_span(&(0, slots.stored())));
         };
         Ok(match order {
@@ -136,28 +136,6 @@ impl<M: Memory> Graph<M> {
                 own_end(own)
             }
         }))
-    }
-
-    /// The position ranges of an indexed bucket that can hold entries to `t`, ascending: the
-    /// blocks its index lists for `t`, adjacent ones merged so that each range is read in one
-    /// pass, and the unindexed last block; `None` for a bucket without an index.
-    fn indexed_spans_to(&self, bucket: &LabelBucket, t: NodeId) -> Option<Vec<(u32, u32)>> {
-        let stored = bucket.slots.stored();
-        let (Some(end), Some(root)) = (bucket.indexed(), bucket.index.tree()) else {
-            return None;
-        };
-        let mut spans: Vec<(u32, u32)> = Vec::new();
-        let mut add = |low: u32, high: u32| match spans.last_mut() {
-            Some(last) if last.1 == low => last.1 = high,
-            Some(_) | None => spans.push((low, high)),
-        };
-        targets::visit_blocks(&self.edges.pages(), root, t.index(), |block| {
-            add(block * BLOCK, (block + 1) * BLOCK);
-        });
-        if end < stored {
-            add(end, stored);
-        }
-        Some(spans)
     }
 }
 

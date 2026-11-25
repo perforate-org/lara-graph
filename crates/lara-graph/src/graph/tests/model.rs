@@ -440,9 +440,9 @@ fn model_compact<M: Memory>(g: &mut Graph<M>, model: &mut Model, key: Key) {
     let (x, label, direction) = key;
     let bucket = model.buckets.entry(key).or_default();
     let before: Vec<Slot> = bucket.iter().flatten().copied().collect();
-    let compaction = g.compact(v(x), label, direction).unwrap();
+    let compaction = g.compact(v(x), (label, direction)).unwrap();
     let stored =
-        g.degree(v(x), label, direction).unwrap() + g.holes(v(x), label, direction).unwrap();
+        g.degree(v(x), (label, direction)).unwrap() + g.holes(v(x), (label, direction)).unwrap();
     let mut after = vec![None; usize::try_from(stored).unwrap()];
     let moved: BTreeMap<usize, (usize, u32)> = compaction
         .changes()
@@ -504,7 +504,7 @@ fn assert_other_reads<M: Memory>(
     expected: &[(u32, u32)],
 ) {
     let mut down = Vec::new();
-    g.visit_neighbors(x, label, direction, Order::Descending, |e| {
+    g.visit_neighbors(x, (label, direction), Order::Descending, |e| {
         down.push((e.position().index(), e.target().index()));
         ControlFlow::<()>::Continue(())
     })
@@ -521,18 +521,18 @@ fn assert_other_reads<M: Memory>(
         let mut cursor = Some(Cursor::first(order, span));
         while let Some(at) = cursor {
             cursor = g
-                .visit_window(x, label, direction, at, |e| {
+                .visit_window(x, (label, direction), at, |e| {
                     seen.push((e.position().index(), e.target().index()));
                 })
                 .unwrap();
         }
         assert_eq!(seen, want, "{order:?} windows");
     }
-    let stored = g.degree(x, label, direction).unwrap() + g.holes(x, label, direction).unwrap();
+    let stored = g.degree(x, (label, direction)).unwrap() + g.holes(x, (label, direction)).unwrap();
     // Every position and two past the end, highest first, with a repeat.
     let positions: Vec<Position> = (0..stored + 2).rev().chain([0]).map(p).collect();
     let mut targets = Vec::new();
-    g.targets_at(x, label, direction, &positions, &mut targets)
+    g.targets_at(x, (label, direction), &positions, &mut targets)
         .unwrap();
     let live: BTreeMap<u32, u32> = expected.iter().copied().collect();
     let want: Vec<Option<NodeId>> = positions
@@ -592,10 +592,10 @@ fn assert_values<M: Memory>(
 fn compact_fully<M: Memory>(g: &mut Graph<M>, model: &mut Model, key: Key) {
     let (x, label, direction) = key;
     for _ in 0..10_000 {
-        let before = g.holes(v(x), label, direction).unwrap();
+        let before = g.holes(v(x), (label, direction)).unwrap();
         model_compact(g, model, key);
-        if g.compact(v(x), label, direction).unwrap().progress() == Progress::Done
-            && g.holes(v(x), label, direction).unwrap() <= before
+        if g.compact(v(x), (label, direction)).unwrap().progress() == Progress::Done
+            && g.holes(v(x), (label, direction)).unwrap() <= before
         {
             return;
         }

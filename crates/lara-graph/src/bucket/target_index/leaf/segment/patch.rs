@@ -2,9 +2,9 @@
 //! posting, without re-coding the rest of the segment.
 
 use super::{Entry, Head, Read, SEGMENT_MAX, bits_of, block_code, block_of, count_bits};
-use crate::bucket::targets::Change;
-use crate::bucket::targets::bits::PADDING;
-use crate::bucket::targets::bits::{Reader, Writer};
+use crate::bucket::target_index::Change;
+use crate::bucket::target_index::bits::PADDING;
+use crate::bucket::target_index::bits::{Reader, Writer};
 use crate::store::corrupt::corrupt;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
@@ -16,7 +16,7 @@ use core::ops::Range;
 /// along unchanged. `None` when that does not fit: a count or block past its width, a full
 /// segment, a slot too small, or a new first posting (the table and the parent list the old
 /// one).
-pub(in crate::bucket::targets::leaf) fn raise(
+pub(in crate::bucket::target_index::leaf) fn raise(
     e: &Entry,
     read: Read<'_>,
     key: (u32, u32),
@@ -95,7 +95,7 @@ fn inserted(
 /// Lowers the count of the posting at `key` by one in its own slot. A posting whose count
 /// reaches zero leaves the segment: the next posting's gap is coded again (or it becomes the
 /// first), and the bits after it move along. `None` when the segment lacks the posting.
-pub(in crate::bucket::targets::leaf) fn lower_one(
+pub(in crate::bucket::target_index::leaf) fn lower_one(
     e: &Entry,
     read: Read<'_>,
     key: (u32, u32),
@@ -312,7 +312,7 @@ fn spot_of(e: &Entry, code: &[u8], key: (u32, u32)) -> Option<Spot> {
 /// `None` when a change names a posting it lacks. A lower count always fits its field; one
 /// that reaches zero stays until the segment is rewritten.
 #[inline]
-pub(in crate::bucket::targets::leaf) fn lower(
+pub(in crate::bucket::target_index::leaf) fn lower(
     e: &Entry,
     read: Read<'_>,
     changes: &[Change],
@@ -381,7 +381,7 @@ struct Next {
 }
 
 /// What lowering one posting's count does to its segment.
-pub(in crate::bucket::targets::leaf) enum Lowered {
+pub(in crate::bucket::target_index::leaf) enum Lowered {
     Patched(Patched),
     /// Its only posting reached zero: the segment would be empty.
     Emptied,
@@ -401,7 +401,7 @@ enum Spot {
 }
 
 /// A segment changed in its own slot.
-pub(in crate::bucket::targets::leaf) struct Patched {
+pub(in crate::bucket::target_index::leaf) struct Patched {
     /// The slot's code.
     code: Vec<u8>,
     /// The bytes of `code` that changed.
@@ -413,7 +413,7 @@ pub(in crate::bucket::targets::leaf) struct Patched {
 impl Patched {
     /// Calls `write` with the changed code bytes and with the segment's new table entry, at
     /// `table_at`: everything the patch writes.
-    pub(in crate::bucket::targets::leaf) fn write(
+    pub(in crate::bucket::target_index::leaf) fn write(
         &self,
         table_at: usize,
         mut write: impl FnMut(usize, &[u8]),

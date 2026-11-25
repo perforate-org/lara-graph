@@ -1,80 +1,19 @@
 //! The graph: label buckets of edge halves per node and direction, over six memories.
 //!
-//! # Nodes memory
-//!
-//! ```text
-//! ---------------------------------------- <- Address 0
-//! Magic "LGN"                     ↕ 3 bytes
-//! ----------------------------------------
-//! Layout version (1)              ↕ 1 byte
-//! ----------------------------------------
-//! Node count = N                  ↕ 4 bytes
-//! ---------------------------------------- <- Address 8 (AT_WIDTHS)
-//! Width table present (0 or 1)    ↕ 1 byte
-//! ----------------------------------------
-//! Width table extent              ↕ 5 bytes
-//! ----------------------------------------
-//! Reserved space                  ↕ 2 bytes
-//! ---------------------------------------- <- Address 16 (RECORDS_START)
-//! Record of node 0                ↕ 6 bytes
-//! ----------------------------------------
-//! ...
-//! ----------------------------------------
-//! Record of node N - 1            ↕ 6 bytes
-//! ----------------------------------------
-//! Unallocated space
-//! ```
-//!
-//! # Node labels memory
-//!
-//! Apart from the records, so that a batch's line of eight records stays 48 bytes.
-//!
-//! ```text
-//! ---------------------------------------- <- Address 0
-//! Magic "LGL"                     ↕ 3 bytes
-//! ----------------------------------------
-//! Layout version (1)              ↕ 1 byte
-//! ---------------------------------------- <- Address 4 (AT_POSTINGS)
-//! Label postings directory root   ↕ 6 bytes       (a value plane root, see `label_postings`)
-//! ----------------------------------------
-//! Reserved space                  ↕ 6 bytes
-//! ---------------------------------------- <- Address 16 (LABEL_CELLS_START)
-//! Labels of node 0                ↕ 5 bytes       (see `node_labels`)
-//! ----------------------------------------
-//! ...
-//! ----------------------------------------
-//! Labels of node N - 1            ↕ 5 bytes
-//! ----------------------------------------
-//! Unallocated space
-//! ```
+//! The nodes memory is laid out in `node::store`, the node labels memory in `node::labels`.
 
-use crate::bucket::descriptor::Descriptor;
-use crate::bucket::label_bucket;
-use crate::bucket::stored::LabelBucket;
-use crate::id::{
-    Direction, Edge, EdgeRef, Label, Move, NodeId, NodeState, Position, Progress, RemovedEdge,
-    Width,
-};
-use crate::node::label_bucket_list::{self, LabelBucketKey, LabelBucketList};
-use crate::node::record::{RECORD_BYTES, Record};
-use crate::store::corrupt::{corrupt, reservation_exceeded};
-use crate::store::memory::{GrowFailed, Memory, Region, WriteError};
+use crate::error::Error;
+use crate::id::NodeId;
+use crate::node::label_bucket_list::LabelBucketList;
+use crate::node::labels::LabelStore;
+use crate::node::record::Record;
+use crate::node::store::{NodeStore, RecordLines};
+use crate::store::corrupt::corrupt;
+use crate::store::memory::Memory;
 use crate::store::page_store::PageStore;
-use crate::store::units::{ByteOffset, Overflow};
-use alloc::vec::Vec;
-use core::fmt;
-use core::num::NonZeroU32;
-use core::ops::ControlFlow;
 
-/// The nodes memory's magic: "lara graph nodes".
-const MAGIC: [u8; 3] = *b"LGN";
+/// The layout version of every memory's header.
 const VERSION: u8 = 1;
-const AT_COUNT: u64 = 4;
-const RECORDS_START: u64 = 16;
-/// The node labels memory's magic: "lara graph labels".
-const LABELS_MAGIC: [u8; 3] = *b"LGL";
-const AT_POSTINGS: u64 = 4;
-const LABEL_CELLS_START: u64 = 16;
 
 /// A multigraph with dense node ids and labeled edges, directed or undirected.
 ///
@@ -92,423 +31,34 @@ const LABEL_CELLS_START: u64 = 16;
 /// past 1024 edges). An insert or removal copies at most one run of under 1024 edges or one page of
 /// index.
 pub struct Graph<M: Memory> {
-    nodes: M,
-    node_labels: M,
-    edges: PageStore<M>,
+    nodes: NodeStore<M>,
+    labels: LabelStore<M>,
+    edges: EdgeStore<M>,
     label_bucket_lists: PageStore<M>,
-    /// Mirrors the node count in the header: the graph owns its memories.
-    count: u32,
-    /// Mirrors the label width table.
+    /// Mirrors the label width table, which the label bucket list store holds.
     widths: Widths,
-    /// Mirrors the label postings directory's root, in the node labels memory's header.
-    postings: crate::bucket::values::Plane,
-    /// Nodes whose label cells the node labels memory already covers, so that adding a node
-    /// grows it only when it must.
-    label_room: u32,
-}
-
-/// An operation failed; the graph is unchanged.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Error {
-    /// A memory could not grow.
-    OutOfMemory(GrowFailed),
-    /// The graph outgrew its address space or a bucket outgrew 2^32 positions.
-    AddressSpaceExhausted,
-    /// The node was never added.
-    UnknownNode(NodeId),
-    /// The node already has the maximum number of `(label, direction)` buckets (215).
-    TooManyLabelBuckets(NodeId),
-    /// The node is being detached ([`Graph::detach`]) and takes no new edges.
-    Detaching(NodeId),
-    /// [`Graph::detach_step`] on a node that is not being detached.
-    NotDetaching(NodeId),
-    /// The node was deleted ([`Graph::detach`]); ids are never reused.
-    Deleted(NodeId),
-    /// [`Graph::bulk_load`] was called on a graph that already holds edges.
-    NotEmpty,
-    /// The label already has a different width ([`Graph::declare_width`]).
-    WidthConflict {
-        /// The label.
-        label: Label,
-        /// Its width.
-        declared: Width,
-    },
-    /// 1023 labels already have a width.
-    TooManyWidths,
-    /// A value's length is not its label's width (0 for a label without one).
-    WrongValueLength {
-        /// The label.
-        label: Label,
-        /// The label's width in bytes.
-        expected: u16,
-        /// The value's length.
-        actual: usize,
-    },
-}
-
-/// A batch operation failed at `index`, with whether earlier elements were applied.
-///
-/// Only `add_edges` returns [`Self::PartiallyApplied`]; `set_edge_values`, `remove_edges` and
-/// `detach_many` restore or avoid earlier changes on error. On the Internet Computer, a
-/// canister can trap on [`Self::PartiallyApplied`] to make the update call all-or-none; the IC
-/// discards the call's state changes when the call traps.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BatchError {
-    /// Nothing before `index` was applied; the graph is unchanged.
-    Unchanged {
-        /// The failing element.
-        index: usize,
-        /// The failure itself.
-        error: Error,
-    },
-    /// Elements before `index` were applied; `index` itself is all-or-none.
-    PartiallyApplied {
-        /// The failing element.
-        index: usize,
-        /// The failure itself.
-        error: Error,
-    },
-}
-
-impl BatchError {
-    pub(crate) const fn unchanged(index: usize, error: Error) -> Self {
-        Self::Unchanged { index, error }
-    }
-
-    pub(crate) const fn after_prefix(index: usize, error: Error) -> Self {
-        if index == 0 {
-            Self::Unchanged { index, error }
-        } else {
-            Self::PartiallyApplied { index, error }
-        }
-    }
-
-    /// Where in the batch the failure happened.
-    #[must_use]
-    pub const fn index(&self) -> usize {
-        match *self {
-            Self::Unchanged { index, .. } | Self::PartiallyApplied { index, .. } => index,
-        }
-    }
-
-    /// The failure itself.
-    #[must_use]
-    pub const fn error(&self) -> &Error {
-        match self {
-            Self::Unchanged { error, .. } | Self::PartiallyApplied { error, .. } => error,
-        }
-    }
-
-    /// The failure itself, without the batch position.
-    #[must_use]
-    pub const fn into_error(self) -> Error {
-        match self {
-            Self::Unchanged { error, .. } | Self::PartiallyApplied { error, .. } => error,
-        }
-    }
-}
-
-impl fmt::Display for BatchError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let state = match self {
-            Self::Unchanged { .. } => "nothing applied",
-            Self::PartiallyApplied { .. } => "earlier elements applied",
-        };
-        write!(f, "batch edge {}: {} ({state})", self.index(), self.error())
-    }
-}
-
-impl core::error::Error for BatchError {}
-
-/// A graph could not be made or opened ([`Graph::try_new`], [`Graph::try_load`],
-/// [`Graph::try_init`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum InitError {
-    /// A memory could not grow.
-    OutOfMemory(GrowFailed),
-    /// The memories do not hold a graph.
-    NotAGraph,
-    /// The graph was written by an unsupported layout version.
-    UnsupportedVersion(u8),
-}
-
-/// What one bounded step of a longer operation changed, and whether more remains.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Step<T> {
-    changes: Vec<T>,
-    progress: Progress,
-}
-
-impl<T> Step<T> {
-    const fn new(changes: Vec<T>, progress: Progress) -> Self {
-        Self { changes, progress }
-    }
-
-    /// What this step changed, in the order it changed it.
-    #[must_use]
-    pub fn changes(&self) -> &[T] {
-        &self.changes
-    }
-
-    /// Whether another step has work to do.
-    #[must_use]
-    pub const fn progress(&self) -> Progress {
-        self.progress
-    }
-}
-
-/// One [`Graph::compact`] step: the edges that moved. Every other edge of the bucket kept its
-/// position.
-pub type Compaction = Step<Move>;
-
-/// One [`Graph::sweep`]: the edges removed, both halves of each, with their values, and where the
-/// sweep goes on.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Sweep {
-    removed: Vec<RemovedEdge>,
-    next: Option<Position>,
-}
-
-impl Sweep {
-    const fn new(removed: Vec<RemovedEdge>, next: Option<Position>) -> Self {
-        Self { removed, next }
-    }
-
-    /// The edges removed, in position order.
-    #[must_use]
-    pub fn changes(&self) -> &[RemovedEdge] {
-        &self.removed
-    }
-
-    /// Where the next call goes on; `None` once the bucket's end was reached.
-    #[must_use]
-    pub const fn next(&self) -> Option<Position> {
-        self.next
-    }
-}
-
-/// One [`Graph::detach_step`]: the edges removed, both halves of each, with their values.
-pub type Detachment = Step<RemovedEdge>;
-
-/// What [`Graph::remove_edge`] did.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Removal {
-    /// The edge was removed; its halves' positions are now holes.
-    Removed(RemovedEdge),
-    /// No live edge was at that position.
-    Absent,
 }
 
 impl<M: Memory> Graph<M> {
     /// A graph over formatted memories, with its header mirrors loaded.
     fn assemble(
-        (nodes, node_labels): (M, M),
+        (nodes, labels): (NodeStore<M>, LabelStore<M>),
         edges: PageStore<M>,
         label_bucket_lists: PageStore<M>,
     ) -> Self {
-        let count = u32::from_le_bytes(Region::new(&nodes).read_array(ByteOffset::new(AT_COUNT)));
-        let widths = Widths::load(&nodes, &label_bucket_lists);
-        let postings = crate::bucket::values::Plane::decode(
-            Region::new(&node_labels).read_array(ByteOffset::new(AT_POSTINGS)),
-        );
-        let label_room = label_room(&node_labels);
+        let widths = Widths::load(nodes.widths_at(), &label_bucket_lists);
         Self {
             nodes,
-            node_labels,
-            edges,
+            labels,
+            edges: EdgeStore::new(edges),
             label_bucket_lists,
-            count,
             widths,
-            postings,
-            label_room,
         }
     }
 
-    /// Number of nodes; ids are `0..node_count`.
-    #[must_use]
-    pub const fn node_count(&self) -> u32 {
-        self.count
-    }
-
-    /// Adds a node with no edges and returns its id.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::OutOfMemory`], or [`Error::AddressSpaceExhausted`] past `u32::MAX - 1` nodes
-    /// (the last id is reserved as the removed-edge marker).
-    pub fn add_node(&mut self) -> Result<NodeId, Error> {
-        let count = self.node_count();
-        let next = count
-            .checked_add(1)
-            .filter(|&n| n < u32::MAX)
-            .ok_or(Error::AddressSpaceExhausted)?;
-        // Checked first, so that the id needs no check of its own.
-        let id = NodeId::new(count);
-        // Labels first: a new node's cell is zeros (no labels), so growing the memory makes it.
-        self.reserve_label_cells(next)?;
-        self.region().write(record_at(id), &Record::NEW.encode())?;
-        self.region()
-            .overwrite(ByteOffset::new(AT_COUNT), &next.to_le_bytes());
-        self.count = next;
-        Ok(id)
-    }
-
-    /// Adds `count` nodes and returns the first new id. Ids are consecutive: the new nodes are
-    /// `first.index()..first.index() + count`.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::AddressSpaceExhausted`] when the ids would not fit, or [`Error::OutOfMemory`]
-    /// when the records cannot be grown. On error no node is visible.
-    pub fn add_nodes(&mut self, count: NonZeroU32) -> Result<NodeId, Error> {
-        let first = self.node_count();
-        let next = first
-            .checked_add(count.get())
-            .filter(|&n| n < u32::MAX)
-            .ok_or(Error::AddressSpaceExhausted)?;
-        let id = NodeId::new(first);
-        let end = record_at_index(next);
-        self.reserve_label_cells(next)?;
-        self.region().reserve(end)?;
-        // A line of new records at a time: one write per eight nodes.
-        let line: [u8; RECORD_LINE_BYTES] = core::array::from_fn(|i| {
-            Record::NEW
-                .encode()
-                .get(i % RECORD_BYTES)
-                .copied()
-                .unwrap_or(0)
-        });
-        let mut index = first;
-        while index < next {
-            let count = (next - index).min(RECORDS_PER_LINE);
-            let len = usize::try_from(count).unwrap_or(0) * RECORD_BYTES;
-            self.region()
-                .overwrite(record_at_index(index), line.get(..len).unwrap_or(&[]));
-            index += count;
-        }
-        self.region()
-            .overwrite(ByteOffset::new(AT_COUNT), &next.to_le_bytes());
-        self.count = next;
-        Ok(id)
-    }
-
-    /// Whether `v` is live, being detached or deleted.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnknownNode`].
-    pub fn node_state(&self, v: NodeId) -> Result<NodeState, Error> {
-        Ok(self.record(v)?.state)
-    }
-
-    /// The labels `v` has buckets under on `direction`, in order.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnknownNode`].
-    pub fn labels(
-        &self,
-        v: NodeId,
-        direction: Direction,
-        out: &mut Vec<Label>,
-    ) -> Result<(), Error> {
-        let Some(list) = self.label_bucket_list(v)? else {
-            out.clear();
-            return Ok(());
-        };
-        out.clear();
-        label_bucket_list::for_each(&self.label_bucket_lists.pages(), Some(list), |key, _| {
-            if key.direction == direction {
-                out.push(key.label);
-            }
-            ControlFlow::<()>::Continue(())
-        });
-        Ok(())
-    }
-
-    /// Whether `v` has a live edge under any label, on any side. A bucket whose edges were all
-    /// removed stays listed by [`Self::labels`] until compaction drops it; this looks past it.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnknownNode`].
-    pub fn has_edges(&self, v: NodeId) -> Result<bool, Error> {
-        let Some(list) = self.label_bucket_list(v)? else {
-            return Ok(false);
-        };
-        let view = self.edges.pages();
-        Ok(label_bucket_list::for_each(
-            &self.label_bucket_lists.pages(),
-            Some(list),
-            |_, listed| {
-                if LabelBucket::resolve(&view, listed.stored()).slots.live() > 0 {
-                    ControlFlow::Break(())
-                } else {
-                    ControlFlow::<()>::Continue(())
-                }
-            },
-        )
-        .is_some())
-    }
-
-    /// Number of live edges in `v`'s `(label, direction)` bucket.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnknownNode`].
-    pub fn degree(&self, v: NodeId, label: Label, direction: Direction) -> Result<u32, Error> {
-        Ok(self
-            .bucket(v, LabelBucketKey { label, direction })?
-            .map_or(0, |d| d.live()))
-    }
-
-    /// Replaces the contents of `out` with the live edges of `v`'s `(label, direction)` bucket, in
-    /// position order. Each edge's target is the node at its other end.
-    /// [`Self::visit_neighbors`] reads the same edges in about half the instructions when they
-    /// need not be kept.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnknownNode`].
-    pub fn neighbors_directed(
-        &self,
-        v: NodeId,
-        label: Label,
-        direction: Direction,
-        out: &mut Vec<Edge>,
-    ) -> Result<(), Error> {
-        out.clear();
-        if let Some(d) = self.bucket(v, LabelBucketKey { label, direction })? {
-            label_bucket::read(&d, &self.edges.pages(), out);
-        }
-        Ok(())
-    }
-
-    /// The node at the other end of `half`, if it is live.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnknownNode`].
-    pub fn edge_target(&self, half: EdgeRef) -> Result<Option<NodeId>, Error> {
-        Ok(self
-            .bucket(half.node(), LabelBucketKey::of(half))?
-            .and_then(|d| label_bucket::get(&d, half.position(), &self.edges.pages())))
-    }
-
-    /// Removed edges `v`'s `(label, direction)` bucket still holds positions for: the work
-    /// compaction can do.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnknownNode`].
-    pub fn holes(&self, v: NodeId, label: Label, direction: Direction) -> Result<u32, Error> {
-        Ok(self
-            .bucket(v, LabelBucketKey { label, direction })?
-            .map_or(0, |d| d.stored() - d.live()))
-    }
-
-    fn region(&self) -> Region<'_, M> {
-        Region::new(&self.nodes)
+    /// The edge store as reads see it.
+    fn edge_view(&self) -> EdgeView<'_, M> {
+        EdgeView::new(&self.edges, &self.widths)
     }
 
     fn check(&self, v: NodeId) -> Result<(), Error> {
@@ -521,7 +71,14 @@ impl<M: Memory> Graph<M> {
 
     fn record(&self, v: NodeId) -> Result<Record, Error> {
         self.check(v)?;
-        Ok(Record::decode(self.region().read_array(record_at(v))))
+        Ok(self.nodes.record(v))
+    }
+
+    /// `v`'s record through a batch's line of records. `v` is known.
+    #[expect(clippy::inline_always, reason = "see RecordLines::record")]
+    #[inline(always)]
+    fn record_in(&self, lines: &mut RecordLines, v: NodeId) -> Record {
+        lines.record(&self.nodes, v)
     }
 
     fn label_bucket_list(&self, v: NodeId) -> Result<Option<LabelBucketList>, Error> {
@@ -530,199 +87,29 @@ impl<M: Memory> Graph<M> {
 
     /// Rewrites an existing node's record. Cannot fail.
     fn write_record(&self, v: NodeId, record: Record) {
-        self.region().overwrite(record_at(v), &record.encode());
+        self.nodes.write(v, record);
     }
 
-    /// Publishes `v`'s new label bucket list, keeping its state.
-    fn set_label_bucket_list(&self, v: NodeId, list: Option<LabelBucketList>) {
-        let record = self.label_bucket_list_owner(v);
+    /// Publishes `v`'s new label bucket list in `record`, the record `v` has.
+    fn set_label_bucket_list(&self, v: NodeId, record: Record, list: Option<LabelBucketList>) {
         self.write_record(v, Record { list, ..record });
     }
-
-    fn label_bucket_list_owner(&self, v: NodeId) -> Record {
-        self.record(v).unwrap_or_else(|_| corrupt("a known node"))
-    }
-
-    /// A bucket's slot descriptor, without building the bucket's values or index: a read that
-    /// only scans slots does not pay for the rest of an extended header.
-    fn bucket(&self, v: NodeId, key: LabelBucketKey) -> Result<Option<Descriptor>, Error> {
-        let list = self.label_bucket_list(v)?;
-        let lists = self.label_bucket_lists.pages();
-        Ok(label_bucket_list::lookup_stored(&lists, list, key)
-            .map(|stored| stored.slots(&self.edges.pages())))
-    }
 }
 
-/// The result of an update that runs within reserved memory.
-fn reserved<T>(result: Result<T, WriteError>) -> T {
-    result.unwrap_or_else(|_| reservation_exceeded())
-}
-
-fn record_at(v: NodeId) -> ByteOffset {
-    record_at_index(v.index())
-}
-
-/// [`record_at`] by dense index, for a range of nodes not built one by one.
-fn record_at_index(index: u32) -> ByteOffset {
-    ByteOffset::new(RECORDS_START + u64::from(index) * u64::try_from(RECORD_BYTES).unwrap_or(8))
-}
-
-impl<M: Memory> Graph<M> {
-    /// Grows the node labels memory to cover the cells of `nodes` nodes, when it does not yet.
-    fn reserve_label_cells(&mut self, nodes: u32) -> Result<(), Error> {
-        if nodes > self.label_room {
-            Region::new(&self.node_labels).reserve(label_cell_end(nodes))?;
-            self.label_room = label_room(&self.node_labels);
-        }
-        Ok(())
-    }
-}
-
-/// How many nodes' label cells `node_labels` covers as it stands.
-fn label_room<M: Memory>(node_labels: &M) -> u32 {
-    let bytes = node_labels
-        .size()
-        .saturating_mul(crate::store::memory::PAGE_SIZE);
-    let cell = u64::try_from(crate::node::node_labels::CELL_BYTES).unwrap_or(5);
-    u32::try_from(bytes.saturating_sub(LABEL_CELLS_START) / cell).unwrap_or(u32::MAX)
-}
-
-/// Where `v`'s label cell is in the node labels memory.
-fn label_cell_at(v: NodeId) -> ByteOffset {
-    label_cell_end(v.index())
-}
-
-/// Where node `index`'s label cell starts, and so where the cells before it end.
-fn label_cell_end(index: u32) -> ByteOffset {
-    let cell = u64::try_from(crate::node::node_labels::CELL_BYTES).unwrap_or(5);
-    ByteOffset::new(LABEL_CELLS_START + u64::from(index) * cell)
-}
-
-/// Eight node records: 48 bytes, read at once.
-const RECORDS_PER_LINE: u32 = 8;
-const RECORD_LINE_BYTES: usize = RECORD_BYTES * 8;
-
-/// A batch read's line of node records. Local to one call, so no invalidation is needed.
-pub(super) struct RecordLines {
-    base: u32,
-    bytes: [u8; RECORD_LINE_BYTES],
-}
-
-impl Default for RecordLines {
-    fn default() -> Self {
-        Self {
-            base: u32::MAX,
-            bytes: [0; RECORD_LINE_BYTES],
-        }
-    }
-}
-
-impl RecordLines {
-    /// `v`'s record, reading one 48-byte line per eight dense ids. Always inlined: a batch's
-    /// per-node loop is little more than this, and left a call it cost those loops 8-13 %.
-    #[expect(clippy::inline_always, reason = "measured: see the doc")]
-    #[inline(always)]
-    pub(super) fn record<M: Memory>(&mut self, graph: &Graph<M>, v: NodeId) -> Record {
-        let base = v.index() / RECORDS_PER_LINE * RECORDS_PER_LINE;
-        // The last partial line still takes the single-record path: a 64-byte read would run
-        // past the records the memory holds.
-        if graph.count.saturating_sub(base) < RECORDS_PER_LINE {
-            return graph.record(v).unwrap_or_else(|_| corrupt("a known node"));
-        }
-        if base != self.base {
-            self.bytes = graph.region().read_array(record_at_index(base));
-            self.base = base;
-        }
-        let offset = usize::try_from(v.index() - base).unwrap_or_else(|_| corrupt("record offset"))
-            * RECORD_BYTES;
-        Record::decode(line_record(&self.bytes, offset))
-    }
-}
-
-fn line_record(bytes: &[u8; RECORD_LINE_BYTES], offset: usize) -> [u8; RECORD_BYTES] {
-    let (_, rest) = bytes.split_at(offset);
-    let (record, _) = rest.split_at(RECORD_BYTES);
-    record.try_into().unwrap_or_else(|_| corrupt("record line"))
-}
-
-impl From<WriteError> for Error {
-    fn from(error: WriteError) -> Self {
-        match error {
-            WriteError::Grow(grow) => Self::OutOfMemory(grow),
-            WriteError::Overflow(Overflow) => Self::AddressSpaceExhausted,
-        }
-    }
-}
-
-impl Error {
-    /// `Ok` for a live node `v` in `state`; otherwise the error an edge to it fails with.
-    const fn unless_live(state: NodeState, v: NodeId) -> Result<(), Self> {
-        match state {
-            NodeState::Live => Ok(()),
-            NodeState::Detaching => Err(Self::Detaching(v)),
-            NodeState::Deleted => Err(Self::Deleted(v)),
-        }
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::OutOfMemory(grow) => write!(f, "out of memory: {grow}"),
-            Self::AddressSpaceExhausted => f.write_str("address space exhausted"),
-            Self::UnknownNode(v) => write!(f, "unknown node {}", v.index()),
-            Self::TooManyLabelBuckets(v) => {
-                write!(f, "node {} has too many label buckets", v.index())
-            }
-            Self::Detaching(v) => write!(f, "node {} is being detached", v.index()),
-            Self::NotDetaching(v) => write!(f, "node {} is not being detached", v.index()),
-            Self::Deleted(v) => write!(f, "node {} is deleted", v.index()),
-            Self::NotEmpty => f.write_str("the graph already holds edges"),
-            Self::WidthConflict { label, declared } => write!(
-                f,
-                "label {} already has width {}",
-                label.get(),
-                declared.get()
-            ),
-            Self::TooManyWidths => f.write_str("too many labels with a width"),
-            Self::WrongValueLength {
-                label,
-                expected,
-                actual,
-            } => write!(
-                f,
-                "label {} takes {expected}-byte values, not {actual}",
-                label.get()
-            ),
-        }
-    }
-}
-
-impl fmt::Display for InitError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::OutOfMemory(grow) => write!(f, "out of memory: {grow}"),
-            Self::NotAGraph => f.write_str("the memories do not hold a graph"),
-            Self::UnsupportedVersion(v) => write!(f, "unsupported layout version {v}"),
-        }
-    }
-}
-
-impl core::error::Error for Error {}
-impl core::error::Error for InitError {}
-
-mod bucket;
 mod lifecycle;
+mod locate;
+mod memories;
 mod node_labels;
 mod read;
 mod write;
 
+pub use memories::{Memories, MemoryRole};
 pub use read::ReadBatch;
-pub use write::{EdgeKind, EdgeValue, NewEdge};
+pub use write::DetachingSet;
 
 #[cfg(test)]
 use crate::bucket::pages_per_half;
-use bucket::Widths;
+use crate::edge::{EdgeStore, EdgeView, Widths};
 
 #[cfg(test)]
 mod tests;

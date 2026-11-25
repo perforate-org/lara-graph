@@ -3,7 +3,7 @@
 
 use super::Root;
 use super::node::{Child, FANOUT, children, counts, node_len, page_at, read_into, write_node};
-use crate::bucket::targets::{Posting, leaf};
+use crate::bucket::target_index::{Posting, leaf};
 use crate::store::memory::Memory;
 use crate::store::page_store::{Extent, PageId, PageStore, Pages};
 use alloc::vec::Vec;

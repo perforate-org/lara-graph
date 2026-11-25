@@ -252,7 +252,7 @@ store: 19-byte entries (label, direction and descriptor) sorted by `(label, dire
 
 Reading one bucket costs a node read, a label bucket list read and one data read (index and page
 reads past 1024 edges). `Graph::visit_neighbors` reads without collecting, at about 30 instructions
-per edge on the IC. `neighbors_directed`, which fills a `Vec`, costs about twice that
+per edge on the IC. `neighbors`, which fills a `Vec`, costs about twice that
 (`docs/ic-measurements-2026-11-22.md`).
 
 ## Edge values

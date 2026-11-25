@@ -12,13 +12,13 @@ fn visiting_neighbors_sees_live_edges_in_order_and_stops_on_break() {
     }
     remove(&mut g, v(0), l(0), p(1));
     let mut seen = Vec::new();
-    let none = g.visit_neighbors(v(0), l(0), Direction::Outgoing, Order::Ascending, |e| {
+    let none = g.visit_neighbors(v(0), (l(0), Direction::Outgoing), Order::Ascending, |e| {
         seen.push((e.position().index(), e.target().index()));
         ControlFlow::<()>::Continue(())
     });
     assert_eq!(none, Ok(None));
     assert_eq!(seen, edges(&g, v(0), l(0)));
-    let second_to_2 = g.visit_neighbors(v(0), l(0), Direction::Outgoing, Order::Ascending, |e| {
+    let second_to_2 = g.visit_neighbors(v(0), (l(0), Direction::Outgoing), Order::Ascending, |e| {
         if e.target() == v(2) {
             ControlFlow::Break(e.position())
         } else {
@@ -27,7 +27,7 @@ fn visiting_neighbors_sees_live_edges_in_order_and_stops_on_break() {
     });
     assert_eq!(second_to_2, Ok(Some(p(3))));
     assert_eq!(
-        g.visit_neighbors(v(1), l(5), Direction::Incoming, Order::Ascending, |_| {
+        g.visit_neighbors(v(1), (l(5), Direction::Incoming), Order::Ascending, |_| {
             ControlFlow::Break(())
         }),
         Ok(None)
@@ -48,7 +48,7 @@ fn windows_count_holes_and_hand_back_the_next_cursor() {
     let window = |g: &Graph<VecMemory>, cursor| {
         let mut seen = Vec::new();
         let next = g
-            .visit_window(v(0), l(0), Direction::Outgoing, cursor, |e| {
+            .visit_window(v(0), (l(0), Direction::Outgoing), cursor, |e| {
                 seen.push(e.position().index());
             })
             .unwrap();
@@ -72,8 +72,7 @@ fn windows_count_holes_and_hand_back_the_next_cursor() {
     let empty = g
         .visit_window(
             v(1),
-            l(9),
-            Direction::Incoming,
+            (l(9), Direction::Incoming),
             Cursor::first(Order::Ascending, span),
             |_| {},
         )
@@ -92,7 +91,7 @@ fn positional_reads_see_holes_released_pages_and_the_end() {
     for at in PAGE_SLOTS..2 * PAGE_SLOTS {
         remove(&mut g, v(0), l(0), p(at));
     }
-    g.compact(v(0), l(0), Direction::Outgoing).unwrap();
+    g.compact(v(0), (l(0), Direction::Outgoing)).unwrap();
     remove(&mut g, v(0), l(0), p(5));
     let positions = [
         p(3 * PAGE_SLOTS),
@@ -102,10 +101,10 @@ fn positional_reads_see_holes_released_pages_and_the_end() {
         p(2 * PAGE_SLOTS),
     ];
     let mut out = Vec::new();
-    g.targets_at(v(0), l(0), Direction::Outgoing, &positions, &mut out)
+    g.targets_at(v(0), (l(0), Direction::Outgoing), &positions, &mut out)
         .unwrap();
     assert_eq!(out, [None, None, None, Some(v(1)), Some(v(1))]);
-    g.targets_at(v(1), l(3), Direction::Outgoing, &positions, &mut out)
+    g.targets_at(v(1), (l(3), Direction::Outgoing), &positions, &mut out)
         .unwrap();
     assert_eq!(out, [None; 5]);
 }

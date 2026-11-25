@@ -34,7 +34,7 @@ fn remove_all<M: Memory>(g: &mut Graph<M>, halves: &[EdgeRef]) -> Vec<Removal> {
 /// Compacts `hub`'s out bucket until done.
 fn compact_fully(g: &mut Graph<VecMemory>, hub: NodeId) {
     while g
-        .compact(hub, LABEL, Direction::Outgoing)
+        .compact(hub, (LABEL, Direction::Outgoing))
         .unwrap_or_else(|e| panic!("compact: {e}"))
         .progress()
         == Progress::Remaining

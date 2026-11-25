@@ -1,9 +1,15 @@
-//! Finding one of a node's label buckets and publishing its next state.
+//! Finding one of a node's label buckets through its label bucket list, the edge's other half
+//! with its bucket, publishing a bucket's next state in its list entry, and the one-bucket caches
+//! batches keep of the last one found.
 
-use crate::bucket::stored::{HEADER_CLASS, LabelBucket};
-use crate::graph::{Error, Graph, reserved};
+use crate::bucket::LabelBucket;
+use crate::bucket::LabelBucketKey;
+use crate::bucket::slots;
+use crate::error::Error;
+use crate::graph::Graph;
+use crate::id::EdgeRef;
 use crate::id::NodeId;
-use crate::node::label_bucket_list::{self, EntryAt, LabelBucketKey, Lookup};
+use crate::node::label_bucket_list::{self, EntryAt, Lookup};
 use crate::store::corrupt::corrupt;
 use crate::store::memory::Memory;
 
@@ -12,31 +18,11 @@ impl<M: Memory> Graph<M> {
     /// changed form. Returns the bucket as published. Within reserved memory.
     pub(in crate::graph) fn publish(&mut self, entry: EntryAt, bucket: LabelBucket) -> LabelBucket {
         let had_header = bucket.header.is_some();
-        let bucket = self.settle(bucket);
-        bucket.write_header(&self.edges);
+        let bucket = self.edges.seal(bucket);
         if !had_header || bucket.header.is_none() {
             label_bucket_list::set(&self.label_bucket_lists, entry, &bucket.stored());
         }
         bucket
-    }
-
-    /// Gives a bucket with values or an index a header, and releases a header nothing needs any
-    /// more. Within reserved memory.
-    pub(in crate::graph) fn settle(&mut self, bucket: LabelBucket) -> LabelBucket {
-        match (bucket.extended(), bucket.header) {
-            (true, None) => LabelBucket {
-                header: Some(reserved(self.edges.allocate(HEADER_CLASS))),
-                ..bucket
-            },
-            (false, Some(header)) => {
-                self.edges.release(header);
-                LabelBucket {
-                    header: None,
-                    ..bucket
-                }
-            }
-            (true, Some(_)) | (false, None) => bucket,
-        }
     }
 
     /// The bucket a live half proves exists.
@@ -57,7 +43,7 @@ impl<M: Memory> Graph<M> {
             match label_bucket_list::lookup(&self.label_bucket_lists.pages(), list, key) {
                 Lookup::Present { entry, stored } => Some(Found {
                     entry,
-                    bucket: LabelBucket::resolve(&self.edges.pages(), stored),
+                    bucket: LabelBucket::resolve(&self.edge_view().pages(), stored),
                 }),
                 Lookup::Absent { .. } => None,
             },
@@ -74,16 +60,9 @@ impl<M: Memory> Graph<M> {
         let list = self.label_bucket_list(v)?;
         Ok(
             label_bucket_list::lookup_stored(&self.label_bucket_lists.pages(), list, key)
-                .map(|stored| LabelBucket::resolve(&self.edges.pages(), stored)),
+                .map(|stored| LabelBucket::resolve(&self.edge_view().pages(), stored)),
         )
     }
-}
-
-/// A label bucket found in its node's label bucket list.
-#[derive(Clone, Copy)]
-pub(in crate::graph) struct Found {
-    pub(in crate::graph) entry: EntryAt,
-    pub(in crate::graph) bucket: LabelBucket,
 }
 
 /// The bucket last looked up for one `(node, key)`, so consecutive halves in that bucket reuse
@@ -160,5 +139,56 @@ impl<T: Copy> LastBucket<T> {
         } else {
             None
         }
+    }
+}
+
+impl<M: Memory> Graph<M> {
+    /// Both halves of the edge `half` belongs to, with their buckets; `None` when `half` is not
+    /// live.
+    pub(in crate::graph) fn pair(&self, half: EdgeRef) -> Result<Option<Pair>, Error> {
+        let Some(own) = self.find_label_bucket(half.node(), LabelBucketKey::of(half))? else {
+            return Ok(None);
+        };
+        Ok(self.pair_from(half, own))
+    }
+
+    /// [`pair`] with `half`'s own bucket already found.
+    pub(in crate::graph) fn pair_from(&self, half: EdgeRef, own: Found) -> Option<Pair> {
+        let view = self.edge_view().pages();
+        let other = slots::get(&own.bucket.slots, half.position(), &view)?;
+        let key = LabelBucketKey::of(half).opposite();
+        let theirs = self.present(other, key);
+        Some(self.pair_with_theirs(half, own, other, key, theirs))
+    }
+}
+
+/// A label bucket found in its node's label bucket list.
+#[derive(Clone, Copy)]
+pub(in crate::graph) struct Found {
+    pub(in crate::graph) entry: EntryAt,
+    pub(in crate::graph) bucket: LabelBucket,
+}
+
+/// Both halves of one edge: the given half's bucket, the other half, and its bucket.
+pub(in crate::graph) struct Pair {
+    pub(in crate::graph) own: Found,
+    pub(in crate::graph) other: EdgeRef,
+    pub(in crate::graph) theirs: Found,
+}
+
+impl<M: Memory> Graph<M> {
+    /// [`Self::pair_from`] with the target and its bucket already found.
+    pub(in crate::graph) fn pair_with_theirs(
+        &self,
+        half: EdgeRef,
+        own: Found,
+        other: NodeId,
+        key: LabelBucketKey,
+        theirs: Found,
+    ) -> Pair {
+        let other = self
+            .edge_view()
+            .other_half(half, &own.bucket, (other, key), &theirs.bucket);
+        Pair { own, other, theirs }
     }
 }

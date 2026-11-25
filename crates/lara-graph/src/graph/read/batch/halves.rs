@@ -1,10 +1,10 @@
 //! Batched reads over edge halves; consecutive halves in one bucket reuse its lookup.
 
 use super::{Mode, ReadBatch, check_all};
+use crate::bucket::LabelBucketKey;
 use crate::bucket::descriptor::Descriptor;
-use crate::graph::Error;
+use crate::error::Error;
 use crate::id::{EdgeRef, NodeId};
-use crate::node::label_bucket_list::LabelBucketKey;
 use crate::store::memory::Memory;
 use alloc::vec::Vec;
 
@@ -45,8 +45,8 @@ impl<M: Memory> ReadBatch<'_, M> {
                 out.push(None);
                 continue;
             }
-            out.push(Some(graph.read_value(
-                &found,
+            out.push(Some(graph.edge_view().read_value(
+                &found.bucket,
                 half.label(),
                 half.position(),
             )));

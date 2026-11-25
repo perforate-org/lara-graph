@@ -47,7 +47,7 @@ fn a_full_run_becomes_the_first_page_without_moving() {
         panic!("paged")
     };
     assert_eq!(
-        paged::leaves(&g.edges.pages(), &paged)[0].page,
+        paged::leaves(&g.edges.store().pages(), &paged)[0].page,
         Some(run.extent.page())
     );
     check(&g);
@@ -60,7 +60,7 @@ fn the_page_index_deepens_past_one_page_of_entries() {
     let total = (paged::FANOUT + 2) * PAGE_SLOTS + 3;
     let mut most = 0;
     for _ in 0..total {
-        let before = g.edges.minted();
+        let before = g.edges.store().minted();
         // An undirected self-loop: one half, one bucket insert.
         g.add_edge(NewEdge::undirected(
             v(0),
@@ -70,7 +70,7 @@ fn the_page_index_deepens_past_one_page_of_entries() {
             &[],
         ))
         .unwrap();
-        most = most.max(g.edges.minted() - before);
+        most = most.max(g.edges.store().minted() - before);
     }
     let bound = pages_per_half(None);
     assert!(
@@ -146,7 +146,7 @@ fn compacting_a_mostly_emptied_hub_shrinks_its_index() {
             )
             .unwrap()
             .unwrap();
-        targets::extents(&g.edges.pages(), found.bucket.index.tree()).len()
+        target_index::extents(&g.edges.store().pages(), found.bucket.index.tree()).len()
     };
     let before = index_pages(&g);
     for (i, halves) in edges.iter().enumerate() {
@@ -155,7 +155,7 @@ fn compacting_a_mostly_emptied_hub_shrinks_its_index() {
         }
     }
     while g
-        .compact(hub, l(0), Direction::Outgoing)
+        .compact(hub, (l(0), Direction::Outgoing))
         .unwrap()
         .progress()
         == Progress::Remaining

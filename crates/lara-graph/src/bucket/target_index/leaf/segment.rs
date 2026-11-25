@@ -1,9 +1,9 @@
 //! Segments: runs of sorted postings coded together, and the table entries that describe them.
 
 use super::{ENTRY_BYTES, Read};
-use crate::bucket::targets::Change;
-use crate::bucket::targets::Posting;
-use crate::bucket::targets::bits::{PADDING, Reader, Writer, rice_len};
+use crate::bucket::target_index::Change;
+use crate::bucket::target_index::Posting;
+use crate::bucket::target_index::bits::{PADDING, Reader, Writer, rice_len};
 use crate::store::corrupt::corrupt;
 use alloc::vec::Vec;
 

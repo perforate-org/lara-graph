@@ -147,7 +147,7 @@ fn link_path<M: Memory>(store: &PageStore<M>, growth: &Growth, grown: &Grown) {
 mod tests {
     use super::*;
     use crate::bucket::descriptor::PAGE_SLOTS;
-    use crate::bucket::label_bucket::PAGES_PER_INSERT;
+    use crate::bucket::slots::PAGES_PER_INSERT;
 
     /// Pages appending data page `number` (after full pages `0..number`) takes.
     fn pages_taken(number: u32) -> u32 {

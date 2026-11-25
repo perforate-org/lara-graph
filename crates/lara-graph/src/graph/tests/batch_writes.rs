@@ -26,8 +26,8 @@ fn remove_edges_matches_one_by_one() {
         .map(|&half| loop_graph.remove_edge(half).unwrap())
         .collect();
     assert_eq!(batch, one_by_one);
-    assert_eq!(batch_graph.degree(v(0), l(0), Direction::Outgoing), Ok(1));
-    assert_eq!(batch_graph.degree(v(0), l(1), Direction::Outgoing), Ok(0));
+    assert_eq!(batch_graph.degree(v(0), (l(0), Direction::Outgoing)), Ok(1));
+    assert_eq!(batch_graph.degree(v(0), (l(1), Direction::Outgoing)), Ok(0));
     check(&batch_graph);
 }
 
@@ -41,8 +41,8 @@ fn remove_edges_checks_all_nodes_before_writing() {
     let error = g.remove_edges(&halves).unwrap_err();
     assert_eq!(error.index(), 1);
     assert_eq!(*error.error(), Error::UnknownNode(v(9)));
-    assert_eq!(g.degree(v(0), l(0), Direction::Outgoing), Ok(2));
-    assert_eq!(g.degree(v(1), l(0), Direction::Incoming), Ok(1));
+    assert_eq!(g.degree(v(0), (l(0), Direction::Outgoing)), Ok(2));
+    assert_eq!(g.degree(v(1), (l(0), Direction::Incoming)), Ok(1));
     check(&g);
 }
 
@@ -70,7 +70,7 @@ fn add_nodes_adds_consecutive_ids() {
         assert_eq!(g.node_state(v(node)).unwrap(), NodeState::Live);
     }
     insert(&mut g, v(3), l(0), v(1));
-    assert_eq!(g.degree(v(3), l(0), Direction::Outgoing).unwrap(), 1);
+    assert_eq!(g.degree(v(3), (l(0), Direction::Outgoing)).unwrap(), 1);
 }
 
 #[test]
@@ -96,9 +96,9 @@ fn add_edges_inserts_each_directed_edge() {
     let halves = g.add_edges(&specs).unwrap();
     assert_eq!(halves.len(), 3);
     assert_eq!(g.edge_target(halves[0].canonical()).unwrap(), Some(v(1)));
-    assert_eq!(g.degree(v(0), l(0), Direction::Outgoing).unwrap(), 2);
-    assert_eq!(g.degree(v(0), l(1), Direction::Outgoing).unwrap(), 1);
-    assert_eq!(g.degree(v(1), l(0), Direction::Incoming).unwrap(), 1);
+    assert_eq!(g.degree(v(0), (l(0), Direction::Outgoing)).unwrap(), 2);
+    assert_eq!(g.degree(v(0), (l(1), Direction::Outgoing)).unwrap(), 1);
+    assert_eq!(g.degree(v(1), (l(0), Direction::Incoming)).unwrap(), 1);
 }
 
 #[test]
@@ -112,9 +112,9 @@ fn add_edges_reuses_a_repeated_target() {
     ];
     let halves = g.add_edges(&specs).unwrap();
     assert_eq!(halves.len(), 3);
-    assert_eq!(g.degree(v(0), l(0), Direction::Outgoing).unwrap(), 3);
-    assert_eq!(g.degree(v(1), l(0), Direction::Incoming).unwrap(), 2);
-    assert_eq!(g.degree(v(2), l(0), Direction::Incoming).unwrap(), 1);
+    assert_eq!(g.degree(v(0), (l(0), Direction::Outgoing)).unwrap(), 3);
+    assert_eq!(g.degree(v(1), (l(0), Direction::Incoming)).unwrap(), 2);
+    assert_eq!(g.degree(v(2), (l(0), Direction::Incoming)).unwrap(), 1);
 }
 
 #[test]
@@ -130,10 +130,10 @@ fn add_edges_carries_directed_undirected_and_self_loops() {
     let halves = g.add_edges(&specs).unwrap();
     assert_eq!(halves.len(), 4);
     assert_eq!(halves[3].canonical(), halves[3].other());
-    assert_eq!(g.degree(v(0), l(0), Direction::Outgoing).unwrap(), 2);
-    assert_eq!(g.degree(v(0), l(1), Direction::Undirected).unwrap(), 1);
-    assert_eq!(g.degree(v(2), l(1), Direction::Undirected).unwrap(), 1);
-    assert_eq!(g.degree(v(2), l(2), Direction::Undirected).unwrap(), 1);
+    assert_eq!(g.degree(v(0), (l(0), Direction::Outgoing)).unwrap(), 2);
+    assert_eq!(g.degree(v(0), (l(1), Direction::Undirected)).unwrap(), 1);
+    assert_eq!(g.degree(v(2), (l(1), Direction::Undirected)).unwrap(), 1);
+    assert_eq!(g.degree(v(2), (l(2), Direction::Undirected)).unwrap(), 1);
 }
 
 #[test]
@@ -147,9 +147,9 @@ fn add_edges_caches_an_undirected_hub() {
     ];
     let halves = g.add_edges(&specs).unwrap();
     assert_eq!(halves.len(), 3);
-    assert_eq!(g.degree(v(0), l(0), Direction::Undirected).unwrap(), 3);
-    assert_eq!(g.degree(v(1), l(0), Direction::Undirected).unwrap(), 2);
-    assert_eq!(g.degree(v(2), l(0), Direction::Undirected).unwrap(), 1);
+    assert_eq!(g.degree(v(0), (l(0), Direction::Undirected)).unwrap(), 3);
+    assert_eq!(g.degree(v(1), (l(0), Direction::Undirected)).unwrap(), 2);
+    assert_eq!(g.degree(v(2), (l(0), Direction::Undirected)).unwrap(), 1);
 }
 
 #[test]
@@ -163,8 +163,8 @@ fn add_edges_invalidates_a_target_that_gains_a_bucket() {
     ];
     let halves = g.add_edges(&specs).unwrap();
     assert_eq!(halves.len(), 3);
-    assert_eq!(g.degree(v(1), l(0), Direction::Incoming).unwrap(), 2);
-    assert_eq!(g.degree(v(1), l(1), Direction::Incoming).unwrap(), 1);
+    assert_eq!(g.degree(v(1), (l(0), Direction::Incoming)).unwrap(), 2);
+    assert_eq!(g.degree(v(1), (l(1), Direction::Incoming)).unwrap(), 1);
 }
 
 #[test]
@@ -187,16 +187,16 @@ fn add_edges_reuses_paged_holes_from_a_cursor() {
         .map(|target| NewEdge::directed(v(0), l(0), v(target), Placement::ReuseHoles, &[]))
         .collect();
     g.add_edges(&specs).unwrap();
-    assert_eq!(g.degree(v(0), l(0), Direction::Outgoing).unwrap(), 1024);
+    assert_eq!(g.degree(v(0), (l(0), Direction::Outgoing)).unwrap(), 1024);
     for target in 1..=1024 {
         let want = u32::from(target % 2 == 0);
         assert_eq!(
-            g.degree(v(target), l(0), Direction::Incoming).unwrap(),
+            g.degree(v(target), (l(0), Direction::Incoming)).unwrap(),
             want
         );
     }
     for target in 1025..=1536 {
-        assert_eq!(g.degree(v(target), l(0), Direction::Incoming).unwrap(), 1);
+        assert_eq!(g.degree(v(target), (l(0), Direction::Incoming)).unwrap(), 1);
     }
 }
 
@@ -211,8 +211,8 @@ fn add_edges_checks_all_endpoints_before_writing() {
     let error = g.add_edges(&specs).unwrap_err();
     assert_eq!(error.index(), 1);
     assert_eq!(*error.error(), Error::UnknownNode(v(9)));
-    assert_eq!(g.degree(v(0), l(0), Direction::Outgoing).unwrap(), 0);
-    assert_eq!(g.degree(v(1), l(0), Direction::Incoming).unwrap(), 0);
+    assert_eq!(g.degree(v(0), (l(0), Direction::Outgoing)).unwrap(), 0);
+    assert_eq!(g.degree(v(1), (l(0), Direction::Incoming)).unwrap(), 0);
 }
 
 #[test]
@@ -227,7 +227,7 @@ fn add_edges_checks_value_lengths_before_writing() {
     let error = g.add_edges(&specs).unwrap_err();
     assert_eq!(error.index(), 1);
     assert!(matches!(error.error(), Error::WrongValueLength { .. }));
-    assert_eq!(g.degree(v(0), l(0), Direction::Outgoing).unwrap(), 0);
+    assert_eq!(g.degree(v(0), (l(0), Direction::Outgoing)).unwrap(), 0);
 }
 
 #[test]
@@ -250,10 +250,10 @@ fn add_edges_keeps_a_cache_per_from_node() {
         NewEdge::directed(v(2), l(0), v(3), Placement::ReuseHoles, &[]),
     ];
     g.add_edges(&specs).unwrap();
-    assert_eq!(g.degree(v(0), l(0), Direction::Outgoing).unwrap(), 1);
-    assert_eq!(g.degree(v(2), l(0), Direction::Outgoing).unwrap(), 1);
-    assert_eq!(g.degree(v(1), l(0), Direction::Incoming).unwrap(), 1);
-    assert_eq!(g.degree(v(3), l(0), Direction::Incoming).unwrap(), 1);
+    assert_eq!(g.degree(v(0), (l(0), Direction::Outgoing)).unwrap(), 1);
+    assert_eq!(g.degree(v(2), (l(0), Direction::Outgoing)).unwrap(), 1);
+    assert_eq!(g.degree(v(1), (l(0), Direction::Incoming)).unwrap(), 1);
+    assert_eq!(g.degree(v(3), (l(0), Direction::Incoming)).unwrap(), 1);
     check(&g);
 }
 

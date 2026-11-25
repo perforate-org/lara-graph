@@ -2,7 +2,7 @@
 
 use super::Root;
 use super::node::{child_of, children, count_at, counts, node_len, page_at, read_into};
-use crate::bucket::targets::{Posting, leaf};
+use crate::bucket::target_index::{Posting, leaf};
 use crate::store::memory::Memory;
 use crate::store::page_store::{Extent, PageId, PageStore, Pages};
 #[cfg(test)]

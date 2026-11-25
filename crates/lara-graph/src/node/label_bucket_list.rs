@@ -49,9 +49,10 @@
 
 mod tiered;
 
+use crate::bucket::LabelBucketKey;
 use crate::bucket::descriptor::DESCRIPTOR_BYTES;
 use crate::bucket::stored::Stored;
-use crate::id::{Direction, EdgeRef, Label};
+use crate::id::{Direction, Label};
 use crate::store::corrupt::corrupt;
 use crate::store::memory::{Memory, WriteError};
 use crate::store::page_store::{ByteClass, EXTENT_BYTES, Extent, PageStore, Pages};
@@ -74,34 +75,12 @@ const TIERED: u8 = u8::MAX;
 // Flat counts never reach [`TIERED`] (0xFF).
 const _: () = assert!(LEAF_ENTRIES < 0xFF);
 
-/// Which label bucket of a node: a label in one direction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct LabelBucketKey {
-    pub(crate) label: Label,
-    pub(crate) direction: Direction,
-}
-
 const DIRECTION_OUTGOING: u8 = 0;
 const DIRECTION_INCOMING: u8 = 1;
 const DIRECTION_UNDIRECTED: u8 = 2;
 
+/// A key as the list stores and orders it.
 impl LabelBucketKey {
-    /// The key of the bucket that holds `half`.
-    pub(crate) const fn of(half: EdgeRef) -> Self {
-        Self {
-            label: half.label(),
-            direction: half.direction(),
-        }
-    }
-
-    /// The key of the bucket that holds the other halves of this one's edges.
-    pub(crate) const fn opposite(self) -> Self {
-        Self {
-            label: self.label,
-            direction: self.direction.opposite(),
-        }
-    }
-
     /// The key's place in key order: the label, then the direction.
     fn rank(self) -> u32 {
         rank_of(self.encode())
@@ -117,6 +96,7 @@ impl LabelBucketKey {
         [l0, l1, direction]
     }
 
+    #[inline]
     fn decode([l0, l1, direction]: [u8; 3]) -> Self {
         let direction = match direction {
             DIRECTION_OUTGOING => Direction::Outgoing,
@@ -498,6 +478,7 @@ fn rank_of([l0, l1, direction]: [u8; 3]) -> u32 {
     (u32::from(u16::from_le_bytes([l0, l1])) << 8) | u32::from(direction)
 }
 
+#[inline]
 fn decode_entry(entry: [u8; ENTRY_BYTES]) -> (LabelBucketKey, Stored) {
     let [k0, k1, k2, rest @ ..] = entry;
     (LabelBucketKey::decode([k0, k1, k2]), Stored::decode(rest))

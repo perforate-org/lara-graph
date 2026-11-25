@@ -23,21 +23,22 @@ extern crate alloc;
 #[doc = include_str!("../../../README.md")]
 struct ReadmeDoctests;
 
+// Layers, each using only those before it: `store`, `bucket`, then `node` and `edge` side by
+// side, then `graph`.
 mod bucket;
+mod edge;
+mod error;
 mod graph;
 mod id;
-mod memories;
+mod input;
 mod node;
+mod outcome;
 mod store;
 
-pub use graph::{
-    BatchError, Compaction, Detachment, EdgeKind, EdgeValue, Error, Graph, InitError, NewEdge,
-    ReadBatch, Removal, Step, Sweep,
-};
-pub use id::{
-    Cursor, Direction, Edge, EdgeRef, Halves, Label, Move, NodeId, NodeState, Order, Placement,
-    Position, Progress, RemovedEdge, Width,
-};
-pub use memories::{Memories, MemoryRole};
-pub use node::detaching_set::DetachingSet;
+pub use error::{BatchError, Error, InitError};
+pub use graph::{DetachingSet, Graph, Memories, MemoryRole, ReadBatch};
+pub use id::{Direction, EdgeRef, Halves, Label, Neighbor, NodeId, NodeState, Position, Width};
+pub use input::{Cursor, EdgeKind, EdgeValue, NewEdge, Order, Placement};
+
+pub use outcome::{Compaction, Detachment, Move, Progress, Removal, RemovedEdge, Step, Sweep};
 pub use store::memory::{GrowFailed, Memory, PAGE_SIZE, VecMemory};

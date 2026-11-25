@@ -1,10 +1,14 @@
 //! Removing edges: both halves of each, with the value they carried.
 
-use crate::bucket::label_bucket;
-use crate::graph::bucket::{Found, LastBucket, Pair};
-use crate::graph::{BatchError, Error, Graph, Removal};
-use crate::id::{EdgeRef, Halves, NodeId, RemovedEdge};
-use crate::node::label_bucket_list::LabelBucketKey;
+use crate::bucket::LabelBucketKey;
+use crate::bucket::slots;
+use crate::error::{BatchError, Error};
+use crate::graph::Graph;
+use crate::graph::locate::Found;
+use crate::graph::locate::LastBucket;
+use crate::graph::locate::Pair;
+use crate::id::{EdgeRef, NodeId};
+use crate::outcome::Removal;
 use crate::store::memory::Memory;
 use alloc::vec::Vec;
 
@@ -70,8 +74,8 @@ impl<M: Memory> Graph<M> {
             return Ok(Removal::Absent);
         };
         let other = {
-            let view = self.edges.pages();
-            label_bucket::get(&own.bucket.slots, half.position(), &view)
+            let view = self.edge_view().pages();
+            slots::get(&own.bucket.slots, half.position(), &view)
         };
         let Some(other) = other else {
             pending.own.set(node, key, own);
@@ -105,48 +109,26 @@ impl<M: Memory> Graph<M> {
         }
     }
 
-    /// Applies one found pair and returns the removal plus the updated own and opposite
-    /// buckets, so a batch can carry them to the next edge.
     fn take_removal(
         &mut self,
         half: EdgeRef,
-        Pair { own, other, theirs }: Pair,
+        Pair {
+            mut own,
+            other,
+            mut theirs,
+        }: Pair,
     ) -> (Removal, Found, Option<Found>) {
-        let halves = Halves::of(half, other);
-        // Only a label with a width has a value to report.
-        let value = if self.widths.get(half.label()).is_some() {
-            let canonical = if halves.canonical() == half {
-                own
-            } else {
-                theirs
-            };
-            self.read_value(&canonical, half.label(), halves.canonical().position())
-        } else {
-            Vec::new()
-        };
-        let (own_bucket, _) = self.remove_half(own, half.position());
-        let own_after = Found {
-            entry: own.entry,
-            bucket: own_bucket,
-        };
-        let theirs_after = if other == half {
-            None
-        } else {
-            let (bucket, _) = self.remove_half(theirs, other.position());
-            Some(Found {
-                entry: theirs.entry,
-                bucket,
-            })
-        };
+        let width = self.widths.get(half.label());
+        let edge =
+            self.edges
+                .remove_pair((&mut own.bucket, half), (&mut theirs.bucket, other), width);
         (
-            Removal::Removed(RemovedEdge::new(halves, value)),
-            own_after,
-            theirs_after,
+            Removal::Removed(edge),
+            own,
+            (other != half).then_some(theirs),
         )
     }
 }
-
-impl<M: Memory> Graph<M> {}
 
 /// A removal batch's changed buckets, published once the batch moves on from them.
 #[derive(Default)]

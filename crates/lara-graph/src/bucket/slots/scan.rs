@@ -5,7 +5,8 @@ use crate::bucket::descriptor::{
     Descriptor, PAGE_SLOTS, Paged, Run, SLOT_BYTES, Slot, TINY_SLOTS, Tiny,
 };
 use crate::bucket::paged::{self, Leaf};
-use crate::id::{Edge, Order, Position, Width};
+use crate::id::{Neighbor, Position, Width};
+use crate::input::Order;
 use crate::store::memory::Memory;
 use crate::store::page_store::Pages;
 use crate::store::read_buf::ReadBuf;
@@ -59,7 +60,7 @@ pub(crate) fn visit<M: Memory, B>(
     view: &Pages<'_, M>,
     span: Span,
     window: Window,
-    mut f: impl FnMut(Edge) -> ControlFlow<B>,
+    mut f: impl FnMut(Neighbor) -> ControlFlow<B>,
 ) -> Option<B> {
     // A tiny bucket's slots go to `f` as they are, not through bytes as `scan` gives them: the
     // round trip cost about a fifth of visiting a one-edge bucket on the IC.
@@ -81,7 +82,7 @@ pub(crate) fn visit_beside<M: Memory, B>(
     width: Width,
     view: &Pages<'_, M>,
     order: Order,
-    mut f: impl FnMut(Edge, &[u8]) -> ControlFlow<B>,
+    mut f: impl FnMut(Neighbor, &[u8]) -> ControlFlow<B>,
 ) -> Option<B> {
     let stored = usize::from(run.stored);
     let w = usize::from(width.get());
@@ -94,7 +95,7 @@ pub(crate) fn visit_beside<M: Memory, B>(
         Slot::Live(target) => {
             let at = i * w;
             f(
-                Edge::new(Position::new(stored_u32(i)), target),
+                Neighbor::new(Position::new(stored_u32(i)), target),
                 rest.get(at..at + w).unwrap_or(&[]),
             )
         }
@@ -111,7 +112,7 @@ pub(crate) fn visit_beside<M: Memory, B>(
 fn visit_tiny<B>(
     tiny: &Tiny,
     span: Span,
-    f: &mut impl FnMut(Edge) -> ControlFlow<B>,
+    f: &mut impl FnMut(Neighbor) -> ControlFlow<B>,
 ) -> ControlFlow<B> {
     let slots = tiny.slots();
     let high = usize::try_from(span.high).map_or(slots.len(), |h| h.min(slots.len()));
@@ -122,7 +123,7 @@ fn visit_tiny<B>(
         .iter()
         .enumerate()
         .filter_map(|(i, slot)| match *slot {
-            Slot::Live(target) => Some(Edge::new(Position::new(stored_u32(low + i)), target)),
+            Slot::Live(target) => Some(Neighbor::new(Position::new(stored_u32(low + i)), target)),
             Slot::Tombstone => None,
         });
     match span.order {
@@ -135,14 +136,14 @@ fn visit_tiny<B>(
 fn emit_ascending<B>(
     first: u32,
     bytes: &[u8],
-    f: &mut impl FnMut(Edge) -> ControlFlow<B>,
+    f: &mut impl FnMut(Neighbor) -> ControlFlow<B>,
 ) -> ControlFlow<B> {
     let slots = bytes.as_chunks::<4>().0;
     slots
         .iter()
         .enumerate()
         .try_for_each(|(i, &raw)| match Slot::decode(raw) {
-            Slot::Live(target) => f(Edge::new(Position::new(first + stored_u32(i)), target)),
+            Slot::Live(target) => f(Neighbor::new(Position::new(first + stored_u32(i)), target)),
             Slot::Tombstone => ControlFlow::Continue(()),
         })
 }
@@ -151,12 +152,12 @@ fn emit_ascending<B>(
 fn emit_descending<B>(
     first: u32,
     bytes: &[u8],
-    f: &mut impl FnMut(Edge) -> ControlFlow<B>,
+    f: &mut impl FnMut(Neighbor) -> ControlFlow<B>,
 ) -> ControlFlow<B> {
     let slots = bytes.as_chunks::<4>().0;
     for (i, &raw) in slots.iter().enumerate().rev() {
         if let Slot::Live(target) = Slot::decode(raw) {
-            f(Edge::new(Position::new(first + stored_u32(i)), target))?;
+            f(Neighbor::new(Position::new(first + stored_u32(i)), target))?;
         }
     }
     ControlFlow::Continue(())
@@ -164,7 +165,7 @@ fn emit_descending<B>(
 
 /// Appends the bucket's live edges to `out`, in position order: one read for a run; for a
 /// paged bucket, the index and each page that is not all tombstones.
-pub(crate) fn read<M: Memory>(d: &Descriptor, view: &Pages<'_, M>, out: &mut Vec<Edge>) {
+pub(crate) fn read<M: Memory>(d: &Descriptor, view: &Pages<'_, M>, out: &mut Vec<Neighbor>) {
     out.reserve(usize::try_from(d.live()).unwrap_or(0));
     // Its own loop, like `find`: it compiles to faster code here than going through `visit`.
     scan(
@@ -175,7 +176,7 @@ pub(crate) fn read<M: Memory>(d: &Descriptor, view: &Pages<'_, M>, out: &mut Vec
         |first, bytes| {
             for (at, slot) in (first..).zip(Slot::decode_all(bytes)) {
                 if let Slot::Live(target) = slot {
-                    out.push(Edge::new(Position::new(at), target));
+                    out.push(Neighbor::new(Position::new(at), target));
                 }
             }
             ControlFlow::<()>::Continue(())
@@ -189,8 +190,8 @@ pub(crate) fn find<M: Memory>(
     d: &Descriptor,
     view: &Pages<'_, M>,
     from: Position,
-    wanted: impl FnMut(Edge) -> bool,
-) -> Option<Edge> {
+    wanted: impl FnMut(Neighbor) -> bool,
+) -> Option<Neighbor> {
     find_in(d, view, (from.index(), d.stored()), wanted)
 }
 
@@ -199,15 +200,15 @@ pub(crate) fn find_in<M: Memory>(
     d: &Descriptor,
     view: &Pages<'_, M>,
     (low, high): (u32, u32),
-    mut wanted: impl FnMut(Edge) -> bool,
-) -> Option<Edge> {
+    mut wanted: impl FnMut(Neighbor) -> bool,
+) -> Option<Neighbor> {
     // Its own loop rather than `visit`: the two compile to different code, and each is the
     // faster one for its use on the IC (`docs/ic-measurements-2026-11-22.md`).
     let span = Span::new(low, high.min(d.stored()), Order::Ascending);
     scan(d, view, span, Window::Short.slots(), |first, bytes| {
         for (at, slot) in (first..).zip(Slot::decode_all(bytes)) {
             if let Slot::Live(target) = slot {
-                let e = Edge::new(Position::new(at), target);
+                let e = Neighbor::new(Position::new(at), target);
                 if wanted(e) {
                     return ControlFlow::Break(e);
                 }

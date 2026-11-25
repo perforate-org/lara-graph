@@ -1,7 +1,7 @@
 //! The structural invariants every graph test checks.
 
 use super::*;
-use crate::node::node_labels::NodeLabels;
+use crate::node::labels::set::LabelSet;
 
 /// Every structural invariant: sorted bucket keys, consistent counts, per-page tombstone counts,
 /// paired halves, and exactly the extents the label buckets and label bucket lists own are
@@ -12,7 +12,7 @@ pub(super) fn check<M: Memory>(g: &Graph<M>) {
         check_node(g, i, &mut seen);
         check_node_labels(g, i, &mut seen);
     }
-    if let Some(extent) = g.widths_extent() {
+    if let Some(extent) = g.widths.extent() {
         assert!(
             seen.label_bucket_lists.insert(key(extent)),
             "width table shared"
@@ -20,7 +20,7 @@ pub(super) fn check<M: Memory>(g: &Graph<M>) {
     }
     check_postings(g, &mut seen);
     check_pairs(&seen.halves);
-    let allocated: BTreeSet<_> = g.edges.allocated().into_iter().map(key).collect();
+    let allocated: BTreeSet<_> = g.edges.store().allocated().into_iter().map(key).collect();
     assert_eq!(allocated, seen.edges, "edge extents: none leaked or shared");
     let allocated: BTreeSet<_> = g
         .label_bucket_lists
@@ -37,7 +37,7 @@ pub(super) fn check<M: Memory>(g: &Graph<M>) {
 /// A node's labels are sorted and distinct, kept inline when two or fewer, own their extent
 /// once when spilled, and are gone once the node is deleted.
 fn check_node_labels<M: Memory>(g: &Graph<M>, i: u32, seen: &mut Seen) {
-    let cell = g.node_labels_cell(v(i));
+    let cell = g.labels.cell(v(i));
     let mut labels = Vec::new();
     g.node_labels(v(i), &mut labels).unwrap();
     assert!(
@@ -45,9 +45,9 @@ fn check_node_labels<M: Memory>(g: &Graph<M>, i: u32, seen: &mut Seen) {
         "node {i} labels"
     );
     if g.node_state(v(i)).unwrap() == NodeState::Deleted {
-        assert_eq!(cell, NodeLabels::None, "deleted node {i} keeps labels");
+        assert_eq!(cell, LabelSet::None, "deleted node {i} keeps labels");
     }
-    if matches!(cell, NodeLabels::Spilled(_)) {
+    if matches!(cell, LabelSet::Spilled(_)) {
         assert!(labels.len() > 2, "node {i} spills two labels or fewer");
     }
     for extent in cell.extents(&g.label_bucket_lists.pages()) {
@@ -70,7 +70,8 @@ fn check_postings<M: Memory>(g: &Graph<M>, seen: &mut Seen) {
         }
     }
     let view = g.label_bucket_lists.pages();
-    let listed: Vec<(Label, u32)> = crate::node::label_postings::labels(&view, g.postings);
+    let listed: Vec<(Label, u32)> =
+        crate::node::labels::postings::labels(&view, g.labels.postings());
     let counts: Vec<(Label, u32)> = want
         .iter()
         .map(|(&l, nodes)| (l, u32::try_from(nodes.len()).unwrap()))
@@ -84,7 +85,8 @@ fn check_postings<M: Memory>(g: &Graph<M>, seen: &mut Seen) {
         });
         assert_eq!(&got, nodes, "postings of {label:?}");
     }
-    for extent in crate::node::label_postings::extents(&view, g.postings, g.node_count()) {
+    for extent in crate::node::labels::postings::extents(&view, g.labels.postings(), g.node_count())
+    {
         assert!(
             seen.label_bucket_lists.insert(key(extent)),
             "label postings extent shared"
@@ -118,7 +120,7 @@ fn check_node<M: Memory>(g: &Graph<M>, i: u32, seen: &mut Seen) {
         "bucket keys sorted and unique"
     );
     for (bucket_key, stored) in buckets {
-        let bucket = LabelBucket::resolve(&g.edges.pages(), stored);
+        let bucket = LabelBucket::resolve(&g.edges.store().pages(), stored);
         let state = g.record(v(i)).unwrap().state;
         check_values(g, &bucket, state, &mut seen.edges);
         for target in check_bucket(g, &bucket.slots, &mut seen.edges) {
@@ -138,7 +140,7 @@ fn check_values<M: Memory>(
     state: NodeState,
     owned: &mut BTreeSet<(u32, u64, u8)>,
 ) {
-    let view = g.edges.pages();
+    let view = g.edges.store().pages();
     assert_eq!(
         bucket.header.is_some(),
         bucket.extended(),
@@ -165,18 +167,21 @@ fn check_values<M: Memory>(
     // paged bucket's complete blocks, unless its index was dropped.
     let end = match (&bucket.slots, bucket.index) {
         (Descriptor::Paged(_), Index::Empty | Index::Tree(_)) => {
-            bucket.slots.stored() / targets::BLOCK * targets::BLOCK
+            bucket.slots.stored() / target_index::BLOCK * target_index::BLOCK
         }
         (Descriptor::Paged(_), Index::Dropped) | (Descriptor::Tiny(_) | Descriptor::Run(_), _) => 0,
     };
     let mut expected: BTreeMap<(u32, u32), u32> = BTreeMap::new();
     let mut live = Vec::new();
-    label_bucket::read(&bucket.slots, &view, &mut live);
+    slots::read(&bucket.slots, &view, &mut live);
     for e in live.iter().filter(|e| e.position().index() < end) {
-        let key = (e.target().index(), e.position().index() / targets::BLOCK);
+        let key = (
+            e.target().index(),
+            e.position().index() / target_index::BLOCK,
+        );
         *expected.entry(key).or_default() += 1;
     }
-    let postings: BTreeMap<(u32, u32), u32> = targets::postings(&view, bucket.index.tree())
+    let postings: BTreeMap<(u32, u32), u32> = target_index::postings(&view, bucket.index.tree())
         .into_iter()
         .map(|p| (p.key(), p.count))
         .collect();
@@ -191,7 +196,7 @@ fn check_values<M: Memory>(
     let plane = bucket
         .values
         .map_or_else(Vec::new, |cells| values::extents(&view, cells.plane));
-    let index = targets::extents(&view, bucket.index.tree());
+    let index = target_index::extents(&view, bucket.index.tree());
     for extent in bucket.header.into_iter().chain(plane).chain(index) {
         assert!(
             owned.insert(key(extent)),
@@ -206,9 +211,9 @@ fn check_bucket<M: Memory>(
     d: &Descriptor,
     owned: &mut BTreeSet<(u32, u64, u8)>,
 ) -> Vec<u32> {
-    let view = g.edges.pages();
+    let view = g.edges.store().pages();
     let mut out = Vec::new();
-    label_bucket::read(d, &view, &mut out);
+    slots::read(d, &view, &mut out);
     assert_eq!(u32::try_from(out.len()).unwrap(), d.live(), "live count");
     assert!(d.live() <= d.stored());
     match d {
@@ -216,7 +221,7 @@ fn check_bucket<M: Memory>(
         Descriptor::Run(run) => assert!(u32::from(run.stored) <= run.capacity()),
         Descriptor::Paged(paged) => check_page_tombstones(&view, paged),
     }
-    for extent in label_bucket::owned_extents(d, &view) {
+    for extent in slots::owned_extents(d, &view) {
         assert!(owned.insert(key(extent)), "edge extent shared");
     }
     out.iter().map(|e| e.target().index()).collect()

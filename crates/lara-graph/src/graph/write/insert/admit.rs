@@ -1,8 +1,8 @@
 //! Admitting an insert: every check that can fail, before anything changes.
 
 use super::{Half, Place, Target};
-use crate::bucket::stored::{LabelBucket, Stored};
-use crate::graph::{Error, Graph};
+use crate::error::Error;
+use crate::graph::Graph;
 use crate::id::NodeId;
 use crate::node::label_bucket_list::{self, LabelBucketList, Lookup};
 use crate::node::record::Record;
@@ -48,17 +48,11 @@ impl<M: Memory> Graph<M> {
         half: Half,
         cached: Option<Place>,
     ) -> Result<Place, Error> {
-        let planned = if let Some(place) = cached {
+        if let Some(place) = cached {
             Error::unless_live(place.record.state, half.node)?;
-            place
+            Ok(place)
         } else {
-            self.place_checked(records, half)?
-        };
-        match planned.target {
-            Target::Present(_, stored) if self.stored_positions(stored) == u32::MAX => {
-                Err(Error::AddressSpaceExhausted)
-            }
-            Target::Present(..) | Target::Absent(_) => Ok(planned),
+            self.place_checked(records, half)
         }
     }
 
@@ -82,16 +76,6 @@ impl<M: Memory> Graph<M> {
             Lookup::Absent { gap } => Target::Absent(gap),
         };
         Place { record, target }
-    }
-
-    /// How many positions a bucket stores, from its list entry.
-    fn stored_positions(&self, stored: Stored) -> u32 {
-        match stored {
-            Stored::Plain(d) => d.stored(),
-            Stored::Extended(_) => LabelBucket::resolve(&self.edges.pages(), stored)
-                .slots
-                .stored(),
-        }
     }
 
     /// `v`'s record, read once per insert; a detaching or deleted node fails the insert.

@@ -1,16 +1,25 @@
 //! Reading edge values: one edge's, chosen positions', and scans of a bucket's values alone or
 //! with its edges.
 
-use crate::bucket::label_bucket::{self};
-use crate::graph::bucket::visit_joined;
-use crate::graph::{Error, Graph};
-use crate::id::{Direction, Edge, EdgeRef, Label, NodeId, Order, Position};
-use crate::node::label_bucket_list::LabelBucketKey;
+use crate::bucket::LabelBucketKey;
+use crate::bucket::slots::{self};
+use crate::edge::visit_joined;
+use crate::error::Error;
+use crate::graph::Graph;
+use crate::id::Width;
+use crate::id::{Direction, EdgeRef, Label, Neighbor, NodeId, Position};
+use crate::input::Order;
 use crate::store::memory::Memory;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
 impl<M: Memory> Graph<M> {
+    /// The width of `label`'s values, if it has been declared.
+    #[must_use]
+    pub fn width(&self, label: Label) -> Option<Width> {
+        self.widths.get(label)
+    }
+
     /// The value of the live edge `half` belongs to, as `half`'s bucket holds it; `None` when
     /// `half` is not live.
     ///
@@ -21,10 +30,12 @@ impl<M: Memory> Graph<M> {
         let Some(found) = self.find_label_bucket(half.node(), LabelBucketKey::of(half))? else {
             return Ok(None);
         };
-        let view = self.edges.pages();
+        let view = self.edge_view().pages();
         Ok(
-            label_bucket::get(&found.bucket.slots, half.position(), &view)
-                .map(|_| self.read_value(&found, half.label(), half.position())),
+            slots::get(&found.bucket.slots, half.position(), &view).map(|_| {
+                self.edge_view()
+                    .read_value(&found.bucket, half.label(), half.position())
+            }),
         )
     }
 
@@ -46,7 +57,7 @@ impl<M: Memory> Graph<M> {
         let found = self.find_label_bucket(v, LabelBucketKey { label, direction })?;
         for &p in positions {
             match &found {
-                Some(found) => out.extend(self.read_value(found, label, p)),
+                Some(found) => out.extend(self.edge_view().read_value(&found.bucket, label, p)),
                 None => out.resize(out.len() + width, 0),
             }
         }
@@ -71,7 +82,9 @@ impl<M: Memory> Graph<M> {
         let Some(bucket) = self.read_label_bucket(v, LabelBucketKey { label, direction })? else {
             return Ok(None);
         };
-        Ok(self.visit_values_in(&bucket, label, order, &mut f))
+        Ok(self
+            .edge_view()
+            .visit_values_in(&bucket, label, order, &mut f))
     }
 
     /// Calls `f` with each live edge of `v`'s `(label, direction)` bucket and its value, in
@@ -85,14 +98,14 @@ impl<M: Memory> Graph<M> {
         v: NodeId,
         (label, direction): (Label, Direction),
         order: Order,
-        mut f: impl FnMut(Edge, &[u8]) -> ControlFlow<B>,
+        mut f: impl FnMut(Neighbor, &[u8]) -> ControlFlow<B>,
     ) -> Result<Option<B>, Error> {
         let Some(bucket) = self.read_label_bucket(v, LabelBucketKey { label, direction })? else {
             return Ok(None);
         };
         let width = self.widths.get(label);
         Ok(visit_joined(
-            &self.edges.pages(),
+            &self.edge_view().pages(),
             &bucket,
             width,
             order,

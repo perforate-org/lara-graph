@@ -53,7 +53,7 @@ GRAPH.with(|graph| {
         .unwrap();
 
     let mut out = Vec::new();
-    graph.neighbors_directed(alice, FOLLOWS, Direction::Outgoing, &mut out).unwrap();
+    graph.neighbors(alice, (FOLLOWS, Direction::Outgoing), &mut out).unwrap();
     assert_eq!(out.iter().map(|e| e.target()).collect::<Vec<_>>(), [bob]);
 });
 ```

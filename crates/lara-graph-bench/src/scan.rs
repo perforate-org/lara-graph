@@ -14,7 +14,7 @@ pub(crate) fn scan_hub<M: Memory>(mut g: Graph<M>, degree: u32) -> BenchResult {
     let mut out = Vec::new();
     bench_fn(|| {
         for _ in 0..51 {
-            g.neighbors_directed(hub, LABEL, Direction::Outgoing, &mut out)
+            g.neighbors(hub, (LABEL, Direction::Outgoing), &mut out)
                 .unwrap_or_else(|e| panic!("scan: {e}"));
             black_box(out.len());
         }
@@ -31,7 +31,7 @@ fn visit_hub_in<M: Memory>(mut g: Graph<M>, degree: u32, order: Order) -> BenchR
     bench_fn(|| {
         for _ in 0..51 {
             let mut count = 0u32;
-            g.visit_neighbors(hub, LABEL, Direction::Outgoing, order, |_| {
+            g.visit_neighbors(hub, (LABEL, Direction::Outgoing), order, |_| {
                 count += 1;
                 ControlFlow::<()>::Continue(())
             })
@@ -67,7 +67,7 @@ fn hub_windows_descending_65536() -> BenchResult {
         let mut count = 0u32;
         while let Some(at) = cursor {
             cursor = g
-                .visit_window(hub, LABEL, Direction::Outgoing, at, |_| count += 1)
+                .visit_window(hub, (LABEL, Direction::Outgoing), at, |_| count += 1)
                 .unwrap_or_else(|e| panic!("window: {e}"));
         }
         black_box(count);
@@ -84,7 +84,7 @@ fn hub_targets_at_256_of_65536() -> BenchResult {
         .collect();
     let mut out = Vec::new();
     bench_fn(|| {
-        g.targets_at(hub, LABEL, Direction::Outgoing, &positions, &mut out)
+        g.targets_at(hub, (LABEL, Direction::Outgoing), &positions, &mut out)
             .unwrap_or_else(|e| panic!("targets: {e}"));
         black_box(out.len());
     })

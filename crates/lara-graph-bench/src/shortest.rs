@@ -73,7 +73,7 @@ fn dijkstra<M: Memory>(g: &Graph<M>, all: &[NodeId], source: NodeId) -> u64 {
         if dist.get(slot(v)).is_some_and(|&best| d > best) {
             continue;
         }
-        g.visit_neighbors_with_values(v, OUT, Order::Ascending, |e, value| {
+        g.visit_neighbors_with_values(v, (OUT.0, OUT.1), Order::Ascending, |e, value| {
             let w = value
                 .first_chunk::<8>()
                 .map_or(u64::MAX, |bytes| u64::from_le_bytes(*bytes));
@@ -101,7 +101,7 @@ fn bfs<M: Memory>(g: &Graph<M>, all: &[NodeId], source: NodeId) -> u32 {
     let mut reached = 0;
     while let Some(v) = queue.pop_front() {
         reached += 1;
-        g.visit_neighbors(v, OUT.0, OUT.1, Order::Ascending, |e| {
+        g.visit_neighbors(v, (OUT.0, OUT.1), Order::Ascending, |e| {
             if let Some(s) = seen.get_mut(slot(e.target()))
                 && !*s
             {

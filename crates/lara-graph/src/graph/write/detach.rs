@@ -1,15 +1,21 @@
 //! Detaching a node: removing its edges a bounded step at a time.
 
-use crate::bucket::label_bucket::{self, Span, Window};
-use crate::bucket::stored::{Index, LabelBucket};
-use crate::graph::bucket::Found;
-use crate::graph::{BatchError, Detachment, Error, Graph, Step, Sweep};
-use crate::id::{
-    Direction, EdgeRef, Halves, Label, NodeId, NodeState, Order, Position, Progress, RemovedEdge,
-};
-use crate::node::detaching_set::DetachingSet;
-use crate::node::label_bucket_list::{self, LabelBucketKey};
+mod detaching_set;
+
+pub use detaching_set::DetachingSet;
+
+use crate::bucket::LabelBucketKey;
+use crate::bucket::slots::{self, Span, Window};
+use crate::bucket::{Index, LabelBucket};
+use crate::error::{BatchError, Error};
+use crate::graph::Graph;
+use crate::graph::locate::Found;
+use crate::id::{Direction, EdgeRef, Label, NodeId, NodeState, Position};
+use crate::input::Order;
+use crate::node::label_bucket_list;
 use crate::node::record::Record;
+use crate::outcome::{Detachment, Step, Sweep};
+use crate::outcome::{Progress, RemovedEdge};
 use crate::store::corrupt::corrupt;
 use crate::store::memory::Memory;
 use alloc::vec::Vec;
@@ -112,17 +118,18 @@ impl<M: Memory> Graph<M> {
                 };
                 let found = self.draining(Found {
                     entry,
-                    bucket: LabelBucket::resolve(&self.edges.pages(), stored),
+                    bucket: LabelBucket::resolve(&self.edge_view().pages(), stored),
                 });
                 (found, key)
             };
             let from = start_in(cursor, &key);
-            let first =
-                label_bucket::find(&found.bucket.slots, &self.edges.pages(), from, |_| true);
+            let first = slots::find(&found.bucket.slots, &self.edge_view().pages(), from, |_| {
+                true
+            });
             let Some(edge) = first else {
                 // All holes: publish the pending bucket, then compaction drops it.
                 self.publish(found.entry, found.bucket);
-                self.compact(v, key.label, key.direction)?;
+                self.compact(v, (key.label, key.direction))?;
                 (cursor, hint) = (None, None);
                 continue;
             };
@@ -213,9 +220,9 @@ impl<M: Memory> Graph<M> {
         // One pass finds the edges; positions stay put as they go, so they are removed after.
         let mut doomed = Vec::new();
         let span = Span::new(from.index(), high, Order::Ascending);
-        label_bucket::visit(
+        slots::visit(
             &found.bucket.slots,
-            &self.edges.pages(),
+            &self.edge_view().pages(),
             span,
             Window::Page,
             |e| {
@@ -247,28 +254,18 @@ impl<M: Memory> Graph<M> {
     /// with its value, and with `half`'s bucket as published.
     fn take_pair(
         &mut self,
-        (found, half): (Found, EdgeRef),
-        (theirs, other): (Found, EdgeRef),
+        (mut own, half): (Found, EdgeRef),
+        (mut theirs, other): (Found, EdgeRef),
     ) -> (RemovedEdge, Found, Option<Found>) {
-        let halves = Halves::of(half, other);
-        let canonical = if halves.canonical() == half {
-            found
-        } else {
-            theirs
-        };
-        let value = self.read_value(&canonical, half.label(), halves.canonical().position());
-        let (bucket, _) = self.remove_half(found, half.position());
-        let next_theirs = if other == half {
-            None
-        } else {
-            let bucket = self.tombstone(theirs, other.position());
-            Some(Found { bucket, ..theirs })
-        };
-        (
-            RemovedEdge::new(halves, value),
-            Found { bucket, ..found },
-            next_theirs,
-        )
+        let width = self.widths.get(half.label());
+        let edge =
+            self.edges
+                .remove_pair((&mut own.bucket, half), (&mut theirs.bucket, other), width);
+        let theirs = (other != half).then(|| Found {
+            bucket: self.publish(theirs.entry, theirs.bucket),
+            ..theirs
+        });
+        (edge, own, theirs)
     }
 
     /// A detaching node's bucket without its target index: all its edges are going, so
@@ -278,7 +275,7 @@ impl<M: Memory> Graph<M> {
         let Index::Tree(_) = found.bucket.index else {
             return found;
         };
-        let bucket = self.drop_index(found.bucket, Index::Dropped);
+        let bucket = self.edges.drop_index(found.bucket, Index::Dropped);
         let bucket = self.publish(found.entry, bucket);
         Found { bucket, ..found }
     }
@@ -297,26 +294,18 @@ impl<M: Memory> Graph<M> {
         self.first_half_in(v, half, (other, from), self.present(other, key))
     }
 
-    /// [`first_half_from`] with the opposite bucket already resolved.
+    /// [`Self::first_half_from`] with the opposite bucket already found.
     fn first_half_in(
         &self,
         v: NodeId,
         half: EdgeRef,
-        (other, from): (NodeId, Position),
+        other: (NodeId, Position),
         theirs: Found,
     ) -> (Found, EdgeRef) {
-        let key = LabelBucketKey::of(half).opposite();
-        // A paged bucket finds it through its target index; a smaller one is scanned.
-        let at = if theirs.bucket.indexed().is_some() {
-            self.select_to(&theirs.bucket, v, 0)
-        } else {
-            label_bucket::find(&theirs.bucket.slots, &self.edges.pages(), from, |e| {
-                e.target() == v
-            })
-            .map(|e| e.position())
-        }
-        .unwrap_or_else(|| corrupt("an edge half without its counterpart"));
-        (theirs, EdgeRef::new(other, key.label, key.direction, at))
+        let at = self
+            .edge_view()
+            .first_half_to(v, half, other, &theirs.bucket);
+        (theirs, at)
     }
 }
 

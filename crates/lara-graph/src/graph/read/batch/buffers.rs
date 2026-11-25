@@ -1,12 +1,14 @@
 //! A batch's node-record and flat-list page reads: dense batches read through the shared
 //! buffers, sparse ones directly.
 
-use super::view::View;
+use super::view::BatchView;
+use crate::bucket::LabelBucketKey;
 use crate::bucket::stored::Stored;
-use crate::graph::{Graph, RecordLines};
+use crate::graph::Graph;
 use crate::id::NodeId;
-use crate::node::label_bucket_list::{self, LabelBucketKey, LabelBucketList, Listed};
+use crate::node::label_bucket_list::{self, LabelBucketList, Listed};
 use crate::node::record::Record;
+use crate::node::store::RecordLines;
 use crate::store::corrupt::corrupt;
 use crate::store::memory::Memory;
 use crate::store::page_store::{Extent, PAGE_BYTES};
@@ -40,7 +42,11 @@ impl ListPageCache {
     /// inlined: left a call, it cost a batch of label reads 6 %.
     #[expect(clippy::inline_always, reason = "measured: see the doc")]
     #[inline(always)]
-    fn page<'a, M: Memory>(&'a mut self, view: &View<'_, M>, extent: Extent) -> Option<&'a [u8]> {
+    fn page<'a, M: Memory>(
+        &'a mut self,
+        view: &BatchView<'_, M>,
+        extent: Extent,
+    ) -> Option<&'a [u8]> {
         let page = extent.page().get();
         if page == self.last_page {
             self.run += 1;
@@ -64,7 +70,7 @@ impl ListPageCache {
     #[inline]
     fn stored<M: Memory>(
         &mut self,
-        view: &View<'_, M>,
+        view: &BatchView<'_, M>,
         list: LabelBucketList,
         key: LabelBucketKey,
         extent: Extent,
@@ -93,7 +99,7 @@ impl ListPageCache {
     #[inline]
     fn for_each<M: Memory, B>(
         &mut self,
-        view: &View<'_, M>,
+        view: &BatchView<'_, M>,
         list: LabelBucketList,
         f: &mut impl FnMut(LabelBucketKey, Listed) -> ControlFlow<B>,
     ) -> Option<B> {
@@ -131,7 +137,10 @@ pub(super) fn mode(nodes: &[NodeId]) -> Mode {
     }
 }
 
-#[inline]
+/// `v`'s record, through the batch's line in `Dense` mode. Always inlined: left a call, it cost
+/// a batch of node states 15 %.
+#[expect(clippy::inline_always, reason = "measured: see the doc")]
+#[inline(always)]
 pub(super) fn record<M: Memory>(
     graph: &Graph<M>,
     records: &mut RecordLines,
@@ -139,14 +148,14 @@ pub(super) fn record<M: Memory>(
     mode: Mode,
 ) -> Record {
     match mode {
-        Mode::Dense => records.record(graph, v),
+        Mode::Dense => graph.record_in(records, v),
         Mode::Sparse => graph.record(v).unwrap_or_else(|_| corrupt("a known node")),
     }
 }
 
 #[inline]
 pub(super) fn stored<M: Memory>(
-    view: &View<'_, M>,
+    view: &BatchView<'_, M>,
     list_page: &mut ListPageCache,
     list: LabelBucketList,
     key: LabelBucketKey,
@@ -163,7 +172,7 @@ pub(super) fn stored<M: Memory>(
 
 #[inline]
 pub(super) fn for_each_list<M: Memory, B>(
-    view: &View<'_, M>,
+    view: &BatchView<'_, M>,
     list_page: &mut ListPageCache,
     list: LabelBucketList,
     mode: Mode,

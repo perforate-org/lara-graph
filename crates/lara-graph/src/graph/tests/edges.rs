@@ -8,7 +8,7 @@ fn a_new_graph_is_empty_and_rejects_unknown_nodes() {
     let backing = Backing::default();
     let mut g = backing.create(2);
     assert_eq!(g.node_count(), 2);
-    assert_eq!(g.degree(v(1), l(0), Direction::Outgoing), Ok(0));
+    assert_eq!(g.degree(v(1), (l(0), Direction::Outgoing)), Ok(0));
     assert_eq!(
         g.add_edge(NewEdge::directed(
             v(0),
@@ -63,14 +63,16 @@ fn a_directed_edge_is_stored_at_both_ends() {
     assert_eq!(g.counterpart(e.canonical()), Ok(Some(e.other())));
     assert_eq!(g.counterpart(e.other()), Ok(Some(e.canonical())));
     let mut labels = Vec::new();
-    g.labels(v(2), Direction::Incoming, &mut labels).unwrap();
+    g.edge_labels(v(2), Direction::Incoming, &mut labels)
+        .unwrap();
     assert_eq!(labels, [l(4)]);
-    g.labels(v(2), Direction::Outgoing, &mut labels).unwrap();
+    g.edge_labels(v(2), Direction::Outgoing, &mut labels)
+        .unwrap();
     assert_eq!(labels, Vec::<Label>::new());
     check(&g);
     assert_eq!(g.remove_edge(e.other()), Ok(removed(e)));
-    assert_eq!(g.degree(v(0), l(4), Direction::Outgoing), Ok(0));
-    assert_eq!(g.degree(v(2), l(4), Direction::Incoming), Ok(0));
+    assert_eq!(g.degree(v(0), (l(4), Direction::Outgoing)), Ok(0));
+    assert_eq!(g.degree(v(2), (l(4), Direction::Incoming)), Ok(0));
     check(&g);
 }
 
@@ -116,7 +118,8 @@ fn has_edges_sees_every_side_and_looks_past_buckets_of_holes() {
         g.remove_edge(halves.other()).unwrap();
     }
     let mut labels = Vec::new();
-    g.labels(v(0), Direction::Outgoing, &mut labels).unwrap();
+    g.edge_labels(v(0), Direction::Outgoing, &mut labels)
+        .unwrap();
     assert_eq!(labels, [l(1)], "a bucket of holes stays listed");
     for x in 0..6 {
         assert_eq!(g.has_edges(v(x)), Ok(false), "node {x}");
@@ -167,7 +170,7 @@ fn an_undirected_edges_canonical_half_is_at_the_larger_node_and_a_self_loop_has_
     check(&g);
     assert_eq!(g.remove_edge(s.other()), Ok(removed(s)));
     assert_eq!(g.remove_edge(e.other()), Ok(removed(e)));
-    assert_eq!(g.degree(v(1), l(0), Direction::Undirected), Ok(0));
+    assert_eq!(g.degree(v(1), (l(0), Direction::Undirected)), Ok(0));
     check(&g);
 }
 
@@ -275,7 +278,8 @@ fn labels_are_separate_sorted_buckets() {
     assert_eq!(insert(&mut g, v(0), l(2), v(2)), p(0));
     assert_eq!(insert(&mut g, v(0), l(7), v(2)), p(1));
     let mut labels = Vec::new();
-    g.labels(v(0), Direction::Outgoing, &mut labels).unwrap();
+    g.edge_labels(v(0), Direction::Outgoing, &mut labels)
+        .unwrap();
     assert_eq!(labels, [l(2), l(7)]);
     assert_eq!(edges(&g, v(0), l(7)), [(0, 1), (1, 2)]);
     assert_eq!(edges(&g, v(0), l(2)), [(0, 2)]);
@@ -328,7 +332,7 @@ fn too_many_buckets_is_an_error_and_changes_nothing() {
         )),
         Err(Error::TooManyLabelBuckets(v(1)))
     );
-    assert_eq!(g.degree(v(0), l(label), Direction::Outgoing), Ok(0));
+    assert_eq!(g.degree(v(0), (l(label), Direction::Outgoing)), Ok(0));
     check(&g);
     insert(&mut g, v(0), l(label), v(2));
     check(&g);
@@ -352,8 +356,8 @@ fn an_insert_that_runs_out_of_memory_changes_nothing() {
     memory.cap(memory.size());
     let capacity = u32::try_from(memory.size() * (PAGE_SIZE / 4096)).unwrap();
     let mut held = Vec::new();
-    while capacity - g.edges.minted() > 3 {
-        held.push(g.edges.allocate(ByteClass::PAGE).unwrap());
+    while capacity - g.edges.store().minted() > 3 {
+        held.push(g.edges.store_mut().allocate(ByteClass::PAGE).unwrap());
     }
     let error = g.add_edge(NewEdge::directed(
         v(0),
@@ -371,7 +375,7 @@ fn an_insert_that_runs_out_of_memory_changes_nothing() {
         before
     );
     for extent in held {
-        g.edges.release(extent);
+        g.edges.store_mut().release(extent);
     }
     check(&g);
 }

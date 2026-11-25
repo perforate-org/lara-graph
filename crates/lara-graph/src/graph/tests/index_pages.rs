@@ -10,7 +10,7 @@ extern crate std;
 
 use super::model::Rng;
 use super::*;
-use crate::id::Progress;
+use crate::outcome::Progress;
 use crate::store::scale::Scale;
 use std::println;
 
@@ -40,14 +40,18 @@ fn hub(pool: u32, targets: impl Iterator<Item = u32>) -> (Graph<VecMemory>, Node
     (g, hub, edges)
 }
 
+/// Pages of the target index of `hub`'s out bucket.
 fn pages(g: &Graph<VecMemory>, hub: NodeId) -> usize {
-    g.index_pages(
-        hub,
-        LabelBucketKey {
-            label: LABEL,
-            direction: Direction::Outgoing,
-        },
-    )
+    let key = LabelBucketKey {
+        label: LABEL,
+        direction: Direction::Outgoing,
+    };
+    g.find_label_bucket(hub, key)
+        .ok()
+        .flatten()
+        .map_or(0, |found| {
+            target_index::extents(&g.edge_view().pages(), found.bucket.index.tree()).len()
+        })
 }
 
 fn report(shape: &str, (g, hub, _): &(Graph<VecMemory>, NodeId, Vec<Halves>)) {
@@ -68,7 +72,7 @@ fn thin(shape: &str, (mut g, hub, edges): (Graph<VecMemory>, NodeId, Vec<Halves>
     }
     let removed = pages(&g, hub);
     while g
-        .compact(hub, LABEL, Direction::Outgoing)
+        .compact(hub, (LABEL, Direction::Outgoing))
         .unwrap()
         .progress()
         == Progress::Remaining

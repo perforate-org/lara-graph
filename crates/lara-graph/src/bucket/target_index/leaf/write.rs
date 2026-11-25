@@ -247,8 +247,8 @@ fn even(segments: &[(Coded, bool)], total: usize) -> Vec<&[(Coded, bool)]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bucket::targets::Posting;
-    use crate::bucket::targets::leaf::segment::rebuild;
+    use crate::bucket::target_index::Posting;
+    use crate::bucket::target_index::leaf::segment::rebuild;
 
     /// A posting alone, with a count of one, codes to no bits at all. Kept as it is in a rewritten
     /// leaf, its slot still starts inside the leaf, where its table entry can name it.

@@ -45,12 +45,12 @@ fn compaction_moves_values_with_their_edges() {
             }
         }
         while g
-            .compact(v(0), l(0), Direction::Outgoing)
+            .compact(v(0), (l(0), Direction::Outgoing))
             .unwrap()
             .progress()
             == Progress::Remaining
         {}
-        g.compact(v(1), l(0), Direction::Incoming).unwrap();
+        g.compact(v(1), (l(0), Direction::Incoming)).unwrap();
         let mut seen = Vec::new();
         g.visit_neighbors_with_values(
             v(0),
@@ -189,8 +189,8 @@ fn an_insert_with_a_value_that_runs_out_of_memory_changes_nothing() {
     memory.cap(memory.size());
     let capacity = u32::try_from(memory.size() * (PAGE_SIZE / 4096)).unwrap();
     let mut held = Vec::new();
-    while capacity - g.edges.minted() > 3 {
-        held.push(g.edges.allocate(ByteClass::PAGE).unwrap());
+    while capacity - g.edges.store().minted() > 3 {
+        held.push(g.edges.store_mut().allocate(ByteClass::PAGE).unwrap());
     }
     let error = g.add_edge(NewEdge::directed(
         v(0),
@@ -206,7 +206,7 @@ fn an_insert_with_a_value_that_runs_out_of_memory_changes_nothing() {
     );
     assert_eq!(after, before);
     for extent in held {
-        g.edges.release(extent);
+        g.edges.store_mut().release(extent);
     }
     check(&g);
 }
@@ -218,7 +218,7 @@ fn compaction_releases_the_value_pages_it_empties() {
     g.declare_width(l(0), w(64)).unwrap();
     // 64-byte values: 64 per value page, 16 value pages per slot page.
     let halves = valued_edges(&mut g, l(0), 3 * PAGE_SLOTS, 64);
-    let pages = |g: &Graph<VecMemory>| g.edges.allocated().len();
+    let pages = |g: &Graph<VecMemory>| g.edges.store().allocated().len();
     // A dead middle page: compaction hollows it and its 16 value pages go with it.
     for half in
         &halves[usize::try_from(PAGE_SLOTS).unwrap()..usize::try_from(2 * PAGE_SLOTS).unwrap()]
@@ -226,7 +226,7 @@ fn compaction_releases_the_value_pages_it_empties() {
         g.remove_edge(*half).unwrap();
     }
     let before = pages(&g);
-    g.compact(v(0), l(0), Direction::Outgoing).unwrap();
+    g.compact(v(0), (l(0), Direction::Outgoing)).unwrap();
     assert!(
         before - pages(&g) >= 17,
         "slot page and value pages released"
@@ -238,7 +238,7 @@ fn compaction_releases_the_value_pages_it_empties() {
     }
     let before = pages(&g);
     while g
-        .compact(v(0), l(0), Direction::Outgoing)
+        .compact(v(0), (l(0), Direction::Outgoing))
         .unwrap()
         .progress()
         == Progress::Remaining
@@ -292,8 +292,7 @@ fn batch_value_visits_match_the_single_visits() {
     reader
         .visit_neighbors_with_values_each(
             &nodes,
-            l(0),
-            Direction::Outgoing,
+            (l(0), Direction::Outgoing),
             Order::Descending,
             |_, edge, value| {
                 batch.push((edge.position(), value.to_vec()));
@@ -392,8 +391,7 @@ fn visit_values_each_matches_one_by_one() {
     batch
         .visit_values_each(
             &nodes,
-            l(0),
-            Direction::Outgoing,
+            (l(0), Direction::Outgoing),
             Order::Descending,
             |node, position, value| {
                 batched.push((node.index(), position.index(), value.to_vec()));

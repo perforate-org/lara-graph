@@ -1,9 +1,10 @@
 //! The halves of a bulk edge list: splitting edges into halves, and positions back into edges.
 
-use crate::graph::{EdgeKind, NewEdge};
+use crate::bucket::LabelBucketKey;
+use crate::edge::BuiltHalf;
 use crate::id::Direction;
 use crate::id::{EdgeRef, Halves, NodeId, Position};
-use crate::node::label_bucket_list::LabelBucketKey;
+use crate::input::{EdgeKind, NewEdge};
 use crate::store::corrupt::corrupt;
 use alloc::vec::Vec;
 
@@ -38,6 +39,12 @@ pub(super) struct Half {
     side: Side,
 }
 
+impl BuiltHalf for Half {
+    fn target(&self) -> NodeId {
+        self.target
+    }
+}
+
 impl Half {
     /// The `side` half of input edge `edge`, held by `node` and pointing at `target`.
     const fn new(
@@ -53,6 +60,11 @@ impl Half {
             edge,
             side,
         }
+    }
+
+    /// The column of the half's position in the positions table.
+    const fn column(&self) -> usize {
+        self.side.column()
     }
 
     /// Whether two halves belong to the same label bucket of the same node.
@@ -126,7 +138,7 @@ pub(super) fn positions(halves: &[Half], edge_count: usize) -> Vec<[u32; 2]> {
     for bucket in halves.chunk_by(Half::same_bucket) {
         for (offset, half) in bucket.iter().enumerate() {
             let at = u32::try_from(offset).unwrap_or(u32::MAX);
-            positions[usize::try_from(half.edge).unwrap_or(0)][half.side.column()] = at;
+            positions[usize::try_from(half.edge).unwrap_or(0)][half.column()] = at;
         }
     }
     positions

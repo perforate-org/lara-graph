@@ -120,7 +120,7 @@ fn init_new_and_load_follow_ic_stable_structures() {
 #[cfg(feature = "ic-stable-structures")]
 #[test]
 fn ic_stable_structures_memories_hold_a_graph() {
-    use crate::memories::MemoryRole;
+    use crate::graph::memories::MemoryRole;
     use ic_stable_structures::DefaultMemoryImpl;
     use ic_stable_structures::memory_manager::{MemoryId, MemoryManager};
     let manager = MemoryManager::init(DefaultMemoryImpl::default());

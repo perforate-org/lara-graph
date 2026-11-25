@@ -1,15 +1,23 @@
 use super::*;
-use crate::bucket::descriptor::{PAGE_SLOTS, Paged, Slot, TINY_SLOTS};
+use crate::bucket::LabelBucketKey;
+use crate::bucket::descriptor::{Descriptor, PAGE_SLOTS, Paged, Slot, TINY_SLOTS};
 use crate::bucket::paged;
-use crate::bucket::stored::{Index, LabelBucket};
-use crate::bucket::targets;
+use crate::bucket::slots;
+use crate::bucket::target_index;
 use crate::bucket::values;
-use crate::id::{Cursor, Halves, Order, Placement, Position, Width};
-use crate::memories::Memories;
+use crate::bucket::{Index, LabelBucket};
+use crate::error::{BatchError, InitError};
+use crate::graph::memories::Memories;
+use crate::id::{Direction, EdgeRef, Halves, Label, NodeId, NodeState, Position, Width};
+use crate::input::{Cursor, Order, Placement};
+use crate::input::{EdgeValue, NewEdge};
+use crate::node::label_bucket_list;
+use crate::outcome::{Progress, Removal, RemovedEdge};
 use crate::store::memory::{PAGE_SIZE, VecMemory};
 use crate::store::page_store::{ByteClass, Extent, Pages};
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
+use alloc::vec::Vec;
 use core::num::NonZeroU32;
 use core::ops::ControlFlow;
 
@@ -57,7 +65,7 @@ fn edges_on<M: Memory>(
     direction: Direction,
 ) -> Vec<(u32, u32)> {
     let mut out = Vec::new();
-    g.neighbors_directed(x, label, direction, &mut out).unwrap();
+    g.neighbors(x, (label, direction), &mut out).unwrap();
     out.into_iter()
         .map(|e| (e.position().index(), e.target().index()))
         .collect()

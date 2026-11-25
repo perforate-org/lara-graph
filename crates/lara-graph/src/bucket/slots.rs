@@ -1,4 +1,4 @@
-//! Label bucket operations: insert, remove and read one label bucket's edges by position.
+//! A bucket's slots: insert, remove and read one label bucket's edges by position.
 //!
 //! Every operation takes a descriptor and returns the next one; the caller publishes it.
 //!
@@ -446,7 +446,8 @@ pub(crate) fn owned_extents<M: Memory>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::id::{Edge, Order};
+    use crate::id::Neighbor;
+    use crate::input::Order;
     use crate::store::memory::VecMemory;
     use core::ops::ControlFlow;
 
@@ -563,7 +564,7 @@ mod tests {
             for from in [0, 1, total / 2, PAGE_SLOTS + 1, total - 1, total] {
                 let found = find(&d, &view, Position::new(from), |_| true);
                 let expected =
-                    (from < total).then(|| Edge::new(Position::new(from), NodeId::new(1)));
+                    (from < total).then(|| Neighbor::new(Position::new(from), NodeId::new(1)));
                 assert_eq!(found, expected, "{total} edges, from {from}");
             }
         }

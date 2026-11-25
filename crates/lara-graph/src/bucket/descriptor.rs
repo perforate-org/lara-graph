@@ -36,7 +36,7 @@
 //!
 //! A list entry's kind 3 refers to a header instead (see `stored`).
 
-use crate::bucket::targets::BLOCK;
+use crate::bucket::target_index::BLOCK;
 use crate::id::{NodeId, Width};
 use crate::store::corrupt::corrupt;
 use crate::store::page_store::{ByteClass, EXTENT_BYTES, Extent, PAGE_BYTES};

@@ -1,4 +1,5 @@
-//! Public identifiers.
+//! Public identifiers: of nodes, labels, positions, edges and their halves, value widths, and a
+//! node's state.
 
 use core::cmp::Ordering;
 use core::fmt;
@@ -79,66 +80,6 @@ impl Label {
     }
 }
 
-/// Which way a read goes through a bucket's positions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Order {
-    /// Lowest position first: insertion order under [`Placement::Append`].
-    Ascending,
-    /// Highest position first: newest first under [`Placement::Append`].
-    Descending,
-}
-
-/// A window of a bucket's positions for [`Graph::visit_window`](crate::Graph::visit_window):
-/// `span` positions from `from` on in `order`, holes included, so a window's cost is bounded
-/// whatever was removed. Positions are stable, so a cursor stays valid until the bucket is
-/// compacted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Cursor {
-    order: Order,
-    from: Option<Position>,
-    span: NonZeroU32,
-}
-
-impl Cursor {
-    /// The first window: from the lowest position ascending, or the highest descending.
-    #[must_use]
-    pub const fn first(order: Order, span: NonZeroU32) -> Self {
-        Self {
-            order,
-            from: None,
-            span,
-        }
-    }
-
-    /// The window starting at `from` (included).
-    #[must_use]
-    pub const fn at(order: Order, from: Position, span: NonZeroU32) -> Self {
-        Self {
-            order,
-            from: Some(from),
-            span,
-        }
-    }
-
-    /// The direction.
-    #[must_use]
-    pub const fn order(&self) -> Order {
-        self.order
-    }
-
-    /// The first position, or `None` for the bucket's first in [`Self::order`].
-    #[must_use]
-    pub const fn from(&self) -> Option<Position> {
-        self.from
-    }
-
-    /// Positions per window.
-    #[must_use]
-    pub const fn span(&self) -> NonZeroU32 {
-        self.span
-    }
-}
-
 /// Bytes in each value of a label's edges: 1 to 4096.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Width(NonZeroU16);
@@ -169,18 +110,6 @@ impl Width {
     pub const fn get(self) -> u16 {
         self.0.get()
     }
-}
-
-/// Where an insert may put an edge.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Placement {
-    /// Always after every stored position, so position order is insertion order. Holes stay
-    /// until compaction, which keeps the order.
-    Append,
-    /// Into the first hole after the last live edge to the same node, anywhere in the bucket,
-    /// else after every stored position. Fills holes without compaction, so positions stay
-    /// stable; they do not follow insertion order (Gleaph's `Unordered`).
-    ReuseHoles,
 }
 
 /// Where a node is in its life. Node ids are never reused.
@@ -235,57 +164,27 @@ impl Position {
     }
 }
 
-/// One live edge of a bucket: where it is and where it goes.
+/// One live entry of a bucket, as a read from its node sees it: the neighbour it points to and
+/// its position. The node, label and direction are the read's own; [`EdgeRef`] names the same
+/// half on its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Edge {
+pub struct Neighbor {
     position: Position,
     target: NodeId,
 }
 
-impl Edge {
+impl Neighbor {
     pub(crate) const fn new(position: Position, target: NodeId) -> Self {
         Self { position, target }
     }
 
-    /// The edge's position in its bucket.
+    /// The entry's position in its bucket.
     #[must_use]
     pub const fn position(&self) -> Position {
         self.position
     }
 
-    /// The node the edge points to.
-    #[must_use]
-    pub const fn target(&self) -> NodeId {
-        self.target
-    }
-}
-
-/// An edge that compaction moved to a new position.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Move {
-    from: Position,
-    to: Position,
-    target: NodeId,
-}
-
-impl Move {
-    pub(crate) const fn new(from: Position, to: Position, target: NodeId) -> Self {
-        Self { from, to, target }
-    }
-
-    /// Where the edge was.
-    #[must_use]
-    pub const fn from(&self) -> Position {
-        self.from
-    }
-
-    /// Where the edge is now.
-    #[must_use]
-    pub const fn to(&self) -> Position {
-        self.to
-    }
-
-    /// The node the edge points to.
+    /// The neighbour: the node at the edge's other end.
     #[must_use]
     pub const fn target(&self) -> NodeId {
         self.target
@@ -396,39 +295,4 @@ impl Halves {
             Self::Pair { other, .. } | Self::Single(other) => other,
         }
     }
-}
-
-/// An edge that was removed: its halves, and its value as the canonical half held it (empty for
-/// a label without a width).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct RemovedEdge {
-    halves: Halves,
-    value: alloc::vec::Vec<u8>,
-}
-
-impl RemovedEdge {
-    pub(crate) const fn new(halves: Halves, value: alloc::vec::Vec<u8>) -> Self {
-        Self { halves, value }
-    }
-
-    /// The removed halves.
-    #[must_use]
-    pub const fn halves(&self) -> Halves {
-        self.halves
-    }
-
-    /// The value the edge carried.
-    #[must_use]
-    pub fn value(&self) -> &[u8] {
-        &self.value
-    }
-}
-
-/// Whether a bucket has more compaction work.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Progress {
-    /// Nothing left to reclaim in this bucket.
-    Done,
-    /// Another step may reclaim more.
-    Remaining,
 }
