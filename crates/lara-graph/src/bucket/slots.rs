@@ -11,11 +11,11 @@
 //!   entries; a full one-page run becomes the first data page without copying.
 
 use crate::bucket::descriptor::{
-    Descriptor, PAGE_SLOTS, Paged, Run, SLOT_BYTES, Slot, TOMBSTONE, run_class,
+    Beside, Descriptor, PAGE_SLOTS, Paged, Run, SLOT_BYTES, Slot, TOMBSTONE, run_class,
 };
 use crate::bucket::paged;
 use crate::bucket::values::{self, Plane};
-use crate::id::{NodeId, Position, Width};
+use crate::id::{NodeId, Position};
 use crate::store::corrupt::corrupt;
 use crate::store::memory::{Memory, WriteError};
 use crate::store::page_store::{PageId, PageStore, Pages};
@@ -299,13 +299,14 @@ pub(crate) fn without_tiny<M: Memory>(
     }))
 }
 
-/// A tiny bucket or a run without values as a run with values of `width` beside its slots, all
+/// A tiny bucket or a run without values as a run with `beside` values next to its slots, all
 /// zero, in the smallest class that holds one more slot. Within one page of copying.
 pub(crate) fn with_values_beside<M: Memory>(
     d: Descriptor,
-    width: Width,
+    beside: Beside,
     store: &mut PageStore<M>,
 ) -> Result<Descriptor, WriteError> {
+    let width = beside.width;
     let (slots, old) = match d {
         Descriptor::Tiny(tiny) => (tiny_bytes(tiny.slots()), None),
         Descriptor::Run(run) if run.values.is_none() => (
@@ -322,7 +323,7 @@ pub(crate) fn with_values_beside<M: Memory>(
         extent,
         stored: narrow(stored),
         live: narrow(d.live()),
-        values: Some(width),
+        values: Some(beside),
     };
     store.write(extent.offset(), &slots);
     store.write(
@@ -349,7 +350,7 @@ pub(crate) fn values_out<M: Memory>(
     store: &mut PageStore<M>,
 ) -> Result<(Descriptor, Plane), WriteError> {
     let width = run
-        .values
+        .width()
         .unwrap_or_else(|| corrupt("a run without values beside its slots"));
     let stored = u32::from(run.stored);
     let view = store.pages();

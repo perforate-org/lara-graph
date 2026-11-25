@@ -4,10 +4,11 @@
 use super::values::value_at;
 use crate::bucket::LabelBucket;
 use crate::bucket::LabelBucketKey;
+use crate::bucket::Schema;
 use crate::bucket::descriptor::Descriptor;
 use crate::bucket::slots;
 use crate::edge::{EdgeStore, EdgeView};
-use crate::id::{EdgeRef, Halves, NodeId, Position, Width};
+use crate::id::{EdgeRef, Halves, NodeId, Position, ValueVersion};
 use crate::outcome::{BucketFill, RemovedEdge};
 use crate::store::corrupt::corrupt;
 use crate::store::memory::Memory;
@@ -22,7 +23,7 @@ impl<M: Memory> EdgeStore<M> {
         &mut self,
         (own, half): (&mut LabelBucket, EdgeRef),
         (theirs, other): (&mut LabelBucket, EdgeRef),
-        width: Option<Width>,
+        schema: Option<Schema>,
     ) -> RemovedEdge {
         let halves = Halves::of(half, other);
         let canonical = if halves.canonical() == half {
@@ -32,10 +33,15 @@ impl<M: Memory> EdgeStore<M> {
         };
         let value = value_at(
             &self.store.pages(),
-            width,
+            schema.map(|s| s.width),
             canonical,
             halves.canonical().position(),
         );
+        let version = schema.map_or(ValueVersion::FIRST, |s| {
+            canonical
+                .cells()
+                .map_or(s.version, |c| c.version_given(s.version))
+        });
         self.remove_half(own, half.position());
         if other != half {
             self.remove_half(theirs, other.position());
@@ -53,7 +59,7 @@ impl<M: Memory> EdgeStore<M> {
         } else {
             [theirs, own]
         };
-        RemovedEdge::new(halves, value, fills)
+        RemovedEdge::new(halves, (value, version), fills)
     }
 
     /// Applies one tombstone to a bucket without publishing it yet.

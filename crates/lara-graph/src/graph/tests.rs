@@ -8,7 +8,9 @@ use crate::bucket::values;
 use crate::bucket::{Index, LabelBucket};
 use crate::error::{BatchError, InitError};
 use crate::graph::memories::Memories;
-use crate::id::{Direction, EdgeRef, Halves, Label, NodeId, NodeState, Position, Width};
+use crate::id::{
+    Direction, EdgeRef, Halves, Label, NodeId, NodeState, Position, ValueVersion, Width,
+};
 use crate::input::{Cursor, Order, Placement};
 use crate::input::{EdgeValue, NewEdge};
 use crate::node::label_bucket_list;

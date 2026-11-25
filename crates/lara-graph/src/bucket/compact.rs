@@ -13,7 +13,7 @@
 //!   reuse its holes.
 
 use crate::bucket::descriptor::{
-    Descriptor, PAGE_SLOTS, Paged, Run, Slot, TINY_SLOTS, Tiny, run_class,
+    Beside, Descriptor, PAGE_SLOTS, Paged, Run, Slot, TINY_SLOTS, Tiny, run_class,
 };
 use crate::bucket::paged::{self, Leaf};
 use crate::bucket::slots::{self, byte_len, narrow, stored_u32};
@@ -178,12 +178,13 @@ fn pack_small<M: Memory>(
     // The packed edges' cells, read before the run is rewritten (perhaps in place).
     let cells = run
         .values
-        .map(|width| (width, packed_cells(&run, edges, store, width)));
+        .map(|beside| (beside, packed_cells(&run, edges, store, beside.width)));
     // Reuse the run's extent when the packed edges stay a run of the same class. A tiny or empty
     // result uses no extent, so the old one is released below.
     let stays_run = edges.len() > TINY_SLOTS || (inline == Inline::Forbidden && !edges.is_empty());
     let count = stored_u32(edges.len());
-    let reuse = Some(run.extent).filter(|e| stays_run && e.class() == run_class(count, run.values));
+    let reuse =
+        Some(run.extent).filter(|e| stays_run && e.class() == run_class(count, run.width()));
     let outcome = rebuild(edges, (reuse, run.values), store, inline)?;
     if let (Outcome::LabelBucket(Descriptor::Run(packed)), Some((_, cells))) = (&outcome, &cells) {
         store.write(packed.cells_offset(), cells);
@@ -339,7 +340,7 @@ fn page_edges<M: Memory>(store: &PageStore<M>, number: u32, page: PageId) -> Vec
 /// a new extent; with room for values of `values` beside its slots if set), or nothing for none.
 fn rebuild<M: Memory>(
     edges: &[Neighbor],
-    (reuse, values): (Option<Extent>, Option<Width>),
+    (reuse, values): (Option<Extent>, Option<Beside>),
     store: &mut PageStore<M>,
     inline: Inline,
 ) -> Result<Outcome, WriteError> {
@@ -355,7 +356,7 @@ fn rebuild<M: Memory>(
     }
     let extent = match reuse {
         Some(extent) => extent,
-        None => store.allocate(run_class(count, values))?,
+        None => store.allocate(run_class(count, values.map(|b| b.width)))?,
     };
     let bytes: Vec<u8> = edges
         .iter()

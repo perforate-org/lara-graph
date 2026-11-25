@@ -74,7 +74,7 @@ fn add_edges<M: Memory>(
         graph
             .check(edge.from())
             .and_then(|()| graph.check(edge.to()))
-            .and_then(|()| graph.value_width(edge.label(), edge.value()))
+            .and_then(|()| graph.value_schema(edge.label(), edge.value()))
             .map_err(|error| BatchError::unchanged(index, error))?;
     }
     let all_directed = edges.iter().all(|edge| edge.kind() == EdgeKind::Directed);

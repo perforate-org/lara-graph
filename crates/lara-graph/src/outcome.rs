@@ -3,7 +3,7 @@
 
 #[cfg(doc)]
 use crate::graph::Graph;
-use crate::id::{Direction, EdgeRef, Halves, Label, NodeId, Position};
+use crate::id::{Direction, EdgeRef, Halves, Label, NodeId, Position, ValueVersion};
 use alloc::vec::Vec;
 
 /// An edge that compaction moved to a new position.
@@ -59,17 +59,31 @@ impl Move {
 pub struct RemovedEdge {
     halves: Halves,
     value: Vec<u8>,
+    /// The version `value` is in.
+    version: ValueVersion,
     /// The canonical half's bucket's, then the other's (the same for an undirected self-loop).
     fills: [BucketFill; 2],
 }
 
 impl RemovedEdge {
-    pub(crate) const fn new(halves: Halves, value: Vec<u8>, fills: [BucketFill; 2]) -> Self {
+    pub(crate) fn new(
+        halves: Halves,
+        (value, version): (Vec<u8>, ValueVersion),
+        fills: [BucketFill; 2],
+    ) -> Self {
         Self {
             halves,
             value,
+            version,
             fills,
         }
+    }
+
+    /// The version of the label's value layout [`Self::value`] is in
+    /// (see `Graph::change_width`); [`ValueVersion::FIRST`] for a label without a width.
+    #[must_use]
+    pub const fn value_version(&self) -> ValueVersion {
+        self.version
     }
 
     /// How full the canonical half's bucket is after the removal.

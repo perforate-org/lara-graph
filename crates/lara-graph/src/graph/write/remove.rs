@@ -118,10 +118,10 @@ impl<M: Memory> Graph<M> {
             mut theirs,
         }: Pair,
     ) -> (Removal, Found, Option<Found>) {
-        let width = self.widths.get(half.label());
+        let schema = self.widths.schema(half.label());
         let edge =
             self.edges
-                .remove_pair((&mut own.bucket, half), (&mut theirs.bucket, other), width);
+                .remove_pair((&mut own.bucket, half), (&mut theirs.bucket, other), schema);
         (
             Removal::Removed(edge),
             own,

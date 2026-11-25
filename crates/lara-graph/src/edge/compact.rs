@@ -6,7 +6,7 @@ use crate::bucket::descriptor::{Descriptor, PAGE_SLOTS};
 use crate::bucket::reserved;
 use crate::bucket::target_index::{self, Change, Merged, Plan};
 use crate::bucket::values;
-use crate::bucket::{Index, LabelBucket, Values};
+use crate::bucket::{Index, LabelBucket, Migration, Values};
 use crate::edge::EdgeStore;
 use crate::error::Error;
 use crate::outcome::{Move, Progress};
@@ -30,6 +30,15 @@ impl<M: Memory> EdgeStore<M> {
         &mut self,
         bucket: LabelBucket,
     ) -> Result<(Compacted, Vec<Move>, Progress), Error> {
+        // Compaction renumbers positions: a migration under way starts over after it.
+        if bucket
+            .values
+            .is_some_and(|v| v.migration == Migration::UnderWay)
+        {
+            let values = self.cancel_migration(&bucket);
+            let bucket = LabelBucket { values, ..bucket };
+            return Ok((Compacted::Kept(bucket), Vec::new(), Progress::Remaining));
+        }
         let planned = compact::plan(bucket.slots, &self.store);
         // With nothing to do in the slots, a paged bucket's index gives back sparse leaves.
         if planned.is_idle()

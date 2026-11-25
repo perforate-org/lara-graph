@@ -74,7 +74,7 @@ impl<M: Memory> Graph<M> {
                 NodeState::Deleted => return Err(Error::Deleted(v)),
             }
         }
-        self.value_width(edge.label(), edge.value())?;
+        self.value_schema(edge.label(), edge.value())?;
         Ok(())
     }
 
@@ -177,8 +177,8 @@ impl<M: Memory> Graph<M> {
     /// Writes the bucket of `halves`, one label's halves at one node, with their edges' values.
     #[expect(clippy::indexing_slicing, reason = "a bucket's group is non-empty")]
     fn build_bucket(&mut self, halves: &[Half], edges: &[NewEdge<'_>]) -> Result<Stored, Error> {
-        let width = self.widths.get(halves[0].key.label);
-        self.edges.build_bucket(halves, width, |half: &Half| {
+        let schema = self.widths.schema(halves[0].key.label);
+        self.edges.build_bucket(halves, schema, |half: &Half| {
             edges
                 .get(usize::try_from(half.edge).unwrap_or(usize::MAX))
                 .map_or(&[], NewEdge::value)

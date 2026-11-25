@@ -200,7 +200,14 @@ fn check_values<M: Memory>(
         .values
         .map_or_else(Vec::new, |cells| values::extents(&view, cells.plane));
     let index = target_index::extents(&view, bucket.index.tree());
-    for extent in bucket.header.into_iter().chain(plane).chain(index) {
+    let migration = crate::edge::migration_extents(&view, bucket);
+    for extent in bucket
+        .header
+        .into_iter()
+        .chain(plane)
+        .chain(index)
+        .chain(migration)
+    {
         assert!(
             owned.insert(key(extent)),
             "header, value or index extent shared"

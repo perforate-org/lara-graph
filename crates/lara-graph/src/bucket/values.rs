@@ -59,7 +59,6 @@ use crate::store::page_store::{
 use crate::store::read_buf::ReadBuf;
 use crate::store::units::ByteOffset;
 use alloc::vec;
-#[cfg(test)]
 use alloc::vec::Vec;
 
 mod table;
@@ -139,7 +138,7 @@ impl Plane {
 }
 
 /// Cells per value page.
-fn cells_per_page(width: Width) -> u32 {
+pub(crate) fn cells_per_page(width: Width) -> u32 {
     PAGE_BYTES / u32::from(width.get())
 }
 
@@ -304,6 +303,45 @@ fn grow_run<M: Memory>(
 
 pub(super) fn page_len() -> usize {
     usize::try_from(PAGE_BYTES).unwrap_or(0)
+}
+
+/// Writes `cells`, whole values of `width` for the positions from `first`, all in one value page
+/// (or the run), and returns the plane's new root: one allocation path and one write. Callers
+/// reserve [`PAGES_PER_WRITE`] pages first.
+pub(crate) fn write_cells<M: Memory>(
+    store: &mut PageStore<M>,
+    plane: Plane,
+    width: Width,
+    first: u32,
+    cells: &[u8],
+) -> Result<Plane, WriteError> {
+    let w = width_len(width);
+    let count = u32::try_from(cells.len() / w).unwrap_or(0);
+    let Some(last) = count.checked_sub(1) else {
+        return Ok(plane);
+    };
+    let tail = cells.get(cells.len() - w..).unwrap_or(&[]);
+    // The last cell's write makes the storage of the whole page; then one write fills it.
+    let plane = write(store, plane, width, first + last, tail)?;
+    let at = cell_at(&store.pages(), plane, width, first)
+        .unwrap_or_else(|| corrupt("a value page just made"));
+    store.write(at, cells);
+    Ok(plane)
+}
+
+/// The values of positions `low..high`, back to back: zeros where none was written.
+pub(crate) fn read_cells<M: Memory>(
+    view: &Pages<'_, M>,
+    plane: Plane,
+    width: Width,
+    (low, high): (u32, u32),
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(usize::try_from(high - low).unwrap_or(0) * width_len(width));
+    visit(view, plane, width, (low, high, false), |_, bytes| {
+        out.extend_from_slice(bytes);
+        core::ops::ControlFlow::<()>::Continue(())
+    });
+    out
 }
 
 /// Copies the value at `from` to `to`; a zero value onto missing storage writes nothing.

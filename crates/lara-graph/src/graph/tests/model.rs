@@ -459,7 +459,11 @@ fn model_remove<M: Memory>(g: &mut Graph<M>, model: &mut Model, half: EdgeRef) {
     ];
     assert_eq!(
         removal,
-        Ok(Removal::Removed(RemovedEdge::new(expected, value, fills)))
+        Ok(Removal::Removed(RemovedEdge::new(
+            expected,
+            (value, ValueVersion::FIRST),
+            fills
+        )))
     );
     assert_eq!(g.edge_target(half), Ok(None));
     assert_eq!(g.remove_edge(other), Ok(Removal::Absent));

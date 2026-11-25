@@ -114,6 +114,48 @@ impl Label {
     }
 }
 
+/// Which layout of a label's values a bucket's values follow: [`Self::FIRST`] when the label's
+/// width is declared, one more at each `Graph::change_width`. A bucket keeps the version its
+/// values were written in until `Graph::migrate_values` rewrites them in the label's current one,
+/// so a reader knows how to decode them while both are about.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ValueVersion(u8);
+
+impl ValueVersion {
+    /// A label's first layout.
+    pub const FIRST: Self = Self(0);
+
+    /// The version's number.
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+
+    pub(crate) const fn new(version: u8) -> Self {
+        Self(version)
+    }
+
+    /// The next version, `None` past the last.
+    pub(crate) const fn next(self) -> Option<Self> {
+        match self.0.checked_add(1) {
+            Some(next) => Some(Self(next)),
+            None => None,
+        }
+    }
+
+    /// The low three bits: what a small bucket keeps of its values' version (see
+    /// `crate::bucket::descriptor`).
+    pub(crate) const fn low_bits(self) -> u8 {
+        self.0 & 0b111
+    }
+
+    /// The latest version, not after `self`, whose low three bits are `low`: a small bucket's
+    /// version while the label is fewer than eight versions past it.
+    pub(crate) const fn latest_with_low_bits(self, low: u8) -> Self {
+        Self(self.0.wrapping_sub(self.0.wrapping_sub(low) & 0b111))
+    }
+}
+
 /// Bytes in each value of a label's edges: 1 to 4096.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Width(NonZeroU16);
@@ -360,6 +402,18 @@ mod proofs {
         let index: u32 = kani::any();
         kani::assume(index < NodeId::FIRST_PROXY);
         assert_eq!(NodeId::new(index).proxy_ordinal(), None);
+    }
+
+    /// A version up to seven behind the current one comes back whole from its low three bits.
+    #[kani::proof]
+    fn versions_come_back_from_their_low_bits() {
+        let (current, back): (u8, u8) = (kani::any(), kani::any());
+        kani::assume(back <= 7 && back <= current);
+        let stored = ValueVersion::new(current - back);
+        assert_eq!(
+            ValueVersion::new(current).latest_with_low_bits(stored.low_bits()),
+            stored
+        );
     }
 
     /// Exactly one half of an edge between two nodes is canonical, and it is never a proxy's

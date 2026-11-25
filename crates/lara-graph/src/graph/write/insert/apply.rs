@@ -2,6 +2,7 @@
 
 use super::{Half, Place, Target};
 use crate::bucket::LabelBucket;
+use crate::bucket::Schema;
 use crate::bucket::reserved;
 use crate::bucket::slots::Spot;
 use crate::edge::EdgeView;
@@ -9,7 +10,7 @@ use crate::edge::Writes;
 use crate::edge::{Batch, Between, HoleCursor};
 use crate::error::Error;
 use crate::graph::Graph;
-use crate::id::{EdgeRef, NodeId, Width};
+use crate::id::{EdgeRef, NodeId, Position, ValueVersion, Width};
 use crate::node::label_bucket_list::{self, EntryAt};
 use crate::store::corrupt::corrupt;
 use crate::store::memory::Memory;
@@ -30,8 +31,14 @@ impl<M: Memory> Graph<M> {
         let label = halves
             .first()
             .map_or_else(|| corrupt("an edge without halves"), |h| h.key.label);
-        let width = self.value_width(label, value)?;
+        let schema = self.value_schema(label, value)?;
+        let width = schema.map(|s| s.width);
         let places = self.admit_with(&halves, cached)?;
+        if let Some(schema) = schema
+            && schema.version != ValueVersion::FIRST
+        {
+            self.ensure_places_current(&halves, &places, schema)?;
+        }
         let n = u32::try_from(N).map_err(|_| Error::AddressSpaceExhausted)?;
         // Each half's spot, and the block batch of an append that completes a block of a hub's
         // bucket: planned now, so that its pages are reserved with the rest.
@@ -62,13 +69,40 @@ impl<M: Memory> Graph<M> {
             touched = Some(half.node);
             let (spot, batch) = spots.next().unwrap_or_else(|| corrupt("an admitted half"));
             let (edge, place) =
-                self.insert_half_place(half, place, (spot, batch), width.map(|w| (w, value)));
+                self.insert_half_place(half, place, (spot, batch), schema.map(|s| (s, value)));
             if let Some(slot) = updated.get_mut(i) {
                 *slot = place;
             }
             edge
         });
         Ok((out, updated))
+    }
+
+    /// Fails with [`Error::StaleValues`] when a half's bucket holds values in an older version
+    /// than `schema`'s: a label never changed has none, so only changed labels pay the header read.
+    /// Kept out of line, so that the insert path it sits on compiles as before.
+    #[cold]
+    #[inline(never)]
+    fn ensure_places_current<const N: usize>(
+        &self,
+        halves: &[Half; N],
+        places: &[Place; N],
+        schema: Schema,
+    ) -> Result<(), Error> {
+        let view = self.edge_view().pages();
+        for (half, place) in halves.iter().zip(places) {
+            if let Target::Present(_, stored) = place.target {
+                let bucket = LabelBucket::resolve(&view, stored);
+                let at = EdgeRef::new(
+                    half.node,
+                    half.key.label,
+                    half.key.direction,
+                    Position::new(0),
+                );
+                Self::ensure_current(at, &bucket, schema)?;
+            }
+        }
+        Ok(())
     }
 
     /// Reserves the pages every half and its planned block batches can take.
@@ -100,7 +134,7 @@ impl<M: Memory> Graph<M> {
         half: Half,
         place: Place,
         spot: (Spot, Option<Batch>),
-        value: Option<(Width, &[u8])>,
+        value: Option<(Schema, &[u8])>,
     ) -> (EdgeRef, Option<Place>) {
         let (entry, stored) = match place.target {
             Target::Present(entry, stored) => (Ok(entry), Some(stored)),

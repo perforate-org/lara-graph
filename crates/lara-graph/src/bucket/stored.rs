@@ -37,7 +37,10 @@
 //! ----------------------------------------
 //! Target index depth              ↕ 1 byte
 //! ----------------------------------------
-//! Reserved space                  ↕ 6 bytes
+//! Value version                   ↕ 1 byte        (see `crate::ValueVersion`)
+//! ----------------------------------------
+//! Migration record extent         ↕ 5 bytes       (top bit set while a `migrate_values` runs;
+//!                                                  zeros for none)
 //! ----------------------------------------
 //! ```
 
@@ -46,15 +49,45 @@ use crate::bucket::descriptor::{
 };
 use crate::bucket::target_index::Root;
 use crate::bucket::values::{Plane, ROOT_BYTES};
-use crate::bucket::{Index, LabelBucket, Values};
-use crate::id::Width;
+use crate::bucket::{Index, LabelBucket, Migration, Values};
+use crate::id::{ValueVersion, Width};
 use crate::store::corrupt::corrupt;
 use crate::store::memory::Memory;
 use crate::store::page_store::{ByteClass, EXTENT_BYTES, Extent, PageId, PageStore, Pages};
+use crate::store::units::ByteOffset;
 
 /// Bytes of a header: descriptor, plane root, width (0 for none), index root page (`u32::MAX`
 /// for none) and depth.
-const HEADER_BYTES: usize = DESCRIPTOR_BYTES + ROOT_BYTES + 2 + 4 + 1;
+const HEADER_BYTES: usize = DESCRIPTOR_BYTES + ROOT_BYTES + 2 + 4 + 1 + 1 + EXTENT_BYTES;
+/// The bit of a migration record's last byte that marks it present.
+const MIGRATING: u8 = 0b1000_0000;
+/// Where in a header the migration record's extent is.
+const AT_MIGRATION: usize = HEADER_BYTES - EXTENT_BYTES;
+
+/// The record of the migration under way in the bucket `header` heads, if any.
+pub(crate) fn migration_record<M: Memory>(view: &Pages<'_, M>, header: Extent) -> Option<Extent> {
+    let bytes: [u8; EXTENT_BYTES] = view.read_array(migration_at(header));
+    let [.., last] = bytes;
+    (last & MIGRATING != 0).then(|| Extent::decode(bytes))
+}
+
+/// Points `header` at `record`, or at none: what a new header starts with.
+pub(crate) fn set_migration_record<M: Memory>(
+    store: &PageStore<M>,
+    header: Extent,
+    record: Option<Extent>,
+) {
+    let bytes = record.map_or([0; EXTENT_BYTES], |r| {
+        let [r0, r1, r2, r3, r4] = r.encode();
+        [r0, r1, r2, r3, r4 | MIGRATING]
+    });
+    store.write(migration_at(header), &bytes);
+}
+
+fn migration_at(header: Extent) -> ByteOffset {
+    let within = u64::try_from(AT_MIGRATION).unwrap_or(0);
+    ByteOffset::new(header.offset().get() + within)
+}
 const NO_INDEX: u32 = u32::MAX;
 const DROPPED_INDEX: u32 = u32::MAX - 1;
 /// The class headers are allocated in.
@@ -110,11 +143,23 @@ impl LabelBucket {
         let bytes: [u8; HEADER_BYTES] = view.read_array(header.offset());
         let (d, rest) = bytes.split_at(DESCRIPTOR_BYTES);
         let (root, rest) = rest.split_at(ROOT_BYTES);
-        let [w0, w1, i0, i1, i2, i3, depth] =
-            <[u8; 7]>::try_from(rest).unwrap_or_else(|_| corrupt("header"));
+        let [w0, w1, i0, i1, i2, i3, depth, version, m0, m1, m2, m3, m4] =
+            <[u8; 13]>::try_from(rest).unwrap_or_else(|_| corrupt("header"));
         let slots = Descriptor::decode(d.try_into().unwrap_or_else(|_| corrupt("header")));
         let plane = Plane::decode(root.try_into().unwrap_or_else(|_| corrupt("header")));
-        let values = Width::new(u16::from_le_bytes([w0, w1])).map(|width| Values { plane, width });
+        // The record's extent stays in the header (see `migration_record`).
+        let _ = (m0, m1, m2, m3);
+        let migration = if m4 & MIGRATING == 0 {
+            Migration::Idle
+        } else {
+            Migration::UnderWay
+        };
+        let values = Width::new(u16::from_le_bytes([w0, w1])).map(|width| Values {
+            plane,
+            width,
+            version: ValueVersion::new(version),
+            migration,
+        });
         let index = match u32::from_le_bytes([i0, i1, i2, i3]) {
             NO_INDEX => Index::Empty,
             DROPPED_INDEX => Index::Dropped,
@@ -142,9 +187,9 @@ impl LabelBucket {
     /// Writes the header, if the bucket has one.
     pub(crate) fn write_header<M: Memory>(&self, store: &PageStore<M>) {
         let Some(header) = self.header else { return };
-        let (plane, width) = self
-            .values
-            .map_or((Plane::Empty, 0), |v| (v.plane, v.width.get()));
+        let (plane, width, version) = self.values.map_or((Plane::Empty, 0, 0), |v| {
+            (v.plane, v.width.get(), v.version.get())
+        });
         let (page, depth) = match self.index {
             Index::Empty => (NO_INDEX, 0),
             Index::Dropped => (DROPPED_INDEX, 0),
@@ -157,8 +202,10 @@ impl LabelBucket {
         root.copy_from_slice(&plane.encode());
         let [w0, w1] = width.to_le_bytes();
         let [i0, i1, i2, i3] = page.to_le_bytes();
-        rest.copy_from_slice(&[w0, w1, i0, i1, i2, i3, depth]);
-        store.write(header.offset(), &bytes);
+        let (fields, _) = rest.split_at_mut(8);
+        fields.copy_from_slice(&[w0, w1, i0, i1, i2, i3, depth, version]);
+        // The migration record's place is written apart (see `set_migration_record`).
+        store.write(header.offset(), bytes.get(..AT_MIGRATION).unwrap_or(&[]));
     }
 }
 

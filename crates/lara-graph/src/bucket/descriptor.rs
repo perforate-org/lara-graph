@@ -25,7 +25,7 @@
 //! Stored positions                ↕ 11 bits
 //! Live positions                  ↕ 11 bits
 //! Value width beside the slots    ↕ 7 bits        (0 for none; at most 124, see `beside`)
-//! Reserved                        ↕ 3 bits
+//! Their value version, low bits   ↕ 3 bits        (see `crate::ValueVersion`)
 //! ----------------------------------------
 //! Extent, kind in its spare bits  ↕ 5 bytes
 //! ----------------------------------------
@@ -48,7 +48,8 @@
 //! Stored positions                ↕ 11 bits
 //! Live positions                  ↕ 11 bits
 //! Value width beside the slots    ↕ 13 bits       (0 for none)
-//! Reserved                        ↕ 29 bits
+//! Their value version, low bits   ↕ 3 bits
+//! Reserved                        ↕ 26 bits
 //! ----------------------------------------
 //! Extent, kind in its spare bits  ↕ 5 bytes
 //! ---------------------------------------- <- Paged (kind 2): 1024 slots per data page
@@ -143,14 +144,32 @@ pub(crate) struct Tiny {
     slots: [Slot; TINY_SLOTS],
 }
 
-/// Slots at the front of one extent, and when `values` is set, a value of that width per slot
+/// Slots at the front of one extent, and when `values` is set, a value of its width per slot
 /// after them: positions `0..capacity` are slots, then `capacity` cells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Run {
     pub(crate) extent: Extent,
     pub(crate) stored: u16,
     pub(crate) live: u16,
-    pub(crate) values: Option<Width>,
+    pub(crate) values: Option<Beside>,
+}
+
+/// Values beside a run's slots: their width, and the low three bits of the value version they
+/// were written in (the descriptor has room for no more; see `crate::ValueVersion`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Beside {
+    pub(crate) width: Width,
+    pub(crate) version: u8,
+}
+
+impl Beside {
+    /// Values of `width` in `version`, keeping its low bits.
+    pub(crate) const fn new(width: Width, version: crate::id::ValueVersion) -> Self {
+        Self {
+            width,
+            version: version.low_bits(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,7 +183,12 @@ pub(crate) struct Paged {
 impl Run {
     /// Slots the run's extent holds.
     pub(crate) fn capacity(&self) -> u32 {
-        self.extent.len() / slot_and_cell(self.values)
+        self.extent.len() / slot_and_cell(self.width())
+    }
+
+    /// The width of the values beside the slots, if any.
+    pub(crate) fn width(&self) -> Option<Width> {
+        self.values.map(|beside| beside.width)
     }
 
     /// Where the cells beside the slots start.
@@ -239,11 +263,14 @@ const RUN_COUNT_BITS: u32 = 11;
 const RUN_WIDTH_BITS: u32 = 13;
 /// Bits of a listed run's width: values sit beside slots only up to 124 bytes wide.
 const LISTED_WIDTH_BITS: u32 = 7;
+/// Bits of a run's beside values' version, after its width.
+const RUN_VERSION_BITS: u32 = 3;
 const _: () = assert!(PAGE_SLOTS < 1 << RUN_COUNT_BITS);
 const _: () = assert!(4096 < 1 << RUN_WIDTH_BITS);
 const _: () = assert!(
     PAGE_BYTES / (SLOT_BYTES + (1 << LISTED_WIDTH_BITS)) < MIN_BESIDE_CAPACITY
-        && 2 * RUN_COUNT_BITS + LISTED_WIDTH_BITS <= 32
+        && 2 * RUN_COUNT_BITS + LISTED_WIDTH_BITS + RUN_VERSION_BITS <= 32
+        && 2 * RUN_COUNT_BITS + RUN_WIDTH_BITS + RUN_VERSION_BITS <= 40
 );
 
 /// The kind of a listed descriptor or list entry.
@@ -257,21 +284,31 @@ fn tiny_len(last: u8) -> u8 {
     ((last >> 4) & 0b11).min(2)
 }
 
-/// A run's counts and width, packed as the layouts show.
-fn run_counts(run: &Run) -> u64 {
+/// A run's counts, width and version, packed as the layouts show (with a width field of
+/// `width_bits`).
+fn run_counts(run: &Run, width_bits: u32) -> u64 {
+    let (width, version) = run
+        .values
+        .map_or((0, 0), |b| (b.width.get(), b.version & 0b111));
     u64::from(run.stored)
         | (u64::from(run.live) << RUN_COUNT_BITS)
-        | (u64::from(run.values.map_or(0, Width::get)) << (2 * RUN_COUNT_BITS))
+        | (u64::from(width) << (2 * RUN_COUNT_BITS))
+        | (u64::from(version) << (2 * RUN_COUNT_BITS + width_bits))
 }
 
 /// The run of packed `counts` (with a width field of `width_bits`) over `extent`.
 fn run_of(counts: u64, width_bits: u32, extent: Extent) -> Run {
     let field = |shift: u32, width: u32| (counts >> shift) & ((1 << width) - 1);
+    let width = Width::stored(u16::try_from(field(2 * RUN_COUNT_BITS, width_bits)).unwrap_or(0));
+    let version = u8::try_from(field(2 * RUN_COUNT_BITS + width_bits, RUN_VERSION_BITS));
     Run {
         stored: u16::try_from(field(0, RUN_COUNT_BITS)).unwrap_or(0),
         live: u16::try_from(field(RUN_COUNT_BITS, RUN_COUNT_BITS)).unwrap_or(0),
         extent,
-        values: Width::stored(u16::try_from(field(2 * RUN_COUNT_BITS, width_bits)).unwrap_or(0)),
+        values: width.map(|width| Beside {
+            width,
+            version: version.unwrap_or(0),
+        }),
     }
 }
 
@@ -321,7 +358,7 @@ impl Descriptor {
                 [s0, s1, s2, s3, s4, s5, s6, s7, 0, 0, 0, 0, last]
             }
             Self::Run(run) => {
-                let [c0, c1, c2, c3, c4, ..] = run_counts(run).to_le_bytes();
+                let [c0, c1, c2, c3, c4, ..] = run_counts(run, RUN_WIDTH_BITS).to_le_bytes();
                 let [e0, e1, e2, e3, e4] = run.extent.encode();
                 [
                     c0,
@@ -402,7 +439,7 @@ impl Descriptor {
                 ]
             }
             Self::Run(run) => {
-                let [c0, c1, c2, c3, ..] = run_counts(run).to_le_bytes();
+                let [c0, c1, c2, c3, ..] = run_counts(run, LISTED_WIDTH_BITS).to_le_bytes();
                 let [e0, e1, e2, e3, e4] = run.extent.encode();
                 [
                     c0,
@@ -464,7 +501,7 @@ mod tests {
                 extent,
                 stored: 3,
                 live: 2,
-                values: Width::new(8),
+                values: Width::new(8).map(|width| Beside { width, version: 5 }),
             }),
             Descriptor::Paged(Paged {
                 index: extent,
@@ -494,7 +531,7 @@ mod tests {
                 extent,
                 stored: 1024,
                 live: 1024,
-                values: Width::new(Width::MAX),
+                values: Width::new(Width::MAX).map(|width| Beside { width, version: 7 }),
             }),
             Descriptor::Paged(Paged {
                 index: Extent::whole(last),
@@ -508,7 +545,7 @@ mod tests {
             extent,
             stored: 1024,
             live: 1024,
-            values: Width::new(124),
+            values: Width::new(124).map(|width| Beside { width, version: 7 }),
         });
         for d in [Descriptor::Tiny(full), widest] {
             assert_eq!(Descriptor::decode_listed(d.encode_listed()), d);

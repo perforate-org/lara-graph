@@ -2,14 +2,16 @@
 
 use crate::bucket::LabelBucketKey;
 use crate::bucket::slots;
+use crate::bucket::{LabelBucket, Migration, Schema};
 use crate::edge::Writes;
 use crate::error::{BatchError, Error};
 use crate::graph::locate::Found;
 use crate::graph::locate::LastBucket;
 use crate::graph::{Graph, corrupt};
-use crate::id::{EdgeRef, Halves};
-use crate::id::{Label, Position, Width};
+use crate::id::{Direction, EdgeRef, Halves, NodeId};
+use crate::id::{Label, Position, ValueVersion, Width};
 use crate::input::EdgeValue;
+use crate::outcome::Progress;
 use crate::store::memory::Memory;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -44,7 +46,7 @@ impl<M: Memory> Graph<M> {
         half: EdgeRef,
         value: &[u8],
     ) -> Result<Option<Vec<u8>>, Error> {
-        let width = self.value_width(half.label(), value)?;
+        let width = self.value_schema(half.label(), value)?;
         let Some(pair) = self.pair(half)? else {
             return Ok(None);
         };
@@ -63,6 +65,9 @@ impl<M: Memory> Graph<M> {
         let Some(width) = width else {
             return Ok(Some(old));
         };
+        for (h, found) in &targets {
+            Self::ensure_current(*h, &found.bucket, width)?;
+        }
         self.edges.reserve(Writes::Values {
             count: u32::try_from(targets.len()).unwrap_or(2),
         })?;
@@ -94,7 +99,7 @@ impl<M: Memory> Graph<M> {
     ) -> Result<Vec<Option<Vec<u8>>>, BatchError> {
         for (index, edge) in values.iter().enumerate() {
             self.check(edge.half().node())
-                .and_then(|()| self.value_width(edge.half().label(), edge.value()))
+                .and_then(|()| self.value_schema(edge.half().label(), edge.value()))
                 .map_err(|error| BatchError::unchanged(index, error))?;
         }
         let mut out = Vec::with_capacity(values.len());
@@ -152,11 +157,14 @@ impl<M: Memory> Graph<M> {
                 pair.other.position(),
             )
         };
-        let Some(width) = self.value_width(half.label(), edge.value())? else {
+        let Some(width) = self.value_schema(half.label(), edge.value())? else {
             return Ok(SetValue::Kept(old));
         };
         let mut targets = [(half, pair.own), (pair.other, pair.theirs)];
         let count = if pair.other == half { 1 } else { 2 };
+        for (h, found) in targets.iter().take(count) {
+            Self::ensure_current(*h, &found.bucket, width)?;
+        }
         self.edges.reserve(Writes::Values {
             count: u32::try_from(count).unwrap_or(2),
         })?;
@@ -190,25 +198,50 @@ impl<M: Memory> Graph<M> {
         let Some(pair) = pair else {
             return;
         };
-        let width = self
+        let schema = self
             .widths
-            .get(half.label())
+            .schema(half.label())
             .unwrap_or_else(|| corrupt("a value being restored without a width"));
         let targets = [(half, pair.own), (pair.other, pair.theirs)];
         let count = if pair.other == half { 1 } else { 2 };
         for (h, found) in targets.iter().take(count) {
-            self.write_value(*found, (width, h.position()), old);
+            self.write_value(*found, (schema, h.position()), old);
         }
     }
 }
 
 impl<M: Memory> Graph<M> {
-    /// `label`'s width, checking that `value` matches it.
-    pub(in crate::graph) fn value_width(
+    /// Fails with [`Error::StaleValues`] when `bucket`, `half`'s, holds values in an older
+    /// version than `schema`'s or is being migrated: they take no writes until migrated.
+    pub(in crate::graph) fn ensure_current(
+        half: EdgeRef,
+        bucket: &LabelBucket,
+        schema: Schema,
+    ) -> Result<(), Error> {
+        // A label never changed has every value in its first version.
+        if schema.version == ValueVersion::FIRST {
+            return Ok(());
+        }
+        match bucket.cells() {
+            Some(cells)
+                if !cells.is_current(schema.version) || cells.migration == Migration::UnderWay =>
+            {
+                Err(Error::StaleValues {
+                    node: half.node(),
+                    label: half.label(),
+                    direction: half.direction(),
+                })
+            }
+            Some(_) | None => Ok(()),
+        }
+    }
+
+    /// `label`'s width and value version, checking that `value` matches the width.
+    pub(in crate::graph) fn value_schema(
         &self,
         label: Label,
         value: &[u8],
-    ) -> Result<Option<Width>, Error> {
+    ) -> Result<Option<Schema>, Error> {
         self.widths.check(label, value)
     }
 
@@ -217,10 +250,12 @@ impl<M: Memory> Graph<M> {
     pub(in crate::graph) fn write_value(
         &mut self,
         found: Found,
-        (width, position): (Width, Position),
+        (schema, position): (Schema, Position),
         value: &[u8],
     ) -> Found {
-        let bucket = self.edges.put_value(found.bucket, (width, position), value);
+        let bucket = self
+            .edges
+            .put_value(found.bucket, (schema, position), value);
         let bucket = self.publish(found.entry, bucket);
         Found {
             entry: found.entry,
@@ -239,6 +274,67 @@ impl<M: Memory> Graph<M> {
     /// [`Error::WidthConflict`] if `label` already has another width, [`Error::OutOfMemory`]. On
     /// error nothing changes.
     pub fn declare_width(&mut self, label: Label, width: Width) -> Result<(), Error> {
+        self.declare(label, width)
+    }
+
+    /// Gives `label`'s values a new layout of `width` bytes (the same width included, for a
+    /// layout that changes only its meaning) and returns its value version: the next one, or the
+    /// first if it had no width. Constant time: the buckets that hold values keep them in their
+    /// old version, still read in it ([`Self::bucket_value_version`]), and take no writes
+    /// ([`Error::StaleValues`]) until [`Self::migrate_values`] rewrites them; the others read zeros
+    /// of the new width.
+    ///
+    /// A small bucket records only its version's low three bits, so a label changes width at most
+    /// seven more times before every bucket of its earlier version is migrated.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::AddressSpaceExhausted`] past 255 changes, or [`Error::OutOfMemory`]. On error
+    /// nothing changes.
+    pub fn change_width(&mut self, label: Label, width: Width) -> Result<ValueVersion, Error> {
+        let (version, root) = self
+            .widths
+            .change(&mut self.label_bucket_lists, label, width)?;
+        self.nodes.set_widths_root(root);
+        Ok(version)
+    }
+
+    /// One bounded step of rewriting the values of `v`'s `(label, direction)` bucket in `label`'s
+    /// current layout ([`Self::change_width`]): `transform` turns each old value (in the bucket's
+    /// version, [`Self::bucket_value_version`]) into a new one, given zeroed and of the new width.
+    /// A step rewrites at most one value page (small buckets first move their values beside the
+    /// slots into a plane), and reads keep the old values until the last step puts the new ones in
+    /// place, so the bucket is in one version throughout. It takes no writes meanwhile
+    /// ([`Error::StaleValues`]); compacting it starts the migration over.
+    ///
+    /// [`Progress::Done`] once nothing is left: the bucket holds no values, or holds them in the
+    /// current version; a missing bucket or a label without a width is done too. The bucket at
+    /// each end of an edge is migrated apart, so both halves' values go through `transform`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`], or [`Error::OutOfMemory`]. On error nothing changed.
+    pub fn migrate_values(
+        &mut self,
+        v: NodeId,
+        (label, direction): (Label, Direction),
+        mut transform: impl FnMut(&[u8], &mut [u8]),
+    ) -> Result<Progress, Error> {
+        let Some(schema) = self.widths.schema(label) else {
+            self.check(v)?;
+            return Ok(Progress::Done);
+        };
+        let Some(found) = self.find_label_bucket(v, LabelBucketKey { label, direction })? else {
+            return Ok(Progress::Done);
+        };
+        let (bucket, progress) = self.edges.migrate(found.bucket, schema, &mut transform)?;
+        if bucket != found.bucket {
+            self.publish(found.entry, bucket);
+        }
+        Ok(progress)
+    }
+
+    fn declare(&mut self, label: Label, width: Width) -> Result<(), Error> {
         if let Some(root) = self
             .widths
             .declare(&mut self.label_bucket_lists, label, width)?

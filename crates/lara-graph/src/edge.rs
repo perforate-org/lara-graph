@@ -8,6 +8,7 @@ mod build;
 mod compact;
 mod halves;
 mod insert;
+mod migrate;
 mod target_index;
 mod values;
 mod widths;
@@ -15,6 +16,8 @@ mod widths;
 pub(crate) use build::BuiltHalf;
 pub(crate) use compact::Compacted;
 pub(crate) use insert::HoleCursor;
+#[cfg(test)]
+pub(crate) use migrate::extents as migration_extents;
 pub(crate) use target_index::{Batch, Between};
 pub(crate) use values::visit_joined;
 pub(crate) use widths::Widths;
@@ -22,7 +25,7 @@ pub(crate) use widths::Widths;
 use crate::bucket::LabelBucket;
 use crate::bucket::pages_per_half;
 use crate::bucket::reserved;
-use crate::bucket::stored::HEADER_CLASS;
+use crate::bucket::stored::{HEADER_CLASS, set_migration_record};
 use crate::bucket::values::PAGES_PER_WRITE;
 use crate::id::Width;
 use crate::store::memory::Memory;
@@ -114,7 +117,11 @@ impl<M: Memory> EdgeStore<M> {
     fn settle(&mut self, bucket: LabelBucket) -> LabelBucket {
         match (bucket.extended(), bucket.header) {
             (true, None) => LabelBucket {
-                header: Some(reserved(self.store.allocate(HEADER_CLASS))),
+                header: {
+                    let header = reserved(self.store.allocate(HEADER_CLASS));
+                    set_migration_record(&self.store, header, None);
+                    Some(header)
+                },
                 ..bucket
             },
             (false, Some(header)) => {

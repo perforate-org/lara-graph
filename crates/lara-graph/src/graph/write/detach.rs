@@ -257,10 +257,10 @@ impl<M: Memory> Graph<M> {
         (mut own, half): (Found, EdgeRef),
         (mut theirs, other): (Found, EdgeRef),
     ) -> (RemovedEdge, Found, Option<Found>) {
-        let width = self.widths.get(half.label());
+        let schema = self.widths.schema(half.label());
         let edge =
             self.edges
-                .remove_pair((&mut own.bucket, half), (&mut theirs.bucket, other), width);
+                .remove_pair((&mut own.bucket, half), (&mut theirs.bucket, other), schema);
         let theirs = (other != half).then(|| Found {
             bucket: self.publish(theirs.entry, theirs.bucket),
             ..theirs

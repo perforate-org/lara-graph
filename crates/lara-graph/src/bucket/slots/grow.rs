@@ -62,12 +62,12 @@ pub(super) fn run_append<M: Memory>(
     }
     if run.can_grow() {
         // Move to the next class. One allocation: a failure leaves nothing behind.
-        let extent = store.allocate(run_class(stored + 1, run.values))?;
+        let extent = store.allocate(run_class(stored + 1, run.width()))?;
         let grown = Run { extent, ..next };
         let bytes = store.pages().read(run.extent.offset(), byte_len(stored));
         store.write(extent.offset(), &bytes);
         store.write(slot_offset(extent.offset(), stored), &edge.encode());
-        if let Some(width) = run.values {
+        if let Some(width) = run.width() {
             let cells = store
                 .pages()
                 .read(run.cells_offset(), cells_len(stored, width));

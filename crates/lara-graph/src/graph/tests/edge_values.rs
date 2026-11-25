@@ -442,3 +442,217 @@ fn every_label_can_declare_a_width() {
     assert_eq!(g.width(l(1)), None);
     check(&g);
 }
+
+// --- layout changes: change_width, stale buckets and migrate_values ---
+
+const OUT: Direction = Direction::Outgoing;
+const IN: Direction = Direction::Incoming;
+
+/// The new value of `old`: its bytes reversed, then 0xEE up to `width`.
+fn widened(old: &[u8], new: &mut [u8]) {
+    for (to, from) in new
+        .iter_mut()
+        .zip(old.iter().rev().chain(core::iter::repeat(&0xEE)))
+    {
+        *to = *from;
+    }
+}
+
+/// Migrates `x`'s bucket to the end, counting steps; checks the graph every `check_every`.
+fn migrate_fully(g: &mut Graph<VecMemory>, x: NodeId, key: (Label, Direction)) -> u32 {
+    let mut steps = 0;
+    while g.migrate_values(x, key, widened).unwrap() == Progress::Remaining {
+        steps += 1;
+        assert!(steps < 10_000, "migration did not finish");
+    }
+    steps
+}
+
+#[test]
+fn a_width_change_leaves_stored_values_in_their_version_until_migrated() {
+    let backing = Backing::default();
+    let mut g = backing.create(3);
+    g.declare_width(l(0), w(8)).unwrap();
+    let halves = valued_edges(&mut g, l(0), 5, 8);
+    assert_eq!(g.value_version(l(0)), Some(ValueVersion::FIRST));
+    assert_eq!(g.change_width(l(0), w(4)), Ok(ValueVersion::new(1)));
+    assert_eq!(g.width(l(0)), Some(w(4)));
+    // Stored values read in the width and version they were written in.
+    assert_eq!(g.edge_value(halves[2]), Ok(Some(val(2, 8))));
+    assert_eq!(
+        g.bucket_value_version(v(0), (l(0), OUT)),
+        Ok(Some(ValueVersion::FIRST))
+    );
+    assert_eq!(g.needs_migration(v(0), (l(0), OUT)), Ok(true));
+    // A bucket with no values yet is in the new layout.
+    assert_eq!(g.bucket_value_version(v(2), (l(0), OUT)), Ok(None));
+    let stale = Error::StaleValues {
+        node: v(0),
+        label: l(0),
+        direction: OUT,
+    };
+    assert_eq!(
+        g.add_edge(NewEdge::directed(
+            v(0),
+            l(0),
+            v(2),
+            Placement::Append,
+            &[1; 4]
+        )),
+        Err(stale)
+    );
+    assert_eq!(g.set_edge_value(halves[0], &[1; 4]), Err(stale));
+    // New buckets (here both of a self-loop's) take the new layout at once.
+    let fresh = g
+        .add_edge(NewEdge::directed(
+            v(2),
+            l(0),
+            v(2),
+            Placement::Append,
+            &[7; 4],
+        ))
+        .unwrap();
+    assert_eq!(g.edge_value(fresh.canonical()), Ok(Some(vec![7; 4])));
+    assert_eq!(
+        g.bucket_value_version(v(2), (l(0), OUT)),
+        Ok(Some(ValueVersion::new(1)))
+    );
+    // Removing from a stale bucket reports the value's own version.
+    let Ok(Removal::Removed(removed)) = g.remove_edge(halves[4]) else {
+        panic!("the edge is removed")
+    };
+    assert_eq!(
+        (removed.value(), removed.value_version()),
+        (&val(4, 8)[..], ValueVersion::FIRST)
+    );
+    check(&g);
+}
+
+#[test]
+fn small_buckets_migrate_and_then_take_writes() {
+    let backing = Backing::default();
+    let mut g = backing.create(3);
+    g.declare_width(l(0), w(8)).unwrap();
+    let halves = valued_edges(&mut g, l(0), 6, 8);
+    // The same width in a new layout: only the version tells the values apart.
+    g.change_width(l(0), w(8)).unwrap();
+    assert_eq!(g.needs_migration(v(1), (l(0), IN)), Ok(true));
+    for (x, direction) in [(v(0), OUT), (v(1), IN)] {
+        migrate_fully(&mut g, x, (l(0), direction));
+        assert_eq!(g.needs_migration(x, (l(0), direction)), Ok(false));
+        assert_eq!(
+            g.bucket_value_version(x, (l(0), direction)),
+            Ok(Some(ValueVersion::new(1)))
+        );
+        check(&g);
+    }
+    for (i, half) in (0u8..).zip(&halves) {
+        let mut want = vec![0; 8];
+        widened(&val(i, 8), &mut want);
+        assert_eq!(g.edge_value(*half), Ok(Some(want)));
+    }
+    assert_eq!(
+        g.migrate_values(v(0), (l(0), OUT), widened),
+        Ok(Progress::Done)
+    );
+    g.add_edge(NewEdge::directed(
+        v(0),
+        l(0),
+        v(1),
+        Placement::Append,
+        &[3; 8],
+    ))
+    .unwrap();
+    g.set_edge_value(halves[0], &[9; 8]).unwrap();
+    check(&g);
+    check(&backing.open());
+}
+
+#[test]
+fn a_hub_migrates_a_page_at_a_time_and_reads_old_values_until_the_end() {
+    let backing = Backing::default();
+    let mut g = backing.create(2);
+    g.declare_width(l(0), w(8)).unwrap();
+    let n = 3 * PAGE_SLOTS;
+    let halves = valued_edges(&mut g, l(0), n, 8);
+    for half in halves.iter().step_by(7) {
+        g.remove_edge(*half).unwrap();
+    }
+    g.change_width(l(0), w(24)).unwrap();
+    let key = (l(0), OUT);
+    // A few steps in: still the old values, and no writes.
+    for _ in 0..3 {
+        assert_eq!(
+            g.migrate_values(v(0), key, widened),
+            Ok(Progress::Remaining)
+        );
+    }
+    check(&g);
+    assert_eq!(g.edge_value(halves[1]), Ok(Some(val(1, 8))));
+    assert_eq!(
+        g.bucket_value_version(v(0), key),
+        Ok(Some(ValueVersion::FIRST))
+    );
+    assert!(matches!(
+        g.set_edge_value(halves[1], &[0; 24]),
+        Err(Error::StaleValues { .. })
+    ));
+    // The record survives a reopen.
+    let mut g = backing.open();
+    check(&g);
+    // Compaction starts it over: its first step only cancels.
+    assert_eq!(
+        g.compact(v(0), key).unwrap().progress(),
+        Progress::Remaining,
+        "a cancelling step"
+    );
+    check(&g);
+    while g.compact(v(0), key).unwrap().progress() == Progress::Remaining {}
+    let steps = migrate_fully(&mut g, v(0), key);
+    assert!(steps > 3, "a hub takes several steps ({steps})");
+    check(&g);
+    let mut live = Vec::new();
+    g.neighbors(v(0), key, &mut live).unwrap();
+    let mut values = Vec::new();
+    g.visit_neighbors_with_values(v(0), key, Order::Ascending, |e, value| {
+        values.push((e.position(), value.to_vec()));
+        ControlFlow::<()>::Continue(())
+    })
+    .unwrap();
+    assert_eq!(values.len(), live.len());
+    for (_, value) in &values {
+        assert_eq!(value.len(), 24);
+        assert_eq!(&value[8..], &[0xEE; 16]);
+    }
+    assert_eq!(
+        g.bucket_value_version(v(0), key),
+        Ok(Some(ValueVersion::new(1)))
+    );
+    migrate_fully(&mut g, v(1), (l(0), IN));
+    g.set_edge_value(halves[1], &[5; 24]).unwrap();
+    assert_eq!(g.edge_value(halves[1]), Ok(Some(vec![5; 24])));
+    check(&g);
+}
+
+#[test]
+fn a_second_change_restarts_a_migration_under_way() {
+    let backing = Backing::default();
+    let mut g = backing.create(2);
+    g.declare_width(l(0), w(8)).unwrap();
+    let halves = valued_edges(&mut g, l(0), 2 * PAGE_SLOTS, 8);
+    g.change_width(l(0), w(16)).unwrap();
+    let key = (l(0), OUT);
+    g.migrate_values(v(0), key, widened).unwrap();
+    g.migrate_values(v(0), key, widened).unwrap();
+    g.change_width(l(0), w(4)).unwrap();
+    check(&g);
+    migrate_fully(&mut g, v(0), key);
+    assert_eq!(
+        g.bucket_value_version(v(0), key),
+        Ok(Some(ValueVersion::new(2)))
+    );
+    let mut want = vec![0; 4];
+    widened(&val(5, 8), &mut want);
+    assert_eq!(g.edge_value(halves[5]), Ok(Some(want)));
+    check(&g);
+}

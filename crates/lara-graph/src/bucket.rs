@@ -13,7 +13,7 @@ pub(crate) mod values;
 use crate::bucket::descriptor::Descriptor;
 use crate::bucket::target_index::Root;
 use crate::bucket::values::Plane;
-use crate::id::{Direction, EdgeRef, Label, Width};
+use crate::id::{Direction, EdgeRef, Label, ValueVersion, Width};
 use crate::store::page_store::Extent;
 
 /// Which label bucket of a node: a label in one direction.
@@ -41,11 +41,51 @@ impl LabelBucketKey {
     }
 }
 
-/// A bucket's values: the plane and the width.
+/// A label's values: their width and the version of their layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Schema {
+    pub(crate) width: Width,
+    pub(crate) version: ValueVersion,
+}
+
+/// A bucket's values: the plane, the width, and the value version they were written in: whole in
+/// a header, its low three bits beside a run's slots ([`Plane::Beside`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Values {
     pub(crate) plane: Plane,
     pub(crate) width: Width,
+    pub(crate) version: ValueVersion,
+    /// Whether a `migrate_values` is under way: its record is in the header (see
+    /// `bucket::stored`), kept out of here so that a bucket stays as small to copy as before.
+    pub(crate) migration: Migration,
+}
+
+/// Whether a bucket's values are being migrated (see `edge::migrate`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Migration {
+    Idle,
+    UnderWay,
+}
+
+impl Values {
+    /// Whether they are in `current`, their label's version.
+    pub(crate) fn is_current(&self, current: ValueVersion) -> bool {
+        if matches!(self.plane, Plane::Beside { .. }) {
+            self.version.get() == current.low_bits()
+        } else {
+            self.version == current
+        }
+    }
+
+    /// Their whole version, `current` being their label's: beside a run's slots, the latest with
+    /// their low bits.
+    pub(crate) fn version_given(&self, current: ValueVersion) -> ValueVersion {
+        if matches!(self.plane, Plane::Beside { .. }) {
+            current.latest_with_low_bits(self.version.get())
+        } else {
+            self.version
+        }
+    }
 }
 
 /// A bucket's target index.
@@ -112,10 +152,12 @@ impl LabelBucket {
     /// The bucket's values: beside a run's slots, or in the value plane its header holds.
     pub(crate) fn cells(&self) -> Option<Values> {
         match self.slots {
-            Descriptor::Run(run) => run.values.map_or(self.values, |width| {
+            Descriptor::Run(run) => run.values.map_or(self.values, |beside| {
                 Some(Values {
                     plane: Plane::beside(run.extent.page(), run.cells_offset(), run.stored),
-                    width,
+                    width: beside.width,
+                    version: ValueVersion::new(beside.version),
+                    migration: Migration::Idle,
                 })
             }),
             Descriptor::Tiny(_) | Descriptor::Paged(_) => self.values,

@@ -27,6 +27,17 @@ pub enum Error {
     Deleted(NodeId),
     /// [`Graph::bulk_load`] was called on a graph that already holds edges.
     NotEmpty,
+    /// The bucket's values are in an older version of their label's layout
+    /// ([`Graph::change_width`]): [`Graph::migrate_values`] brings them to the current one before
+    /// they take writes.
+    StaleValues {
+        /// The bucket's node.
+        node: NodeId,
+        /// Its label.
+        label: Label,
+        /// Its direction.
+        direction: crate::id::Direction,
+    },
     /// The node is a proxy ([`Graph::add_proxy`]), which takes no part in this: proxies have no
     /// labels, no edge joins two of them, and a bulk load places none.
     Proxy(NodeId),
@@ -155,6 +166,16 @@ impl fmt::Display for Error {
             Self::Deleted(v) => write!(f, "node {} is deleted", v.index()),
             Self::NotEmpty => f.write_str("the graph already holds edges"),
             Self::Proxy(v) => write!(f, "node {} is a proxy", v.index()),
+            Self::StaleValues {
+                node,
+                label,
+                direction,
+            } => write!(
+                f,
+                "the {direction:?} values of label {} at node {} are in an older version",
+                label.get(),
+                node.index()
+            ),
             Self::WidthConflict { label, declared } => write!(
                 f,
                 "label {} already has width {}",

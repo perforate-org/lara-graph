@@ -1,12 +1,14 @@
 //! Building one label bucket whole from its halves in position order: a bulk load's.
 
-use crate::bucket::descriptor::{self, Descriptor, PAGE_SLOTS, Paged, Run, Slot, TINY_SLOTS, Tiny};
+use crate::bucket::descriptor::{
+    self, Beside, Descriptor, PAGE_SLOTS, Paged, Run, Slot, TINY_SLOTS, Tiny,
+};
 use crate::bucket::paged::{self, Leaf};
 use crate::bucket::slots;
 use crate::bucket::stored::Stored;
 use crate::bucket::target_index::{self, BLOCK, Change};
 use crate::bucket::values::{self, Plane};
-use crate::bucket::{Index, LabelBucket, Values};
+use crate::bucket::{Index, LabelBucket, Migration, Schema, Values};
 use crate::edge::EdgeStore;
 use crate::error::Error;
 use crate::id::{NodeId, Width};
@@ -26,18 +28,21 @@ impl<M: Memory> EdgeStore<M> {
     pub(crate) fn build_bucket<'e, H: BuiltHalf>(
         &mut self,
         halves: &[H],
-        width: Option<Width>,
+        schema: Option<Schema>,
         value: impl Fn(&H) -> &'e [u8],
     ) -> Result<Stored, Error> {
+        let width = schema.map(|s| s.width);
         let count = u32::try_from(halves.len()).map_err(|_| Error::AddressSpaceExhausted)?;
         let tiny_slots = u32::try_from(TINY_SLOTS).unwrap_or(2);
         if width.is_none() && count <= tiny_slots {
             return Ok(tiny_bucket(halves));
         }
         // A small enough bucket keeps its values beside its slots; others in a value plane.
-        let beside = width.filter(|&w| descriptor::beside(w) && count <= descriptor::max_beside(w));
+        let beside = schema
+            .filter(|s| descriptor::beside(s.width) && count <= descriptor::max_beside(s.width))
+            .map(|s| Beside::new(s.width, s.version));
         let mut bucket = self.build_slots(halves, count, beside)?;
-        match (bucket.cells(), width) {
+        match (bucket.cells(), schema) {
             (Some(cells), _) => {
                 let bytes: Vec<u8> = halves
                     .iter()
@@ -47,9 +52,14 @@ impl<M: Memory> EdgeStore<M> {
                     self.store.write(run.cells_offset(), &bytes);
                 }
             }
-            (None, Some(width)) => {
-                let plane = self.build_values(halves, &value, width)?;
-                bucket.values = Some(Values { plane, width });
+            (None, Some(schema)) => {
+                let plane = self.build_values(halves, &value, schema.width)?;
+                bucket.values = Some(Values {
+                    plane,
+                    width: schema.width,
+                    version: schema.version,
+                    migration: Migration::Idle,
+                });
             }
             (None, None) => {}
         }
@@ -57,7 +67,9 @@ impl<M: Memory> EdgeStore<M> {
             self.build_target_index(&mut bucket, halves, count)?;
         }
         if bucket.extended() {
-            bucket.header = Some(self.store.allocate(crate::bucket::stored::HEADER_CLASS)?);
+            let header = self.store.allocate(crate::bucket::stored::HEADER_CLASS)?;
+            crate::bucket::stored::set_migration_record(&self.store, header, None);
+            bucket.header = Some(header);
             bucket.write_header(&self.store);
         }
         Ok(bucket.stored())
@@ -69,10 +81,12 @@ impl<M: Memory> EdgeStore<M> {
         &mut self,
         halves: &[H],
         count: u32,
-        beside: Option<Width>,
+        beside: Option<Beside>,
     ) -> Result<LabelBucket, Error> {
         if count <= PAGE_SLOTS {
-            let extent = self.store.allocate(descriptor::run_class(count, beside))?;
+            let extent = self
+                .store
+                .allocate(descriptor::run_class(count, beside.map(|b| b.width)))?;
             write_halves(&self.store, extent.offset(), halves);
             Ok(LabelBucket::plain(Descriptor::Run(Run {
                 extent,

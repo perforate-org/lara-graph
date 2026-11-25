@@ -1,12 +1,12 @@
 //! A bucket's values in the edge store: the label's width, a bucket made ready for values, reading and
 //! writing one, and scans that join values with edges.
 
-use crate::bucket::descriptor::{self, Descriptor, PAGE_SLOTS};
+use crate::bucket::descriptor::{self, Beside, Descriptor, PAGE_SLOTS};
 use crate::bucket::paged;
 use crate::bucket::reserved;
 use crate::bucket::slots::{self, Span, Window, stored_u32};
 use crate::bucket::values::{self, Plane};
-use crate::bucket::{LabelBucket, Values};
+use crate::bucket::{LabelBucket, Migration, Schema, Values};
 use crate::edge::{EdgeStore, EdgeView};
 use crate::id::{Label, Neighbor, Position, Width};
 use crate::input::Order;
@@ -22,11 +22,12 @@ impl<M: Memory> EdgeStore<M> {
     pub(crate) fn put_value(
         &mut self,
         bucket: LabelBucket,
-        (width, position): (Width, Position),
+        (schema, position): (Schema, Position),
         value: &[u8],
     ) -> LabelBucket {
+        let width = schema.width;
         let mut bucket = if bucket.cells().is_none() {
-            self.with_values(bucket, width)
+            self.with_values(bucket, schema)
         } else {
             bucket
         };
@@ -46,7 +47,8 @@ impl<M: Memory> EdgeStore<M> {
     /// `bucket`, which has no values, ready for values of `width`, all zero: a small bucket as a
     /// run with them beside its slots, others (never tiny) with an empty value plane, which
     /// `Graph::publish` gives a header. Within reserved memory.
-    pub(super) fn with_values(&mut self, bucket: LabelBucket, width: Width) -> LabelBucket {
+    pub(super) fn with_values(&mut self, bucket: LabelBucket, schema: Schema) -> LabelBucket {
+        let width = schema.width;
         let small = match bucket.slots {
             Descriptor::Tiny(_) => true,
             Descriptor::Run(run) => u32::from(run.stored) < descriptor::max_beside(width),
@@ -55,7 +57,7 @@ impl<M: Memory> EdgeStore<M> {
         if small && descriptor::beside(width) && bucket.header.is_none() {
             let slots = reserved(slots::with_values_beside(
                 bucket.slots,
-                width,
+                Beside::new(width, schema.version),
                 &mut self.store,
             ));
             return LabelBucket { slots, ..bucket };
@@ -66,6 +68,8 @@ impl<M: Memory> EdgeStore<M> {
             values: Some(Values {
                 plane: Plane::Empty,
                 width,
+                version: schema.version,
+                migration: Migration::Idle,
             }),
             ..bucket
         }
@@ -92,7 +96,11 @@ impl<M: Memory> EdgeView<'_, M> {
         order: Order,
         f: &mut impl FnMut(Position, &[u8]) -> ControlFlow<B>,
     ) -> Option<B> {
-        let width = self.widths.get(label)?;
+        // A bucket's stored values keep the width they were written with until migrated.
+        let width = bucket
+            .cells()
+            .map(|c| c.width)
+            .or_else(|| self.widths.get(label))?;
         let view = self.pages();
         let w = usize::from(width.get());
         let mut ranges = live_ranges(&view, &bucket.slots);
@@ -137,17 +145,19 @@ pub(crate) fn visit_joined<M: Memory, B>(
     f: &mut impl FnMut(Neighbor, &[u8]) -> ControlFlow<B>,
 ) -> Option<B> {
     let slots = &bucket.slots;
-    let Some(width) = width else {
+    if let Descriptor::Run(run) = slots
+        && let Some(beside) = run.values
+    {
+        return slots::visit_beside(run, beside.width, view, order, f);
+    }
+    // Values in a plane keep the width they were written with until migrated.
+    let cells = bucket.values;
+    let Some(width) = cells.map(|c| c.width).or(width) else {
         return slots::visit(slots, view, Span::all(slots, order), Window::Page, |e| {
             f(e, &[])
         });
     };
-    if let Descriptor::Run(run) = slots
-        && let Some(beside) = run.values
-    {
-        return slots::visit_beside(run, beside, view, order, f);
-    }
-    let plane = bucket.cells().map_or(Plane::Empty, |c| c.plane);
+    let plane = cells.map_or(Plane::Empty, |c| c.plane);
     let w = usize::from(width.get());
     let descending = order == Order::Descending;
     let mut visit_range = |(low, high): (u32, u32)| {
