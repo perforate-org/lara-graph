@@ -379,3 +379,30 @@ fn an_insert_that_runs_out_of_memory_changes_nothing() {
     }
     check(&g);
 }
+
+/// At full size a node holds a bucket on each side of 32,768 directed labels. Added in key order,
+/// they leave every leaf of its tiered list half full, the fewest buckets a leaf holds.
+#[test]
+#[ignore = "full size: run with RUSTFLAGS=\"--cfg lara_full_size\" and --release --ignored"]
+fn a_node_holds_both_sides_of_every_15_bit_label() {
+    assert_eq!(
+        crate::store::scale::Scale::BUILD,
+        crate::store::scale::Scale::Full,
+        "build with RUSTFLAGS=\"--cfg lara_full_size\""
+    );
+    let mut g = Graph::new(Memories::from_fn(|_| VecMemory::new()));
+    let (a, b) = (g.add_node().unwrap(), g.add_node().unwrap());
+    let edges: Vec<NewEdge<'_>> = (0..1u16 << 15)
+        .flat_map(|label| {
+            [(a, b), (b, a)].map(|(from, to)| {
+                NewEdge::directed(from, Label::new(label), to, Placement::Append, &[])
+            })
+        })
+        .collect();
+    g.add_edges(&edges).unwrap();
+    let mut out = Vec::new();
+    g.edge_labels(a, Direction::Outgoing, &mut out).unwrap();
+    assert_eq!(out.len(), 1 << 15);
+    g.edge_labels(a, Direction::Incoming, &mut out).unwrap();
+    assert_eq!(out.len(), 1 << 15);
+}

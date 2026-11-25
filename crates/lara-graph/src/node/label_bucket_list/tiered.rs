@@ -11,15 +11,14 @@
 //! ---------------------------------------- <- Offset 2
 //! Leaf 0: first label             ↕ 2 bytes
 //! ----------------------------------------
-//! Leaf 0: first direction         ↕ 1 byte
-//! ----------------------------------------
-//! Leaf 0: page id                 ↕ 4 bytes
+//! Leaf 0: page id (bits 0-27),    ↕ 4 bytes
+//!   first direction (28-29)
 //! ----------------------------------------
 //! Leaf 0: entry count             ↕ 1 byte
 //! ----------------------------------------
 //! ...
 //! ----------------------------------------
-//! Leaf L - 1                      ↕ 8 bytes
+//! Leaf L - 1                      ↕ 7 bytes
 //! ----------------------------------------
 //! Unused space
 //! ```
@@ -45,14 +44,17 @@ use crate::bucket::LabelBucketKey;
 use crate::bucket::stored::Stored;
 use crate::store::corrupt::corrupt;
 use crate::store::memory::{Memory, WriteError};
-use crate::store::page_store::{ByteClass, Extent, PageId, PageStore, Pages};
+use crate::store::page_store::{ByteClass, Extent, MAX_PAGES, PAGE_BITS, PageId, PageStore, Pages};
 use crate::store::txn::SpanTxn;
 use crate::store::units::ByteOffset;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
 const TOP_HEADER_BYTES: usize = 2;
-const TOP_ENTRY_BYTES: usize = 8;
+/// A leaf's reference: seven bytes, the direction in the page id's spare bits, so that one page
+/// of them holds 584 leaves. Leaves are at least half full (127 entries), so every node can hold
+/// 74,168 buckets, past the 65,536 of a schema whose every label is directed (out and in).
+const TOP_ENTRY_BYTES: usize = 7;
 /// Leaves one list can have: one page of top entries. Tests use a handful.
 const TOP_ENTRIES: usize =
     crate::store::scale::Scale::pick(6, (4096 - TOP_HEADER_BYTES) / TOP_ENTRY_BYTES);
@@ -67,15 +69,18 @@ struct Leaf {
 
 impl Leaf {
     fn encode(self) -> [u8; TOP_ENTRY_BYTES] {
-        let [k0, k1, k2] = self.first.encode();
-        let [p0, p1, p2, p3] = self.page.get().to_le_bytes();
-        [k0, k1, k2, p0, p1, p2, p3, self.count]
+        let [l0, l1, direction] = self.first.encode();
+        let word = (self.page.get() & (MAX_PAGES - 1)) | (u32::from(direction) << PAGE_BITS);
+        let [w0, w1, w2, w3] = word.to_le_bytes();
+        [l0, l1, w0, w1, w2, w3, self.count]
     }
 
-    fn decode([k0, k1, k2, p0, p1, p2, p3, count]: [u8; TOP_ENTRY_BYTES]) -> Self {
+    fn decode([l0, l1, w0, w1, w2, w3, count]: [u8; TOP_ENTRY_BYTES]) -> Self {
+        let word = u32::from_le_bytes([w0, w1, w2, w3]);
+        let direction = u8::try_from((word >> PAGE_BITS) & 0b11).unwrap_or(u8::MAX);
         Self {
-            first: LabelBucketKey::decode([k0, k1, k2]),
-            page: PageId::new(u32::from_le_bytes([p0, p1, p2, p3])),
+            first: LabelBucketKey::decode([l0, l1, direction]),
+            page: PageId::new(word & (MAX_PAGES - 1)),
             count,
         }
     }
@@ -336,7 +341,7 @@ mod proofs {
     #[kani::proof]
     fn top_entries_round_trip() {
         let bytes: [u8; TOP_ENTRY_BYTES] = kani::any();
-        kani::assume(bytes[2] <= 2);
+        kani::assume((bytes[5] >> 4) & 0b11 <= 2);
         let leaf = Leaf::decode(bytes);
         let back = Leaf::decode(leaf.encode());
         assert_eq!(

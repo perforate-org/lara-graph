@@ -16,7 +16,8 @@ pub enum Error {
     AddressSpaceExhausted,
     /// The node was never added.
     UnknownNode(NodeId),
-    /// The node already has the maximum number of `(label, direction)` buckets (215).
+    /// The node's label bucket list is full: it holds at least 74,168 `(label, direction)`
+    /// buckets, and up to about 148,000 when its pages are full.
     TooManyLabelBuckets(NodeId),
     /// The node is being detached ([`Graph::detach`]) and takes no new edges.
     Detaching(NodeId),

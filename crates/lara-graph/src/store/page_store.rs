@@ -198,7 +198,7 @@ pub(crate) struct Extent {
 /// Bytes an encoded [`Extent`] takes: 40 bits, of which the extent uses the low 38.
 pub(crate) const EXTENT_BYTES: usize = 5;
 /// Bits of a page id in an encoded extent.
-const PAGE_BITS: u32 = 28;
+pub(crate) const PAGE_BITS: u32 = 28;
 /// Bits of the start within the page, in 32-byte units: 128 per page.
 const INDEX_BITS: u32 = 7;
 /// Bits of the class, as `log2 - 5`.
