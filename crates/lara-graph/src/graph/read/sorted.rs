@@ -106,7 +106,7 @@ impl<M: Memory> Graph<M> {
         }
         // Each round keeps in the set what the bucket holds; the last one lists it.
         while let Some(bucket) = rest.next() {
-            self.match_bucket(&mut set, &bucket);
+            self.match_bucket(&mut set, &bucket, 0);
             if rest.peek().is_none() {
                 set.finish(&mut found);
                 break;
@@ -144,11 +144,14 @@ impl<M: Memory> Graph<M> {
     }
 
     /// Replaces the contents of `out` with the nodes both `set` and `w`'s `(label, direction)`
-    /// bucket hold, ascending, each once. `set` is left as it was, ready for the next bucket.
+    /// bucket hold, ascending, each once, and only those past `above` when it is given: listing
+    /// each triangle once, as `u < w < x`, wants those past `w`. `set` is left as it was, ready
+    /// for the next bucket; [`ReadBatch::common_with_each`](crate::ReadBatch::common_with_each)
+    /// does this for many nodes at a lower cost each.
     ///
-    /// `w`'s bucket is read once and each target looked up in `set`; a paged bucket over a
-    /// hundred times larger than `set` instead has each of `set`'s targets looked up in its
-    /// target index.
+    /// `w`'s bucket is read once and each target past `above` looked up in `set`; a paged bucket
+    /// over a hundred times larger than `set` instead has each of `set`'s targets looked up in
+    /// its target index.
     ///
     /// # Errors
     ///
@@ -156,7 +159,7 @@ impl<M: Memory> Graph<M> {
     pub fn common_with(
         &self,
         set: &mut TargetSet,
-        w: NodeId,
+        (w, above): (NodeId, Option<NodeId>),
         (label, direction): (Label, Direction),
         out: &mut Vec<NodeId>,
     ) -> Result<(), Error> {
@@ -166,7 +169,7 @@ impl<M: Memory> Graph<M> {
             return Ok(());
         };
         let mut found = Vec::new();
-        self.intersect(set, &bucket, &mut found);
+        self.intersect_from(set, &bucket, first_past(above), &mut found);
         out.extend(found.into_iter().map(NodeId::new));
         Ok(())
     }
@@ -196,27 +199,42 @@ impl<M: Memory> Graph<M> {
     }
 
     /// Appends the targets both `set` and `bucket` hold, ascending, to `out`.
-    fn intersect(&self, set: &mut TargetSet, bucket: &LabelBucket, out: &mut Vec<u32>) {
-        self.match_bucket(set, bucket);
-        set.finish(out);
+    /// Appends the targets both `set` and `bucket` hold from index `from` on, ascending, to
+    /// `out`.
+    pub(in crate::graph) fn intersect_from(
+        &self,
+        set: &mut TargetSet,
+        bucket: &LabelBucket,
+        from: u32,
+        out: &mut Vec<u32>,
+    ) {
+        self.match_bucket(set, bucket, from);
+        set.finish_from(from, out);
     }
 
-    /// A query of `set` matching the targets `bucket` holds: `bucket` read whole and looked up in
-    /// `set`, or for a paged bucket [`PROBE_RATIO`] times larger, each of `set`'s targets looked
-    /// up in its index.
-    fn match_bucket(&self, set: &mut TargetSet, bucket: &LabelBucket) {
+    /// A query of `set` matching the targets `bucket` holds from index `from` on: `bucket` read
+    /// whole and looked up in `set`, or for a paged bucket [`PROBE_RATIO`] times larger, each of
+    /// `set`'s targets looked up in its index.
+    fn match_bucket(&self, set: &mut TargetSet, bucket: &LabelBucket, from: u32) {
         set.begin();
         let left = u32::try_from(set.len()).unwrap_or(u32::MAX);
         let probe =
             bucket.index.tree().is_some() && left.saturating_mul(PROBE_RATIO) < bucket.slots.live();
         if probe {
             for t in set.keys() {
-                if self.holds(bucket, NodeId::new(t)) {
+                if t >= from && self.holds(bucket, NodeId::new(t)) {
                     set.hit(t);
                 }
             }
-        } else {
+        } else if from == 0 {
+            // Unbounded, the loop keeps no comparison: with it, intersections cost 2-11 % more.
             self.visit_targets(bucket, |t| set.hit(t));
+        } else {
+            self.visit_targets(bucket, |t| {
+                if t >= from {
+                    set.hit(t);
+                }
+            });
         }
     }
 
@@ -277,6 +295,11 @@ impl<M: Memory> Graph<M> {
             .is_some()
         })
     }
+}
+
+/// The first node index past `above`: all of them for none.
+pub(in crate::graph) fn first_past(above: Option<NodeId>) -> u32 {
+    above.map_or(0, |a| a.index().saturating_add(1))
 }
 
 /// From this many keys a radix sort beats a comparison sort on the IC: at 1024 keys 166K

@@ -140,7 +140,7 @@ pub fn lara_graph::Graph<M>::migrate_values(&mut self, lara_graph::NodeId, (lara
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::common_targets(&self, lara_graph::NodeId, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::Graph<M>::common_targets_of(&self, &[lara_graph::NodeId], (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
-pub fn lara_graph::Graph<M>::common_with(&self, &mut lara_graph::TargetSet, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
+pub fn lara_graph::Graph<M>::common_with(&self, &mut lara_graph::TargetSet, (lara_graph::NodeId, core::option::Option<lara_graph::NodeId>), (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::Graph<M>::sorted_targets(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::Graph<M>::target_set(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction)) -> core::result::Result<lara_graph::TargetSet, lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
@@ -246,6 +246,7 @@ pub const fn lara_graph::Position::index(self) -> u32
 pub const fn lara_graph::Position::new(u32) -> Self
 pub struct lara_graph::ReadBatch<'g, M: lara_graph::Memory>
 impl<'g, M: lara_graph::Memory> lara_graph::ReadBatch<'g, M>
+pub fn lara_graph::ReadBatch<'g, M>::common_with_each<B>(&mut self, &mut lara_graph::TargetSet, &[lara_graph::NodeId], (lara_graph::Label, lara_graph::Direction), impl core::ops::function::FnMut(lara_graph::NodeId) -> core::option::Option<lara_graph::NodeId>, impl core::ops::function::FnMut(lara_graph::NodeId, &[lara_graph::NodeId]) -> core::ops::control_flow::ControlFlow<B>) -> core::result::Result<core::option::Option<B>, lara_graph::Error>
 pub fn lara_graph::ReadBatch<'g, M>::degree_each(&mut self, &[lara_graph::NodeId], (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<u32>) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::ReadBatch<'g, M>::edge_labels_each<B>(&mut self, &[lara_graph::NodeId], lara_graph::Direction, impl core::ops::function::FnMut(lara_graph::NodeId, lara_graph::Label) -> core::ops::control_flow::ControlFlow<B>) -> core::result::Result<core::option::Option<B>, lara_graph::Error>
 pub fn lara_graph::ReadBatch<'g, M>::has_edges_each(&mut self, &[lara_graph::NodeId], &mut alloc::vec::Vec<bool>) -> core::result::Result<(), lara_graph::Error>
@@ -296,7 +297,7 @@ pub fn lara_graph::Graph<M>::migrate_values(&mut self, lara_graph::NodeId, (lara
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::common_targets(&self, lara_graph::NodeId, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::Graph<M>::common_targets_of(&self, &[lara_graph::NodeId], (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
-pub fn lara_graph::Graph<M>::common_with(&self, &mut lara_graph::TargetSet, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
+pub fn lara_graph::Graph<M>::common_with(&self, &mut lara_graph::TargetSet, (lara_graph::NodeId, core::option::Option<lara_graph::NodeId>), (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::Graph<M>::sorted_targets(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::Graph<M>::target_set(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction)) -> core::result::Result<lara_graph::TargetSet, lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>

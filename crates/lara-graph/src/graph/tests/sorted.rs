@@ -137,15 +137,25 @@ fn a_target_set_intersects_with_every_bucket_and_stays_as_it_was() {
         for b in 0..NODES {
             let theirs: BTreeSet<u32> = sorted_model(&g, b).into_iter().collect();
             let model: Vec<u32> = ours.intersection(&theirs).copied().collect();
-            g.common_with(&mut set, v(b), (LABEL, Direction::Outgoing), &mut out)
-                .unwrap();
+            g.common_with(
+                &mut set,
+                (v(b), None),
+                (LABEL, Direction::Outgoing),
+                &mut out,
+            )
+            .unwrap();
             let got: Vec<u32> = out.iter().map(|t| t.index()).collect();
             assert_eq!(got, model, "nodes {a} and {b}");
         }
         assert_eq!(set.len(), ours.len(), "node {a}: the set is unchanged");
         assert!(
-            g.common_with(&mut set, v(NODES), (LABEL, Direction::Outgoing), &mut out)
-                .is_err()
+            g.common_with(
+                &mut set,
+                (v(NODES), None),
+                (LABEL, Direction::Outgoing),
+                &mut out
+            )
+            .is_err()
         );
     }
 }
@@ -165,13 +175,117 @@ fn target_sets_hold_proxies_with_local_nodes() {
     assert_eq!(set.len(), 3);
     assert!(set.contains(proxy) && !set.contains(v(1)));
     let mut out = Vec::new();
-    g.common_with(&mut set, v(1), (LABEL, Direction::Outgoing), &mut out)
-        .unwrap();
+    g.common_with(
+        &mut set,
+        (v(1), None),
+        (LABEL, Direction::Outgoing),
+        &mut out,
+    )
+    .unwrap();
     assert_eq!(out, [v(2), v(3), proxy]);
-    g.common_with(&mut set, v(2), (LABEL, Direction::Outgoing), &mut out)
-        .unwrap();
+    g.common_with(
+        &mut set,
+        (v(2), Some(v(3))),
+        (LABEL, Direction::Outgoing),
+        &mut out,
+    )
+    .unwrap();
     assert_eq!(out, [proxy]);
     g.common_targets_of(&[v(0), v(1), v(2)], (LABEL, Direction::Outgoing), &mut out)
         .unwrap();
     assert_eq!(out, [proxy]);
+}
+
+#[test]
+fn a_bound_keeps_only_the_shared_targets_past_it() {
+    let backing = Backing::default();
+    let g = graph(&backing);
+    for a in [0, 1, 3, 40, 81] {
+        let mut set = g.target_set(v(a), (LABEL, Direction::Outgoing)).unwrap();
+        let ours: BTreeSet<u32> = sorted_model(&g, a).into_iter().collect();
+        let mut out = Vec::new();
+        for b in [0, 1, 7, 40, 80, 120, 399] {
+            let theirs: BTreeSet<u32> = sorted_model(&g, b).into_iter().collect();
+            for above in [0, 1, b, 63, 64, 200, 398, 399] {
+                let model: Vec<u32> = ours
+                    .intersection(&theirs)
+                    .copied()
+                    .filter(|&t| t > above)
+                    .collect();
+                g.common_with(
+                    &mut set,
+                    (v(b), Some(v(above))),
+                    (LABEL, Direction::Outgoing),
+                    &mut out,
+                )
+                .unwrap();
+                let got: Vec<u32> = out.iter().map(|t| t.index()).collect();
+                assert_eq!(got, model, "nodes {a} and {b} past {above}");
+            }
+        }
+    }
+}
+
+#[test]
+fn common_with_each_matches_one_node_at_a_time() {
+    let backing = Backing::default();
+    let g = graph(&backing);
+    let nodes: Vec<NodeId> = (0..NODES).map(v).collect();
+    let key = (LABEL, Direction::Outgoing);
+    let mut batch = g.read_batch();
+    for a in [0, 1, 3, 40, 81, 399] {
+        let mut set = g.target_set(v(a), key).unwrap();
+        let mut want = Vec::new();
+        let mut out = Vec::new();
+        for &w in &nodes {
+            g.common_with(&mut set, (w, Some(w)), key, &mut out)
+                .unwrap();
+            if !out.is_empty() {
+                want.push((w, out.clone()));
+            }
+        }
+        let mut got = Vec::new();
+        let none = batch
+            .common_with_each(&mut set, &nodes, key, Some, |w, shared| {
+                got.push((w, shared.to_vec()));
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        assert_eq!((none, got), (None, want), "node {a}");
+    }
+    let mut set = g.target_set(v(0), key).unwrap();
+    let mut calls = 0;
+    let first = batch
+        .common_with_each(
+            &mut set,
+            &nodes,
+            key,
+            |_| None,
+            |w, _| {
+                calls += 1;
+                ControlFlow::Break(w)
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        (first.is_some(), calls),
+        (true, 1),
+        "a break ends the batch"
+    );
+    let mut called = false;
+    assert!(
+        batch
+            .common_with_each(
+                &mut set,
+                &[v(0), v(NODES)],
+                key,
+                |_| None,
+                |_, _| {
+                    called = true;
+                    ControlFlow::<()>::Continue(())
+                }
+            )
+            .is_err()
+    );
+    assert!(!called, "every node is checked before the first callback");
 }

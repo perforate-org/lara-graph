@@ -13,6 +13,8 @@ use crate::error::Error;
 use crate::graph::Graph;
 use crate::graph::locate::Found;
 use crate::graph::locate::LastBucket;
+use crate::graph::read::TargetSet;
+use crate::graph::read::sorted::first_past;
 use crate::id::{Direction, Label, Neighbor, NodeId, NodeState, Position};
 use crate::input::Order;
 use crate::node::labels::CellLines;
@@ -188,6 +190,47 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
                     f(v, position, value)
                 })
         })
+    }
+
+    /// Calls `f` with each node of `nodes` whose `(label, direction)` bucket shares targets with
+    /// `set`, and those targets, ascending, each once, in `nodes` order, until `f` breaks:
+    /// [`Graph::common_with`] over many nodes, through the batch's record line and list page, with
+    /// one pair of buffers for all of them. `above` names, for each node, the target the shared
+    /// ones must be past, if any: listing each triangle `u < w < x` once from `u`'s set passes
+    /// `|w| Some(w)` over `u`'s targets past `u`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`] for any of `nodes`, before the first callback.
+    pub fn common_with_each<B>(
+        &mut self,
+        set: &mut TargetSet,
+        nodes: &[NodeId],
+        (label, direction): (Label, Direction),
+        mut above: impl FnMut(NodeId) -> Option<NodeId>,
+        mut f: impl FnMut(NodeId, &[NodeId]) -> ControlFlow<B>,
+    ) -> Result<Option<B>, Error> {
+        let graph = self.graph;
+        if set.is_empty() {
+            check_all(graph, nodes.iter().copied())?;
+            return Ok(None);
+        }
+        let mut found = Vec::new();
+        let mut shared = Vec::new();
+        self.each_bucket(
+            nodes,
+            LabelBucketKey { label, direction },
+            |w, _, bucket| {
+                found.clear();
+                graph.intersect_from(set, bucket, first_past(above(w)), &mut found);
+                if found.is_empty() {
+                    return None;
+                }
+                shared.clear();
+                shared.extend(found.iter().map(|&t| NodeId::new(t)));
+                f(w, &shared).break_value()
+            },
+        )
     }
 
     /// Calls `f` with each node that has a `key` bucket, and the bucket, in `nodes` order, until

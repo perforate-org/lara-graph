@@ -253,6 +253,10 @@ enum Pairing {
     Pairs,
     /// One `target_set`, intersected with each through `common_with`.
     Reused,
+    /// One `target_set`, intersected with all through `ReadBatch::common_with_each`.
+    Batched,
+    /// As `Batched`, each triangle listed once: `u < w < x`.
+    Ordered,
 }
 
 /// Lists the triangles of a random graph: for each edge `u -> w`, the targets `u` and `w` share.
@@ -260,23 +264,48 @@ fn triangles(nodes_n: u32, degree: u32, pairing: Pairing) -> BenchResult {
     let (g, pool) = random_graph(nodes_n, degree);
     let mut targets = Vec::new();
     let mut out = Vec::new();
+    let mut batch = g.read_batch();
     bench_fn(|| {
         let mut found = 0usize;
         for &u in &pool {
             g.sorted_targets(u, OUT, &mut targets)
                 .unwrap_or_else(|e| panic!("targets: {e}"));
-            if pairing == Pairing::Reused {
-                let mut set = g.target_set(u, OUT).unwrap_or_else(|e| panic!("set: {e}"));
-                for &w in &targets {
-                    g.common_with(&mut set, w, OUT, &mut out)
-                        .unwrap_or_else(|e| panic!("common: {e}"));
-                    found += out.len();
+            match pairing {
+                Pairing::Pairs => {
+                    for &w in &targets {
+                        g.common_targets(u, w, OUT, &mut out)
+                            .unwrap_or_else(|e| panic!("common: {e}"));
+                        found += out.len();
+                    }
                 }
-            } else {
-                for &w in &targets {
-                    g.common_targets(u, w, OUT, &mut out)
+                Pairing::Reused => {
+                    let mut set = g.target_set(u, OUT).unwrap_or_else(|e| panic!("set: {e}"));
+                    for &w in &targets {
+                        g.common_with(&mut set, (w, None), OUT, &mut out)
+                            .unwrap_or_else(|e| panic!("common: {e}"));
+                        found += out.len();
+                    }
+                }
+                Pairing::Batched | Pairing::Ordered => {
+                    let mut set = g.target_set(u, OUT).unwrap_or_else(|e| panic!("set: {e}"));
+                    let ordered = pairing == Pairing::Ordered;
+                    let from = if ordered {
+                        targets.partition_point(|&w| w <= u)
+                    } else {
+                        0
+                    };
+                    batch
+                        .common_with_each(
+                            &mut set,
+                            targets.get(from..).unwrap_or(&[]),
+                            OUT,
+                            |w| ordered.then_some(w),
+                            |_, shared| {
+                                found += shared.len();
+                                ControlFlow::<()>::Continue(())
+                            },
+                        )
                         .unwrap_or_else(|e| panic!("common: {e}"));
-                    found += out.len();
                 }
             }
         }
@@ -294,6 +323,17 @@ fn triangles_1024_16_pairs() -> BenchResult {
 #[bench(raw)]
 fn triangles_1024_16_reused() -> BenchResult {
     triangles(1024, 16, Pairing::Reused)
+}
+
+#[bench(raw)]
+fn triangles_1024_16_batched() -> BenchResult {
+    triangles(1024, 16, Pairing::Batched)
+}
+
+/// Each triangle once, as `u < w < x`.
+#[bench(raw)]
+fn triangles_1024_16_ordered() -> BenchResult {
+    triangles(1024, 16, Pairing::Ordered)
 }
 
 #[bench(raw)]
@@ -324,7 +364,7 @@ fn one_against_many(pairing: Pairing) -> BenchResult {
                 .target_set(big, OUT)
                 .unwrap_or_else(|e| panic!("set: {e}"));
             for &w in &small {
-                g.common_with(&mut set, w, OUT, &mut out)
+                g.common_with(&mut set, (w, None), OUT, &mut out)
                     .unwrap_or_else(|e| panic!("common: {e}"));
                 found += out.len();
             }
@@ -347,4 +387,14 @@ fn common_1024_x64_pairs() -> BenchResult {
 #[bench(raw)]
 fn common_1024_x64_reused() -> BenchResult {
     one_against_many(Pairing::Reused)
+}
+
+#[bench(raw)]
+fn triangles_256_64_batched() -> BenchResult {
+    triangles(256, 64, Pairing::Batched)
+}
+
+#[bench(raw)]
+fn triangles_256_64_ordered() -> BenchResult {
+    triangles(256, 64, Pairing::Ordered)
 }

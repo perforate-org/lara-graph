@@ -140,8 +140,8 @@ impl TargetSet {
         let mut keys = Vec::with_capacity(self.len);
         match &self.lookup {
             Lookup::Bits { base, words } => {
-                for (at, [word, _]) in (0u32..).step_by(64).zip(words) {
-                    push_bits(*word, *base + at, &mut keys);
+                for (i, [word, _]) in words.iter().enumerate() {
+                    push_bits(*word, *base + word_start(i), &mut keys);
                 }
             }
             Lookup::Hash { slots, alive, .. } => {
@@ -219,18 +219,24 @@ impl TargetSet {
 
     /// Ends the query: its matches, ascending, appended to `out`, and the marks cleared.
     pub(super) fn finish(&mut self, out: &mut Vec<u32>) {
+        self.finish_from(0, out);
+    }
+
+    /// [`Self::finish`] for a query that matched nothing below index `from`: a bitmap's scan
+    /// starts at `from`'s word.
+    pub(super) fn finish_from(&mut self, from: u32, out: &mut Vec<u32>) {
         match &mut self.lookup {
-            Lookup::Bits { base, words }
-                if self.matches.len().saturating_mul(SCAN_WORDS_PER_MATCH) >= words.len() =>
-            {
-                for (at, [_, seen]) in (0u32..).step_by(64).zip(words.iter_mut()) {
-                    push_bits(*seen, *base + at, out);
-                    *seen = 0;
-                }
-                self.matches.clear();
-                return;
-            }
             Lookup::Bits { base, words } => {
+                let skip = word_of(from.saturating_sub(*base)).min(words.len());
+                let tail = words.get_mut(skip..).unwrap_or(&mut []);
+                if self.matches.len().saturating_mul(SCAN_WORDS_PER_MATCH) >= tail.len() {
+                    for (i, [_, seen]) in (skip..).zip(tail.iter_mut()) {
+                        push_bits(*seen, *base + word_start(i), out);
+                        *seen = 0;
+                    }
+                    self.matches.clear();
+                    return;
+                }
                 for &t in &self.matches {
                     let off = t - *base;
                     if let Some([_, seen]) = words.get_mut(word_of(off)) {
@@ -275,6 +281,11 @@ fn push_bits(word: u64, from: u32, out: &mut Vec<u32>) {
         out.push(from + rest.trailing_zeros());
         rest &= rest - 1;
     }
+}
+
+/// The offset of word `i`'s first bit: below the bitmap's range, which fits a `u32`.
+fn word_start(i: usize) -> u32 {
+    u32::try_from(i * 64).unwrap_or(u32::MAX)
 }
 
 fn word_of(off: u32) -> usize {
