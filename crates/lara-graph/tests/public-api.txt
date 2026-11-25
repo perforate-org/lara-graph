@@ -143,6 +143,7 @@ pub fn lara_graph::Graph<M>::common_targets_of(&self, &[lara_graph::NodeId], (la
 pub fn lara_graph::Graph<M>::common_with(&self, &mut lara_graph::TargetSet, (lara_graph::NodeId, core::option::Option<lara_graph::NodeId>), (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::Graph<M>::sorted_targets(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::Graph<M>::target_set(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction)) -> core::result::Result<lara_graph::TargetSet, lara_graph::Error>
+pub fn lara_graph::Graph<M>::target_set_into(&self, &mut lara_graph::TargetSet, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction)) -> core::result::Result<(), lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::compact(&mut self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction)) -> core::result::Result<lara_graph::Compaction, lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
@@ -300,6 +301,7 @@ pub fn lara_graph::Graph<M>::common_targets_of(&self, &[lara_graph::NodeId], (la
 pub fn lara_graph::Graph<M>::common_with(&self, &mut lara_graph::TargetSet, (lara_graph::NodeId, core::option::Option<lara_graph::NodeId>), (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::Graph<M>::sorted_targets(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::NodeId>) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::Graph<M>::target_set(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction)) -> core::result::Result<lara_graph::TargetSet, lara_graph::Error>
+pub fn lara_graph::Graph<M>::target_set_into(&self, &mut lara_graph::TargetSet, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction)) -> core::result::Result<(), lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::compact(&mut self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction)) -> core::result::Result<lara_graph::Compaction, lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
@@ -364,6 +366,9 @@ impl lara_graph::TargetSet
 pub fn lara_graph::TargetSet::contains(&self, lara_graph::NodeId) -> bool
 pub fn lara_graph::TargetSet::is_empty(&self) -> bool
 pub fn lara_graph::TargetSet::len(&self) -> usize
+pub const fn lara_graph::TargetSet::new() -> Self
+impl core::default::Default for lara_graph::TargetSet
+pub fn lara_graph::TargetSet::default() -> Self
 pub struct lara_graph::ValueVersion(_)
 impl lara_graph::ValueVersion
 pub const lara_graph::ValueVersion::FIRST: Self

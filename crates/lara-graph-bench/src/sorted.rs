@@ -8,7 +8,7 @@ use crate::{LABEL, directed, heap_graph, node, nodes};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use core::ops::ControlFlow;
-use lara_graph::{Direction, Graph, NodeId, Order, VecMemory};
+use lara_graph::{Direction, Graph, NodeId, Order, TargetSet, VecMemory};
 
 const OUT: (lara_graph::Label, Direction) = (LABEL, Direction::Outgoing);
 
@@ -265,6 +265,7 @@ fn triangles(nodes_n: u32, degree: u32, pairing: Pairing) -> BenchResult {
     let mut targets = Vec::new();
     let mut out = Vec::new();
     let mut batch = g.read_batch();
+    let mut set = TargetSet::new();
     bench_fn(|| {
         let mut found = 0usize;
         for &u in &pool {
@@ -279,7 +280,8 @@ fn triangles(nodes_n: u32, degree: u32, pairing: Pairing) -> BenchResult {
                     }
                 }
                 Pairing::Reused => {
-                    let mut set = g.target_set(u, OUT).unwrap_or_else(|e| panic!("set: {e}"));
+                    g.target_set_into(&mut set, u, OUT)
+                        .unwrap_or_else(|e| panic!("set: {e}"));
                     for &w in &targets {
                         g.common_with(&mut set, (w, None), OUT, &mut out)
                             .unwrap_or_else(|e| panic!("common: {e}"));
@@ -287,7 +289,8 @@ fn triangles(nodes_n: u32, degree: u32, pairing: Pairing) -> BenchResult {
                     }
                 }
                 Pairing::Batched | Pairing::Ordered => {
-                    let mut set = g.target_set(u, OUT).unwrap_or_else(|e| panic!("set: {e}"));
+                    g.target_set_into(&mut set, u, OUT)
+                        .unwrap_or_else(|e| panic!("set: {e}"));
                     let ordered = pairing == Pairing::Ordered;
                     let from = if ordered {
                         targets.partition_point(|&w| w <= u)

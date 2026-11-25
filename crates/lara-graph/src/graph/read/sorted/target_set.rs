@@ -21,13 +21,19 @@ const SCAN_WORDS_PER_MATCH: usize = 8;
 const EMPTY: u32 = u32::MAX;
 
 /// The targets one bucket holds, each once, ready to intersect with others
-/// ([`crate::Graph::common_with`]). Built by [`crate::Graph::target_set`]; it borrows nothing, so
-/// it may outlive writes to the graph, and then describes the bucket as it was.
+/// ([`crate::Graph::common_with`]). Built by [`crate::Graph::target_set`], or refilled by
+/// [`crate::Graph::target_set_into`] in the memory it already took; it borrows nothing, so it may
+/// outlive writes to the graph, and then describes the bucket as it was.
 pub struct TargetSet {
     len: usize,
     lookup: Lookup,
     /// The current query's matches.
     matches: Vec<u32>,
+    /// The kind of lookup not in use, kept for a refill that needs it.
+    spare_words: Vec<[u64; 2]>,
+    spare_slots: Vec<[u32; 2]>,
+    /// The bucket's targets as read, before the set is built from them.
+    read: Vec<u32>,
 }
 
 enum Lookup {
@@ -46,24 +52,76 @@ enum Lookup {
     },
 }
 
+impl Default for TargetSet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TargetSet {
+    /// An empty set, to fill with [`crate::Graph::target_set_into`].
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            len: 0,
+            lookup: Lookup::Bits {
+                base: 0,
+                words: Vec::new(),
+            },
+            matches: Vec::new(),
+            spare_words: Vec::new(),
+            spare_slots: Vec::new(),
+            read: Vec::new(),
+        }
+    }
+
     /// The set of `targets`, which may repeat.
+    #[cfg(test)]
     pub(super) fn of(targets: &[u32]) -> Self {
+        let mut set = Self::new();
+        set.fill(targets);
+        set
+    }
+
+    /// Takes the buffer a bucket's targets are read into, empty, to give back to [`Self::fill_read`].
+    pub(super) fn take_read(&mut self) -> Vec<u32> {
+        let mut read = core::mem::take(&mut self.read);
+        read.clear();
+        read
+    }
+
+    /// Refills the set from `read`, the targets a bucket held, and keeps the buffer.
+    pub(super) fn fill_read(&mut self, read: Vec<u32>) {
+        self.fill(&read);
+        self.read = read;
+    }
+
+    /// Refills the set with `targets`, which may repeat, in the memory it already took.
+    pub(super) fn fill(&mut self, targets: &[u32]) {
+        let empty = Lookup::Bits {
+            base: 0,
+            words: Vec::new(),
+        };
+        match core::mem::replace(&mut self.lookup, empty) {
+            Lookup::Bits { words, .. } => self.spare_words = words,
+            Lookup::Hash { slots, .. } => self.spare_slots = slots,
+        }
+        self.matches.clear();
         let (mut min, mut max) = (u32::MAX, 0);
         for &t in targets {
             min = min.min(t);
             max = max.max(t);
         }
         let mut len = 0;
-        let lookup = if targets.is_empty() {
-            Lookup::Bits {
-                base: 0,
-                words: Vec::new(),
-            }
-        } else if u64::from(max - min) < width(targets.len()) {
+        if targets.is_empty() {
+            self.len = 0;
+            return;
+        }
+        self.lookup = if u64::from(max - min) < width(targets.len()) {
             let range = u64::from(max - min) + 1;
-            let mut words =
-                alloc::vec![[0u64; 2]; usize::try_from(range.div_ceil(64)).unwrap_or(0)];
+            let mut words = core::mem::take(&mut self.spare_words);
+            words.clear();
+            words.resize(usize::try_from(range.div_ceil(64)).unwrap_or(0), [0; 2]);
             for &t in targets {
                 let off = t - min;
                 if let Some([word, _]) = words.get_mut(word_of(off)) {
@@ -75,7 +133,9 @@ impl TargetSet {
             Lookup::Bits { base: min, words }
         } else {
             let size = (2 * targets.len()).next_power_of_two().max(16);
-            let mut slots = alloc::vec![[EMPTY, 0]; size];
+            let mut slots = core::mem::take(&mut self.spare_slots);
+            slots.clear();
+            slots.resize(size, [EMPTY, 0]);
             let mask = size - 1;
             let shift = 32 - size.trailing_zeros().min(32);
             for &t in targets {
@@ -95,11 +155,7 @@ impl TargetSet {
                 alive: 0,
             }
         };
-        Self {
-            len,
-            lookup,
-            matches: Vec::new(),
-        }
+        self.len = len;
     }
 
     /// How many targets the set holds.
@@ -357,6 +413,28 @@ mod tests {
             assert_eq!((set.len(), set.keys()), (1, vec![b]));
             narrowed(&mut set, &[a]);
             assert!(set.is_empty() && set.keys().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_refill_replaces_the_set_whatever_its_kind() {
+        let mut set = TargetSet::of(&[10, 12, 70]);
+        assert_eq!(query(&mut set, &[12, 70]), [12, 70]);
+        for keys in [
+            vec![5, 1 << 20, 9],
+            vec![300, 301],
+            vec![],
+            vec![7, 1 << 30],
+            vec![1, 2, 3],
+        ] {
+            set.fill(&keys);
+            let mut want = keys.clone();
+            want.sort_unstable();
+            assert_eq!(set.len(), want.len());
+            let mut asked = want.clone();
+            asked.extend([12, 70, 11]);
+            assert_eq!(query(&mut set, &asked), want, "{keys:?}");
+            assert!(!set.contains(NodeId::new(12)));
         }
     }
 

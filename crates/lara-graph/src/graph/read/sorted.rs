@@ -97,7 +97,8 @@ impl<M: Memory> Graph<M> {
         let Some(smallest) = buckets.next() else {
             return Ok(());
         };
-        let mut set = self.set_of(&smallest);
+        let mut set = TargetSet::new();
+        self.fill_set(&mut set, &smallest);
         let mut rest = buckets.peekable();
         let mut found = Vec::new();
         if rest.peek().is_none() {
@@ -135,12 +136,28 @@ impl<M: Memory> Graph<M> {
         v: NodeId,
         (label, direction): (Label, Direction),
     ) -> Result<TargetSet, Error> {
-        Ok(
-            match self.read_label_bucket(v, LabelBucketKey { label, direction })? {
-                Some(bucket) => self.set_of(&bucket),
-                None => TargetSet::of(&[]),
-            },
-        )
+        let mut set = TargetSet::new();
+        self.target_set_into(&mut set, v, (label, direction))?;
+        Ok(set)
+    }
+
+    /// [`Self::target_set`] into `set`, replacing what it held and reusing the memory it took:
+    /// building a set for each of many nodes then allocates only as the largest grows.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`]; `set` is then left as it was.
+    pub fn target_set_into(
+        &self,
+        set: &mut TargetSet,
+        v: NodeId,
+        (label, direction): (Label, Direction),
+    ) -> Result<(), Error> {
+        match self.read_label_bucket(v, LabelBucketKey { label, direction })? {
+            Some(bucket) => self.fill_set(set, &bucket),
+            None => set.fill(&[]),
+        }
+        Ok(())
     }
 
     /// Replaces the contents of `out` with the nodes both `set` and `w`'s `(label, direction)`
@@ -191,11 +208,12 @@ impl<M: Memory> Graph<M> {
         Ok((!missing).then_some(buckets))
     }
 
-    /// `bucket`'s targets as a set.
-    fn set_of(&self, bucket: &LabelBucket) -> TargetSet {
-        let mut targets = Vec::with_capacity(usize::try_from(bucket.slots.live()).unwrap_or(0));
-        self.visit_targets(bucket, |t| targets.push(t));
-        TargetSet::of(&targets)
+    /// Refills `set` with `bucket`'s targets.
+    fn fill_set(&self, set: &mut TargetSet, bucket: &LabelBucket) {
+        let mut read = set.take_read();
+        read.reserve(usize::try_from(bucket.slots.live()).unwrap_or(0));
+        self.visit_targets(bucket, |t| read.push(t));
+        set.fill_read(read);
     }
 
     /// Appends the targets both `set` and `bucket` hold, ascending, to `out`.
@@ -302,44 +320,110 @@ pub(in crate::graph) fn first_past(above: Option<NodeId>) -> u32 {
     above.map_or(0, |a| a.index().saturating_add(1))
 }
 
-/// From this many keys a radix sort beats a comparison sort on the IC: at 1024 keys 166K
-/// instructions against 270K, at 256 even, at 64 twice the cost.
-const RADIX_FROM: usize = 512;
+/// Below this many keys a comparison sort is used whatever their range.
+const RADIX_FROM: usize = 64;
 
-/// Sorts node indexes ascending: a few by a comparison sort, many by an LSD radix sort on bytes
-/// that counts all four bytes in one pass and skips a byte every key shares (most graphs leave the
-/// top one zero).
+/// The most counters a radix sort may take per key: past them, clearing and summing counters
+/// costs more than a comparison sort saves. With node ids spread over a million nodes (two
+/// passes of 1024 counters) it starts at 512 keys; with dense ones far lower: 64 keys within 128
+/// ids sorted 6 % cheaper, 256 within 512 26 %, 1024 within 2048 19 % (one pass).
+const COUNTERS_PER_KEY: usize = 4;
+
+/// The widest digit a radix pass sorts by: 2048 counters.
+const MAX_DIGIT_BITS: u32 = 11;
+
+/// Sorts node indexes ascending: by an LSD radix sort on their offsets from the smallest, in as
+/// few passes of up to [`MAX_DIGIT_BITS`] as their range needs (one for keys within 2048 of each
+/// other, two within four million), counted in one sweep; or, for few keys or few for their
+/// range, by a comparison sort.
 fn sort_indexes(keys: &mut Vec<u32>) {
     if keys.len() < RADIX_FROM {
         keys.sort_unstable();
         return;
     }
-    let mut counts = [[0u32; 256]; 4];
+    let (mut min, mut max) = (u32::MAX, 0);
     for &k in keys.iter() {
-        for (shift, c) in (0u32..).step_by(8).zip(counts.iter_mut()) {
-            if let Some(count) = c.get_mut(digit(k, shift)) {
-                *count += 1;
-            }
-        }
+        min = min.min(k);
+        max = max.max(k);
     }
+    let bits = u32::BITS - (max - min).leading_zeros();
+    if bits == 0 {
+        return;
+    }
+    let passes = bits.div_ceil(MAX_DIGIT_BITS);
+    let width = bits.div_ceil(passes);
+    let radix = 1usize << width;
+    let counters = radix * usize::try_from(passes).unwrap_or(1);
+    if counters > keys.len().saturating_mul(COUNTERS_PER_KEY) {
+        keys.sort_unstable();
+        return;
+    }
+    let mask = (1u32 << width) - 1;
+    let mut counts = alloc::vec![0u32; counters];
+    count_digits(keys, &mut counts, (min, width, mask, passes));
     let mut spare = alloc::vec![0u32; keys.len()];
-    for (shift, c) in (0u32..).step_by(8).zip(counts.iter_mut()) {
-        if c.iter()
-            .any(|&x| usize::try_from(x).is_ok_and(|x| x == keys.len()))
-        {
+    let first = keys.first().copied().unwrap_or(min);
+    for (pass, c) in (0..passes).zip(counts.chunks_exact_mut(radix)) {
+        // A pass every key shares a digit of moves nothing: if one does, the first key's does.
+        let shared = c
+            .get(digit((first - min) >> (pass * width), mask))
+            .is_some_and(|&x| usize::try_from(x).is_ok_and(|x| x == keys.len()));
+        if shared {
             continue;
         }
-        scatter(keys, &mut spare, c, shift);
+        scatter(keys, &mut spare, c, (min, pass * width, mask));
         core::mem::swap(keys, &mut spare);
     }
 }
 
-/// One radix pass: `keys` into `into` by their byte at `shift`, whose counts are `counts`.
+/// Counts every pass's digits of `keys` in one sweep: pass `p`'s counters are the `p`-th run of
+/// `mask + 1` in `counts`.
 #[expect(
     clippy::indexing_slicing,
-    reason = "digits are masked to the 256 counters, and their prefix sums stay below the key count"
+    reason = "digits are masked below the radix, and there are that many counters per pass"
 )]
-fn scatter(keys: &[u32], into: &mut [u32], counts: &mut [u32; 256], shift: u32) {
+fn count_digits(
+    keys: &[u32],
+    counts: &mut [u32],
+    (min, width, mask, passes): (u32, u32, u32, u32),
+) {
+    let radix = usize::try_from(mask).unwrap_or(0) + 1;
+    match passes {
+        1 => {
+            for &k in keys {
+                counts[digit(k - min, mask)] += 1;
+            }
+        }
+        2 => {
+            for &k in keys {
+                let off = k - min;
+                counts[digit(off, mask)] += 1;
+                counts[radix + digit(off >> width, mask)] += 1;
+            }
+        }
+        _ => {
+            for &k in keys {
+                let off = k - min;
+                counts[digit(off, mask)] += 1;
+                counts[radix + digit(off >> width, mask)] += 1;
+                counts[2 * radix + digit(off >> (2 * width), mask)] += 1;
+            }
+        }
+    }
+}
+
+/// One radix pass: `keys` into `into` by the digit of their offset from `min` at `shift`, whose
+/// counts are `counts`.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "digits are masked to the counters, and their prefix sums stay below the key count"
+)]
+fn scatter(
+    keys: &[u32],
+    into: &mut [u32],
+    counts: &mut [u32],
+    (min, shift, mask): (u32, u32, u32),
+) {
     let mut next = 0u32;
     for x in counts.iter_mut() {
         let here = *x;
@@ -347,15 +431,15 @@ fn scatter(keys: &[u32], into: &mut [u32], counts: &mut [u32; 256], shift: u32) 
         next += here;
     }
     for &k in keys {
-        let slot = &mut counts[digit(k, shift)];
+        let slot = &mut counts[digit((k - min) >> shift, mask)];
         into[usize::try_from(*slot).unwrap_or(usize::MAX)] = k;
         *slot += 1;
     }
 }
 
-/// The byte of `key` at `shift`, as a counter index.
-fn digit(key: u32, shift: u32) -> usize {
-    usize::try_from((key >> shift) & 0xFF).unwrap_or(0)
+/// The digit `mask` keeps of `shifted`, as a counter index.
+fn digit(shifted: u32, mask: u32) -> usize {
+    usize::try_from(shifted & mask).unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -367,8 +451,8 @@ mod tests {
     #[test]
     fn indexes_sort_by_either_sort() {
         let mut x = 0x2545_F491_4F6C_DD1Du64;
-        for n in [0, 1, 63, 511, 512, 513, 2000] {
-            let mut keys: Vec<u32> = (0..n)
+        for n in [0, 1, 63, 64, 300, 512, 2000, 5000, 9000] {
+            let keys: Vec<u32> = (0..n)
                 .map(|_| {
                     x ^= x << 13;
                     x ^= x >> 7;
@@ -376,10 +460,15 @@ mod tests {
                     u32::try_from(x >> 32).unwrap()
                 })
                 .collect();
-            let mut want = keys.clone();
-            want.sort_unstable();
-            sort_indexes(&mut keys);
-            assert_eq!(keys, want, "{n} keys");
+            // Full width (three passes), within four million (two), within 2048 (one), and all
+            // one key (none), each well above zero.
+            for (span, from) in [(u32::MAX, 0), (0x3F_FFFF, 7), (0x7FF, 1 << 31), (0, 99)] {
+                let mut keys: Vec<u32> = keys.iter().map(|&k| from + (k & span)).collect();
+                let mut want = keys.clone();
+                want.sort_unstable();
+                sort_indexes(&mut keys);
+                assert_eq!(keys, want, "{n} keys within {span:#x} of {from}");
+            }
         }
     }
 }
