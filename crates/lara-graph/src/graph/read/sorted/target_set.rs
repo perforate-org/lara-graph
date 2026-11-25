@@ -35,11 +35,14 @@ enum Lookup {
     /// matches, side by side: one allocation, one place a lookup reads.
     Bits { base: u32, words: Vec<[u64; 2]> },
     /// Linear probing, at most half full: each slot's key and the last query that matched it.
+    /// Stamps only grow, so the keys stamped `alive` or later are the set: narrowing it to a
+    /// query's matches raises `alive` to that query.
     Hash {
         slots: Vec<[u32; 2]>,
         mask: usize,
         shift: u32,
         query: u32,
+        alive: u32,
     },
 }
 
@@ -89,6 +92,7 @@ impl TargetSet {
                 mask,
                 shift,
                 query: 0,
+                alive: 0,
             }
         };
         Self {
@@ -120,10 +124,14 @@ impl TargetSet {
                 .and_then(|off| words.get(word_of(off)).map(|[w, _]| w & bit_of(off) != 0))
                 .unwrap_or(false),
             Lookup::Hash {
-                slots, mask, shift, ..
+                slots,
+                mask,
+                shift,
+                alive,
+                ..
             } => slots
                 .get(slot_of(slots, *mask, *shift, t))
-                .is_some_and(|s| s[0] == t),
+                .is_some_and(|s| s[0] == t && s[1] >= *alive),
         }
     }
 
@@ -136,8 +144,13 @@ impl TargetSet {
                     push_bits(*word, *base + at, &mut keys);
                 }
             }
-            Lookup::Hash { slots, .. } => {
-                keys.extend(slots.iter().map(|s| s[0]).filter(|&k| k != EMPTY));
+            Lookup::Hash { slots, alive, .. } => {
+                keys.extend(
+                    slots
+                        .iter()
+                        .filter(|s| s[0] != EMPTY && s[1] >= *alive)
+                        .map(|s| s[0]),
+                );
             }
         }
         keys
@@ -146,15 +159,22 @@ impl TargetSet {
     /// Starts a query: no target is matched yet.
     pub(super) fn begin(&mut self) {
         self.matches.clear();
-        if let Lookup::Hash { slots, query, .. } = &mut self.lookup {
-            *query = query.wrapping_add(1);
-            if *query == 0 {
-                // Stamps start at 0, so a wrapped query clears them first.
+        if let Lookup::Hash {
+            slots,
+            query,
+            alive,
+            ..
+        } = &mut self.lookup
+        {
+            if *query == u32::MAX {
+                // Out of stamps: the set's keys restart at 1, the others at 0.
                 for slot in slots.iter_mut() {
-                    slot[1] = 0;
+                    slot[1] = u32::from(slot[1] >= *alive);
                 }
+                *alive = 1;
                 *query = 1;
             }
+            *query += 1;
         }
     }
 
@@ -180,10 +200,11 @@ impl TargetSet {
                 mask,
                 shift,
                 query,
+                alive,
             } => {
                 let at = slot_of(slots, *mask, *shift, t);
                 match slots.get_mut(at) {
-                    Some(slot) if slot[0] == t && slot[1] != *query => {
+                    Some(slot) if slot[0] == t && slot[1] >= *alive && slot[1] != *query => {
                         slot[1] = *query;
                         true
                     }
@@ -221,6 +242,22 @@ impl TargetSet {
         }
         sort_indexes(&mut self.matches);
         out.append(&mut self.matches);
+    }
+
+    /// Ends the query by keeping only its matches: a k-way intersection's next round, without
+    /// building a new set.
+    pub(super) fn narrow(&mut self) {
+        self.len = self.matches.len();
+        self.matches.clear();
+        match &mut self.lookup {
+            Lookup::Bits { words, .. } => {
+                for [held, seen] in words.iter_mut() {
+                    *held = *seen;
+                    *seen = 0;
+                }
+            }
+            Lookup::Hash { query, alive, .. } => *alive = *query,
+        }
     }
 }
 
@@ -281,6 +318,37 @@ mod tests {
         out
     }
 
+    fn narrowed(set: &mut TargetSet, targets: &[u32]) {
+        set.begin();
+        for &t in targets {
+            set.hit(t);
+        }
+        set.narrow();
+    }
+
+    #[test]
+    fn narrowing_keeps_only_a_query_s_matches() {
+        for keys in [vec![10, 12, 70, 11, 40], vec![5, 1 << 20, 77, 9, 1 << 30]] {
+            let mut set = TargetSet::of(&keys);
+            let (a, b, c) = (keys[0], keys[1], keys[4]);
+            // A reused query between rounds changes nothing.
+            assert_eq!(query(&mut set, &[a]), [a]);
+            narrowed(&mut set, &[c, a, b, a, 999_999]);
+            assert_eq!(set.len(), 3);
+            let mut left = set.keys();
+            left.sort_unstable();
+            let mut want = vec![a, b, c];
+            want.sort_unstable();
+            assert_eq!(left, want);
+            assert!(!set.contains(NodeId::new(keys[2])));
+            assert_eq!(query(&mut set, &keys), want, "only the kept ones match");
+            narrowed(&mut set, &[b, keys[3]]);
+            assert_eq!((set.len(), set.keys()), (1, vec![b]));
+            narrowed(&mut set, &[a]);
+            assert!(set.is_empty() && set.keys().is_empty());
+        }
+    }
+
     #[test]
     fn dense_targets_make_a_bitmap_and_sparse_ones_a_hash_table() {
         let dense = TargetSet::of(&[10, 12, 10, 70, 11]);
@@ -316,10 +384,16 @@ mod tests {
     fn a_hash_table_survives_its_query_count_wrapping() {
         let mut set = TargetSet::of(&[3, 1 << 20, 1 << 25]);
         if let Lookup::Hash { query, .. } = &mut set.lookup {
-            *query = u32::MAX - 1;
+            *query = u32::MAX - 2;
         }
-        for _ in 0..4 {
+        for _ in 0..2 {
             assert_eq!(query(&mut set, &[1 << 25, 3, 3]), [3, 1 << 25]);
         }
+        narrowed(&mut set, &[3, 1 << 25]);
+        for _ in 0..3 {
+            assert_eq!(query(&mut set, &[1 << 25, 3, 1 << 20]), [3, 1 << 25]);
+        }
+        assert_eq!(set.len(), 2);
+        assert!(!set.contains(NodeId::new(1 << 20)));
     }
 }

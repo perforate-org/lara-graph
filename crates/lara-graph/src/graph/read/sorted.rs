@@ -77,7 +77,7 @@ impl<M: Memory> Graph<M> {
     /// direction)` buckets holds a live edge to, ascending, each once; empty for no nodes.
     ///
     /// The smallest bucket's targets make a [`TargetSet`]; each larger bucket, smallest first,
-    /// keeps those it holds (see [`Self::common_with`]), and what it keeps is the next set.
+    /// keeps in it those it holds (see [`Self::common_with`]), the set narrowed in place.
     ///
     /// # Errors
     ///
@@ -98,19 +98,23 @@ impl<M: Memory> Graph<M> {
             return Ok(());
         };
         let mut set = self.set_of(&smallest);
-        let mut found = Vec::new();
         let mut rest = buckets.peekable();
+        let mut found = Vec::new();
         if rest.peek().is_none() {
             found = set.keys();
             sort_indexes(&mut found);
         }
+        // Each round keeps in the set what the bucket holds; the last one lists it.
         while let Some(bucket) = rest.next() {
-            found.clear();
-            self.intersect(&mut set, &bucket, &mut found);
-            if found.is_empty() || rest.peek().is_none() {
+            self.match_bucket(&mut set, &bucket);
+            if rest.peek().is_none() {
+                set.finish(&mut found);
                 break;
             }
-            set = TargetSet::of(&found);
+            set.narrow();
+            if set.is_empty() {
+                break;
+            }
         }
         out.extend(found.into_iter().map(NodeId::new));
         Ok(())
@@ -191,10 +195,16 @@ impl<M: Memory> Graph<M> {
         TargetSet::of(&targets)
     }
 
-    /// Appends the targets both `set` and `bucket` hold, ascending, to `out`: `bucket` read whole
-    /// and looked up in `set`, or for a paged bucket [`PROBE_RATIO`] times larger, each of `set`'s
-    /// targets looked up in its index.
+    /// Appends the targets both `set` and `bucket` hold, ascending, to `out`.
     fn intersect(&self, set: &mut TargetSet, bucket: &LabelBucket, out: &mut Vec<u32>) {
+        self.match_bucket(set, bucket);
+        set.finish(out);
+    }
+
+    /// A query of `set` matching the targets `bucket` holds: `bucket` read whole and looked up in
+    /// `set`, or for a paged bucket [`PROBE_RATIO`] times larger, each of `set`'s targets looked
+    /// up in its index.
+    fn match_bucket(&self, set: &mut TargetSet, bucket: &LabelBucket) {
         set.begin();
         let left = u32::try_from(set.len()).unwrap_or(u32::MAX);
         let probe =
@@ -208,7 +218,6 @@ impl<M: Memory> Graph<M> {
         } else {
             self.visit_targets(bucket, |t| set.hit(t));
         }
-        set.finish(out);
     }
 
     /// Calls `f` with the index of each live target of `bucket`, in position order.
