@@ -4,11 +4,11 @@
 //! the cost of the order; intersections with many nodes are measured a pair at a time and with
 //! one set reused.
 
-use crate::{LABEL, directed, heap_graph, node, nodes};
+use crate::{Bench, LABEL, directed, graph, node, nodes};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use core::ops::ControlFlow;
-use lara_graph::{Direction, Graph, NodeId, Order, TargetSet, VecMemory};
+use lara_graph::{Direction, NodeId, Order, TargetSet};
 
 const OUT: (lara_graph::Label, Direction) = (LABEL, Direction::Outgoing);
 
@@ -30,7 +30,7 @@ impl Rng {
 }
 
 /// A node with `degree` edges to random nodes of `pool`.
-fn spread(g: &mut Graph<VecMemory>, degree: u32, pool: &[NodeId], rng: &mut Rng) -> NodeId {
+fn spread(g: &mut Bench, degree: u32, pool: &[NodeId], rng: &mut Rng) -> NodeId {
     let from = node(g);
     for _ in 0..degree {
         let to = rng.pick(pool);
@@ -40,8 +40,8 @@ fn spread(g: &mut Graph<VecMemory>, degree: u32, pool: &[NodeId], rng: &mut Rng)
 }
 
 /// A node of `degree` edges to random targets among `2 × degree` nodes.
-fn one(degree: u32) -> (Graph<VecMemory>, NodeId) {
-    let mut g = heap_graph();
+fn one(degree: u32) -> (Bench, NodeId) {
+    let mut g = graph();
     let pool = nodes(&mut g, 2 * degree);
     let v = spread(&mut g, degree, &pool, &mut Rng(0x9E37_79B9_7F4A_7C15));
     (g, v)
@@ -74,7 +74,7 @@ fn sorted(degree: u32) -> BenchResult {
 /// Two nodes of `first` and `second` edges to random targets among the same
 /// `2 × max(first, second)` nodes.
 fn common(first: u32, second: u32) -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let pool = nodes(&mut g, 2 * first.max(second));
     let mut rng = Rng(0x2545_F491_4F6C_DD1D);
     let one_end = spread(&mut g, first, &pool, &mut rng);
@@ -90,7 +90,7 @@ fn common(first: u32, second: u32) -> BenchResult {
 /// Nodes of the given degrees, each with edges to random targets among the same
 /// `2 × max degree` nodes, intersected together.
 fn common_of(degrees: &[u32]) -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let pool = nodes(&mut g, 2 * degrees.iter().copied().max().unwrap_or(1));
     let mut rng = Rng(0x2545_F491_4F6C_DD1D);
     let ends: Vec<NodeId> = degrees
@@ -233,8 +233,8 @@ fn common3_65536_1024_64() -> BenchResult {
 }
 
 /// `nodes` nodes of `degree` edges each to random nodes among them.
-fn random_graph(nodes_n: u32, degree: u32) -> (Graph<VecMemory>, Vec<NodeId>) {
-    let mut g = heap_graph();
+fn random_graph(nodes_n: u32, degree: u32) -> (Bench, Vec<NodeId>) {
+    let mut g = graph();
     let pool = nodes(&mut g, nodes_n);
     let mut rng = Rng(0x5851_F42D_4C95_7F2D);
     for &from in &pool {
@@ -352,7 +352,7 @@ fn triangles_256_64_reused() -> BenchResult {
 /// One node of 1024 edges against 64 nodes of 64 edges, all among the same 2048 nodes:
 /// `common_targets` per pair, or one set intersected with each.
 fn one_against_many(pairing: Pairing) -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let pool = nodes(&mut g, 2048);
     let mut rng = Rng(0x2545_F491_4F6C_DD1D);
     let big = spread(&mut g, 1024, &pool, &mut rng);

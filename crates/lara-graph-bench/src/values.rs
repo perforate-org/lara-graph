@@ -1,31 +1,31 @@
 //! Edges with 8-byte values: growing a valued hub, scanning values with or without their edges,
 //! one node at a time or batched, and reading or overwriting values by handle.
 
-use crate::{LABEL, first_halves, heap_graph, live_batched, live_each, node, nodes};
+use crate::{Bench, LABEL, first_halves, graph, live_batched, live_each, node, nodes};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use core::ops::ControlFlow;
 use lara_graph::{
-    Direction, EdgeRef, EdgeValue, Error, Graph, NewEdge, NodeId, Order, Placement, Position,
-    ReadBatch, VecMemory, Width,
+    Direction, EdgeRef, EdgeValue, Error, NewEdge, NodeId, Order, Placement, Position, ReadBatch,
+    Width,
 };
 
 const OUT: (lara_graph::Label, Direction) = (LABEL, Direction::Outgoing);
 
 /// Declares `LABEL`'s values 8 bytes wide.
-fn declare_width(g: &mut Graph<VecMemory>) {
+fn declare_width(g: &mut Bench) {
     g.declare_width(LABEL, Width::new(8).unwrap_or_else(|| panic!("width")))
         .unwrap_or_else(|e| panic!("width: {e}"));
 }
 
 /// Inserts `from -[LABEL]-> to` carrying `value`.
-fn valued(g: &mut Graph<VecMemory>, from: NodeId, to: NodeId, value: &[u8]) {
+fn valued(g: &mut Bench, from: NodeId, to: NodeId, value: &[u8]) {
     g.add_edge(NewEdge::directed(from, LABEL, to, Placement::Append, value))
         .unwrap_or_else(|e| panic!("insert: {e}"));
 }
 
 /// A hub whose label carries 8-byte values, each edge given one.
-fn seed_valued_hub(g: &mut Graph<VecMemory>, degree: u32) -> NodeId {
+fn seed_valued_hub(g: &mut Bench, degree: u32) -> NodeId {
     declare_width(g);
     let hub = node(g);
     for leaf in nodes(g, degree) {
@@ -35,8 +35,8 @@ fn seed_valued_hub(g: &mut Graph<VecMemory>, degree: u32) -> NodeId {
 }
 
 /// 1024 sources, each with one valued out-edge.
-fn one_valued_edge_per_source() -> (Graph<VecMemory>, Vec<NodeId>) {
-    let mut g = heap_graph();
+fn one_valued_edge_per_source() -> (Bench, Vec<NodeId>) {
+    let mut g = graph();
     declare_width(&mut g);
     let sources: Vec<NodeId> = (0..1024)
         .map(|i| {
@@ -71,7 +71,7 @@ fn count_each(
 /// Growing a hub to 4096 edges with 8-byte values: both halves of each.
 #[bench(raw)]
 fn hub_insert_valued_4096() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     declare_width(&mut g);
     let hub = node(&mut g);
     let leaves = nodes(&mut g, 4096);
@@ -95,7 +95,7 @@ fn hub_insert_valued_4096() -> BenchResult {
 /// 51 values-first scans of a 65536-edge hub (values only).
 #[bench(raw)]
 fn hub_visit_values_65536() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let hub = seed_valued_hub(&mut g, 65536);
     bench_fn(|| {
         for _ in 0..51 {
@@ -113,7 +113,7 @@ fn hub_visit_values_65536() -> BenchResult {
 /// 51 combined scans (edge and value) of a 1024-edge hub.
 #[bench(raw)]
 fn hub_visit_with_values_1024() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let hub = seed_valued_hub(&mut g, 1024);
     bench_fn(|| {
         for _ in 0..51 {
@@ -187,7 +187,7 @@ fn visit_values_many_1024_batched() -> BenchResult {
 /// Overwriting one edge's value in both halves, in a 4096-edge hub.
 #[bench(raw)]
 fn set_value_4096() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let hub = seed_valued_hub(&mut g, 4096);
     let half = EdgeRef::new(hub, LABEL, Direction::Outgoing, Position::new(4000));
     bench_fn(|| black_box(g.set_edge_value(half, &[7; 8])))
@@ -196,7 +196,7 @@ fn set_value_4096() -> BenchResult {
 /// 1024 edge values in one hub bucket, one call each.
 #[bench(raw)]
 fn edge_value_1024_loop() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let halves = first_halves(seed_valued_hub(&mut g, 65536), 1024);
     bench_fn(|| black_box(live_each(&halves, |half| g.edge_value(half))))
 }
@@ -204,7 +204,7 @@ fn edge_value_1024_loop() -> BenchResult {
 /// The same 1024 edge values through one `ReadBatch`, reusing the bucket lookup.
 #[bench(raw)]
 fn edge_value_1024_batched() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let halves = first_halves(seed_valued_hub(&mut g, 65536), 1024);
     bench_fn(|| black_box(live_batched(&g, &halves, ReadBatch::edge_values_each)))
 }
@@ -212,7 +212,7 @@ fn edge_value_1024_batched() -> BenchResult {
 /// 1024 edge values in one hub bucket, one write each.
 #[bench(raw)]
 fn set_edge_value_1024_loop() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let halves = first_halves(seed_valued_hub(&mut g, 65536), 1024);
     let value = [7u8; 8];
     bench_fn(|| {
@@ -228,7 +228,7 @@ fn set_edge_value_1024_loop() -> BenchResult {
 /// The same 1024 writes through one batch.
 #[bench(raw)]
 fn set_edge_value_1024_batched() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let hub = seed_valued_hub(&mut g, 65536);
     let value = [7u8; 8];
     let halves = first_halves(hub, 1024);

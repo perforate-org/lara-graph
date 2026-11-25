@@ -1,7 +1,7 @@
 //! Reading a hub's bucket: whole scans collected or visited, in either order, in windows, and at
 //! scattered positions.
 
-use crate::{LABEL, heap_graph, seed_hub, stable_graph};
+use crate::{LABEL, graph, seed_hub};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use core::num::NonZeroU32;
@@ -43,23 +43,23 @@ fn visit_hub_in<M: Memory>(mut g: Graph<M>, degree: u32, order: Order) -> BenchR
 
 #[bench(raw)]
 fn hub_visit_1024() -> BenchResult {
-    visit_hub(heap_graph(), 1024)
+    visit_hub(graph(), 1024)
 }
 
 #[bench(raw)]
 fn hub_visit_65536() -> BenchResult {
-    visit_hub(heap_graph(), 65536)
+    visit_hub(graph(), 65536)
 }
 
 #[bench(raw)]
 fn hub_visit_descending_65536() -> BenchResult {
-    visit_hub_in(heap_graph(), 65536, Order::Descending)
+    visit_hub_in(graph(), 65536, Order::Descending)
 }
 
 /// A whole 65536-edge hub read in windows of 256 positions, newest first.
 #[bench(raw)]
 fn hub_windows_descending_65536() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let (hub, _) = seed_hub(&mut g, 65536);
     let span = NonZeroU32::new(256).unwrap_or(NonZeroU32::MIN);
     bench_fn(|| {
@@ -77,7 +77,7 @@ fn hub_windows_descending_65536() -> BenchResult {
 /// 256 scattered positions of a 65536-edge hub read in one call.
 #[bench(raw)]
 fn hub_targets_at_256_of_65536() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let (hub, _) = seed_hub(&mut g, 65536);
     let positions: Vec<Position> = (0..256u32)
         .map(|i| Position::new(i * 251 % 65536))
@@ -92,24 +92,19 @@ fn hub_targets_at_256_of_65536() -> BenchResult {
 
 #[bench(raw)]
 fn hub_scan_1024() -> BenchResult {
-    scan_hub(heap_graph(), 1024)
-}
-
-#[bench(raw)]
-fn hub_scan_1024_stable() -> BenchResult {
-    scan_hub(stable_graph(), 1024)
+    scan_hub(graph(), 1024)
 }
 
 #[bench(raw)]
 fn hub_scan_65536() -> BenchResult {
-    scan_hub(heap_graph(), 65536)
+    scan_hub(graph(), 65536)
 }
 
 /// GQL `OFFSET 60000` over a hub of 65536 edges: where the 60,001st edge is, from the page index's
 /// live counts, against counting edges up to it.
 #[bench(raw)]
-fn offset_60000_of_hub_65536_stable() -> BenchResult {
-    let mut g = stable_graph();
+fn offset_60000_of_hub_65536() -> BenchResult {
+    let mut g = graph();
     let (hub, _) = seed_hub(&mut g, 65536);
     bench_fn(|| {
         black_box(
@@ -121,8 +116,8 @@ fn offset_60000_of_hub_65536_stable() -> BenchResult {
 
 /// The same `OFFSET 60000`, counting edges through `visit_neighbors`.
 #[bench(raw)]
-fn offset_60000_of_hub_65536_counted_stable() -> BenchResult {
-    let mut g = stable_graph();
+fn offset_60000_of_hub_65536_counted() -> BenchResult {
+    let mut g = graph();
     let (hub, _) = seed_hub(&mut g, 65536);
     bench_fn(|| {
         let mut left = 60_000u32;

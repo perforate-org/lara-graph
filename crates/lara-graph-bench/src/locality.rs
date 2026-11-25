@@ -5,8 +5,8 @@
 //! visit apart, each over the same 1024 satellites in stable memory: a raw read, then the node
 //! record, the label bucket list, an inline bucket, and a run bucket's slots.
 
+use crate::graph;
 use crate::two_hop::{self, Layout};
-use crate::{heap_graph, stable_graph};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use ic_stable_structures::DefaultMemoryImpl;
@@ -21,39 +21,24 @@ fn two_hop<M: Memory>(mut g: Graph<M>, layout: Layout) -> BenchResult {
 
 #[bench(raw)]
 fn two_hop_ordered() -> BenchResult {
-    two_hop(heap_graph(), Layout::Ordered)
+    two_hop(graph(), Layout::Ordered)
 }
 
 #[bench(raw)]
 fn two_hop_shuffled() -> BenchResult {
-    two_hop(heap_graph(), Layout::Shuffled)
+    two_hop(graph(), Layout::Shuffled)
 }
 
 #[bench(raw)]
 fn two_hop_scattered() -> BenchResult {
-    two_hop(heap_graph(), Layout::Scattered)
-}
-
-#[bench(raw)]
-fn two_hop_ordered_stable() -> BenchResult {
-    two_hop(stable_graph(), Layout::Ordered)
-}
-
-#[bench(raw)]
-fn two_hop_shuffled_stable() -> BenchResult {
-    two_hop(stable_graph(), Layout::Shuffled)
-}
-
-#[bench(raw)]
-fn two_hop_scattered_stable() -> BenchResult {
-    two_hop(stable_graph(), Layout::Scattered)
+    two_hop(graph(), Layout::Scattered)
 }
 
 /// Calls `f` on each satellite of the ordered two-hop graph in stable memory, inside the bench.
 fn per_satellite<R>(
     f: impl Fn(&Graph<VirtualMemory<DefaultMemoryImpl>>, NodeId) -> R,
 ) -> BenchResult {
-    let mut g = stable_graph();
+    let mut g = graph();
     let hub = two_hop::build(&mut g, Layout::Ordered);
     let satellites = two_hop::satellites(&g, hub);
     bench_fn(|| {
@@ -119,7 +104,7 @@ fn visit_run_1024() -> BenchResult {
 /// The same out-bucket visits, batched over the satellite list: one record line per eight nodes.
 #[bench(raw)]
 fn visit_run_1024_batched() -> BenchResult {
-    let mut g = stable_graph();
+    let mut g = graph();
     let hub = two_hop::build(&mut g, Layout::Ordered);
     let satellites = two_hop::satellites(&g, hub);
     bench_fn(|| black_box(two_hop::visit_many(&g, &satellites, Direction::Outgoing)))
@@ -128,7 +113,7 @@ fn visit_run_1024_batched() -> BenchResult {
 /// The in-bucket visits, batched over the satellite list.
 #[bench(raw)]
 fn visit_inline_1024_batched() -> BenchResult {
-    let mut g = stable_graph();
+    let mut g = graph();
     let hub = two_hop::build(&mut g, Layout::Ordered);
     let satellites = two_hop::satellites(&g, hub);
     bench_fn(|| black_box(two_hop::visit_many(&g, &satellites, Direction::Incoming)))
@@ -137,7 +122,7 @@ fn visit_inline_1024_batched() -> BenchResult {
 /// The out-bucket visits in the shuffled layout, where ids are dense but list pages are not.
 #[bench(raw)]
 fn visit_run_1024_batched_shuffled() -> BenchResult {
-    let mut g = stable_graph();
+    let mut g = graph();
     let hub = two_hop::build(&mut g, Layout::Shuffled);
     let satellites = two_hop::satellites(&g, hub);
     bench_fn(|| black_box(two_hop::visit_many(&g, &satellites, Direction::Outgoing)))
@@ -146,7 +131,7 @@ fn visit_run_1024_batched_shuffled() -> BenchResult {
 /// The out-bucket visits in the scattered layout, where consecutive ids do not share a line.
 #[bench(raw)]
 fn visit_run_1024_batched_scattered() -> BenchResult {
-    let mut g = stable_graph();
+    let mut g = graph();
     let hub = two_hop::build(&mut g, Layout::Scattered);
     let satellites = two_hop::satellites(&g, hub);
     bench_fn(|| black_box(two_hop::visit_many(&g, &satellites, Direction::Outgoing)))
@@ -155,7 +140,7 @@ fn visit_run_1024_batched_scattered() -> BenchResult {
 /// The out-bucket visits through an explicit `ReadBatch` context.
 #[bench(raw)]
 fn visit_run_1024_batch_context() -> BenchResult {
-    let mut g = stable_graph();
+    let mut g = graph();
     let hub = two_hop::build(&mut g, Layout::Ordered);
     let satellites = two_hop::satellites(&g, hub);
     let mut batch = g.read_batch();
@@ -171,7 +156,7 @@ fn visit_run_1024_batch_context() -> BenchResult {
 /// The out-degree of every satellite through one `ReadBatch`.
 #[bench(raw)]
 fn degree_1024_batched() -> BenchResult {
-    let mut g = stable_graph();
+    let mut g = graph();
     let hub = two_hop::build(&mut g, Layout::Ordered);
     let satellites = two_hop::satellites(&g, hub);
     bench_fn(|| black_box(two_hop::degree_many(&g, &satellites, Direction::Outgoing)))
@@ -180,7 +165,7 @@ fn degree_1024_batched() -> BenchResult {
 /// The state of every satellite through one `ReadBatch`.
 #[bench(raw)]
 fn node_state_1024_batched() -> BenchResult {
-    let mut g = stable_graph();
+    let mut g = graph();
     let hub = two_hop::build(&mut g, Layout::Ordered);
     let satellites = two_hop::satellites(&g, hub);
     bench_fn(|| black_box(two_hop::node_state_many(&g, &satellites)))
@@ -200,7 +185,7 @@ fn labels_1024() -> BenchResult {
 /// The same label reads through one `ReadBatch`.
 #[bench(raw)]
 fn labels_1024_batched() -> BenchResult {
-    let mut g = stable_graph();
+    let mut g = graph();
     let hub = two_hop::build(&mut g, Layout::Ordered);
     let satellites = two_hop::satellites(&g, hub);
     bench_fn(|| black_box(two_hop::labels_many(&g, &satellites, Direction::Outgoing)))
@@ -218,7 +203,7 @@ fn has_edges_1024() -> BenchResult {
 /// The same edge checks through one `ReadBatch`.
 #[bench(raw)]
 fn has_edges_1024_batched() -> BenchResult {
-    let mut g = stable_graph();
+    let mut g = graph();
     let hub = two_hop::build(&mut g, Layout::Ordered);
     let satellites = two_hop::satellites(&g, hub);
     bench_fn(|| black_box(two_hop::has_edges_many(&g, &satellites)))

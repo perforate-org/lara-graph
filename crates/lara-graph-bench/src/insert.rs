@@ -1,7 +1,7 @@
 //! Growing a graph: nodes one at a time or in a batch, a hub's edges one at a time, batched or
 //! bulk loaded, and small buckets changing form.
 
-use crate::{LABEL, directed, heap_graph, node, nodes, stable_graph};
+use crate::{LABEL, directed, graph, node, nodes};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use core::num::NonZeroU32;
@@ -10,7 +10,7 @@ use lara_graph::{EdgeKind, Graph, Memory, NewEdge, Placement};
 /// 1024 nodes added one at a time.
 #[bench(raw)]
 fn add_nodes_1024_loop() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     bench_fn(|| {
         for _ in 0..1024 {
             black_box(g.add_node().unwrap_or_else(|e| panic!("node: {e}")));
@@ -21,7 +21,7 @@ fn add_nodes_1024_loop() -> BenchResult {
 /// The same 1024 nodes through one `add_nodes`.
 #[bench(raw)]
 fn add_nodes_1024_batched() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     bench_fn(|| {
         black_box(
             g.add_nodes(NonZeroU32::new(1024).unwrap_or(NonZeroU32::MIN))
@@ -54,42 +54,27 @@ fn bulk_hub<M: Memory>(mut g: Graph<M>, degree: u32) -> BenchResult {
 
 #[bench(raw)]
 fn bulk_hub_4096() -> BenchResult {
-    bulk_hub(heap_graph(), 4096)
-}
-
-#[bench(raw)]
-fn bulk_hub_4096_stable() -> BenchResult {
-    bulk_hub(stable_graph(), 4096)
+    bulk_hub(graph(), 4096)
 }
 
 #[bench(raw)]
 fn bulk_hub_65536() -> BenchResult {
-    bulk_hub(heap_graph(), 65536)
-}
-
-#[bench(raw)]
-fn bulk_hub_65536_stable() -> BenchResult {
-    bulk_hub(stable_graph(), 65536)
+    bulk_hub(graph(), 65536)
 }
 
 #[bench(raw)]
 fn hub_insert_1024() -> BenchResult {
-    grow_hub(heap_graph(), 1024)
+    grow_hub(graph(), 1024)
 }
 
 #[bench(raw)]
 fn hub_insert_4096() -> BenchResult {
-    grow_hub(heap_graph(), 4096)
+    grow_hub(graph(), 4096)
 }
 
 #[bench(raw)]
 fn hub_insert_65536() -> BenchResult {
-    grow_hub(heap_graph(), 65536)
-}
-
-#[bench(raw)]
-fn hub_insert_4096_stable() -> BenchResult {
-    grow_hub(stable_graph(), 4096)
+    grow_hub(graph(), 65536)
 }
 
 fn grow_hub_batched(mut g: Graph<impl Memory>, degree: u32) -> BenchResult {
@@ -104,12 +89,7 @@ fn grow_hub_batched(mut g: Graph<impl Memory>, degree: u32) -> BenchResult {
 
 #[bench(raw)]
 fn hub_insert_4096_batched() -> BenchResult {
-    grow_hub_batched(heap_graph(), 4096)
-}
-
-#[bench(raw)]
-fn hub_insert_4096_batched_stable() -> BenchResult {
-    grow_hub_batched(stable_graph(), 4096)
+    grow_hub_batched(graph(), 4096)
 }
 
 fn grow_hub_undirected(mut g: Graph<impl Memory>, degree: u32) -> BenchResult {
@@ -133,12 +113,7 @@ fn grow_hub_undirected(mut g: Graph<impl Memory>, degree: u32) -> BenchResult {
 
 #[bench(raw)]
 fn hub_insert_undirected_4096() -> BenchResult {
-    grow_hub_undirected(heap_graph(), 4096)
-}
-
-#[bench(raw)]
-fn hub_insert_undirected_4096_stable() -> BenchResult {
-    grow_hub_undirected(stable_graph(), 4096)
+    grow_hub_undirected(graph(), 4096)
 }
 
 fn grow_hub_undirected_batched(mut g: Graph<impl Memory>, degree: u32) -> BenchResult {
@@ -153,18 +128,13 @@ fn grow_hub_undirected_batched(mut g: Graph<impl Memory>, degree: u32) -> BenchR
 
 #[bench(raw)]
 fn hub_insert_undirected_4096_batched() -> BenchResult {
-    grow_hub_undirected_batched(heap_graph(), 4096)
-}
-
-#[bench(raw)]
-fn hub_insert_undirected_4096_batched_stable() -> BenchResult {
-    grow_hub_undirected_batched(stable_graph(), 4096)
+    grow_hub_undirected_batched(graph(), 4096)
 }
 
 /// Parallel edges to a few targets: every insert also lands in a target's growing in bucket.
 #[bench(raw)]
 fn hub_insert_parallel_4096() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let hub = node(&mut g);
     let targets = nodes(&mut g, 8);
     bench_fn(|| {
@@ -188,12 +158,7 @@ fn grow_hub_parallel_batched(mut g: Graph<impl Memory>) -> BenchResult {
 
 #[bench(raw)]
 fn hub_insert_parallel_4096_batched() -> BenchResult {
-    grow_hub_parallel_batched(heap_graph())
-}
-
-#[bench(raw)]
-fn hub_insert_parallel_4096_batched_stable() -> BenchResult {
-    grow_hub_parallel_batched(stable_graph())
+    grow_hub_parallel_batched(graph())
 }
 
 #[derive(Clone, Copy)]
@@ -242,24 +207,19 @@ fn grow_hub_mixed(mut g: Graph<impl Memory>, degree: u32, mode: Mixed) -> BenchR
 
 #[bench(raw)]
 fn hub_insert_mixed_4096() -> BenchResult {
-    grow_hub_mixed(heap_graph(), 4096, Mixed::Loop)
+    grow_hub_mixed(graph(), 4096, Mixed::Loop)
 }
 
 #[bench(raw)]
 fn hub_insert_mixed_4096_batched() -> BenchResult {
-    grow_hub_mixed(heap_graph(), 4096, Mixed::Batch)
-}
-
-#[bench(raw)]
-fn hub_insert_mixed_4096_batched_stable() -> BenchResult {
-    grow_hub_mixed(stable_graph(), 4096, Mixed::Batch)
+    grow_hub_mixed(graph(), 4096, Mixed::Batch)
 }
 
 /// Inserts the `nth` (1-based) out-edge of each of 512 nodes, whose earlier edges are in
 /// place, to a fresh target each: the cost of a small bucket's growth. The third fills a tiny
 /// bucket's last inline slot; the fourth moves it to a run.
 fn grow_small(nth: u32) -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let sources = nodes(&mut g, 512);
     for _ in 1..nth {
         for &v in &sources {

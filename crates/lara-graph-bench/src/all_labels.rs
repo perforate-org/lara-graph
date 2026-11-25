@@ -2,18 +2,18 @@
 //! `edge_labels`, against `visit_all_neighbors`, one list walk a node, and its batched form.
 //! 1024 nodes with 8 labels of 4 out-edges each, or 1 label of 32.
 
-use crate::{heap_graph, nodes};
+use crate::{Bench, graph, nodes};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use core::ops::ControlFlow;
-use lara_graph::{Direction, Graph, Label, NewEdge, NodeId, Order, Placement, VecMemory};
+use lara_graph::{Direction, Label, NewEdge, NodeId, Order, Placement};
 
 const NODES: u32 = 1024;
 const EDGES_PER_NODE: u32 = 32;
 
 /// 1024 nodes, each with `EDGES_PER_NODE` out-edges spread over `labels` labels.
-fn build(labels: u16) -> (Graph<VecMemory>, Vec<NodeId>) {
-    let mut g = heap_graph();
+fn build(labels: u16) -> (Bench, Vec<NodeId>) {
+    let mut g = graph();
     let all = nodes(&mut g, NODES);
     for (i, &from) in all.iter().enumerate() {
         for k in 0..EDGES_PER_NODE {

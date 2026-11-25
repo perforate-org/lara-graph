@@ -2,17 +2,17 @@
 //! smaller end's bucket, read whole when it is small and through its target index when it is a
 //! hub's.
 
-use crate::{LABEL, directed, heap_graph, node, nodes};
+use crate::{Bench, LABEL, directed, graph, node, nodes};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use core::ops::ControlFlow;
-use lara_graph::{Direction, Graph, NodeId, Order, VecMemory};
+use lara_graph::{Direction, NodeId, Order};
 
 const OUT: (lara_graph::Label, Direction) = (LABEL, Direction::Outgoing);
 
 /// 1024 nodes with 8 edges each to the next 8: every bucket small.
-fn ring() -> (Graph<VecMemory>, Vec<NodeId>) {
-    let mut g = heap_graph();
+fn ring() -> (Bench, Vec<NodeId>) {
+    let mut g = graph();
     let all = nodes(&mut g, 1024);
     for (i, &a) in all.iter().enumerate() {
         for k in 1..=8 {
@@ -23,7 +23,7 @@ fn ring() -> (Graph<VecMemory>, Vec<NodeId>) {
     (g, all)
 }
 
-fn contains(g: &Graph<VecMemory>, u: NodeId, v: NodeId) -> bool {
+fn contains(g: &Bench, u: NodeId, v: NodeId) -> bool {
     g.contains_edge(u, (OUT.0, OUT.1), v)
         .unwrap_or_else(|e| panic!("contains: {e}"))
 }
@@ -58,7 +58,7 @@ fn contains_edge_absent_1024() -> BenchResult {
 /// From a hub of 1024 edges to each of its satellites: the satellite's tiny bucket is read.
 #[bench(raw)]
 fn contains_edge_hub_to_satellite_1024() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let hub = node(&mut g);
     let satellites = nodes(&mut g, 1024);
     for &s in &satellites {
@@ -84,7 +84,7 @@ fn edges_between_parallel_65536() -> BenchResult {
 /// sender's indexed bucket is the smaller end; its index lists the 256 edges' blocks.
 #[bench(raw)]
 fn edges_between_hubs_4096() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let (sender, sink) = (node(&mut g), node(&mut g));
     let others = nodes(&mut g, 4096);
     for (i, &o) in others.iter().enumerate() {
@@ -97,7 +97,7 @@ fn edges_between_hubs_4096() -> BenchResult {
     bench_fn(|| black_box(visit_all(&g, sender, sink)))
 }
 
-fn visit_all(g: &Graph<VecMemory>, u: NodeId, v: NodeId) -> u32 {
+fn visit_all(g: &Bench, u: NodeId, v: NodeId) -> u32 {
     let mut n = 0;
     g.visit_edges_between(u, (OUT.0, OUT.1), v, Order::Ascending, |_| {
         n += 1;

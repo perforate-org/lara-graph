@@ -2,18 +2,18 @@
 //! hub bucket and among parallel edges.
 
 use crate::{
-    LABEL, directed, first_halves, heap_graph, last, live_batched, live_each, node, nodes,
+    Bench, LABEL, directed, first_halves, graph, last, live_batched, live_each, node, nodes,
     seed_hub, seed_parallel,
 };
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
-use lara_graph::{Direction, EdgeRef, Graph, Halves, Position, ReadBatch, VecMemory};
+use lara_graph::{Direction, EdgeRef, Halves, Position, ReadBatch};
 
 /// Finds the out half of the hub's last edge from its in half at the leaf: a rank count over
 /// the leaf's bucket and a selection in the hub's.
 #[bench(raw)]
 fn counterpart_into_hub_4096() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let (_, edges) = seed_hub(&mut g, 4096);
     let last = last(&edges);
     bench_fn(|| black_box(g.counterpart(last.other())))
@@ -23,7 +23,7 @@ fn counterpart_into_hub_4096() -> BenchResult {
 /// hub bucket.
 #[bench(raw)]
 fn counterpart_from_hub_tail_4096() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let (_, edges) = seed_hub(&mut g, 4096);
     let last = last(&edges);
     bench_fn(|| black_box(g.counterpart(last.canonical())))
@@ -31,8 +31,8 @@ fn counterpart_from_hub_tail_4096() -> BenchResult {
 
 /// A hub of 65536 edges to 64 targets in turn: each target's 1024 parallel edges spread over
 /// every block of the hub's bucket, 512 postings in its index. Returns the last edge.
-pub(crate) fn parallel_hub() -> (Graph<VecMemory>, Halves) {
-    let mut g = heap_graph();
+pub(crate) fn parallel_hub() -> (Bench, Halves) {
+    let mut g = graph();
     let hub = node(&mut g);
     let targets = nodes(&mut g, 64);
     let edges: Vec<Halves> = targets
@@ -62,8 +62,8 @@ fn counterpart_parallel_from_target_65536() -> BenchResult {
 }
 
 /// A 65536-edge hub and the out halves at its first 1024 positions.
-fn hub_halves() -> (Graph<VecMemory>, Vec<EdgeRef>) {
-    let mut g = heap_graph();
+fn hub_halves() -> (Bench, Vec<EdgeRef>) {
+    let mut g = graph();
     let (hub, _) = seed_hub(&mut g, 65536);
     (g, first_halves(hub, 1024))
 }
@@ -71,7 +71,7 @@ fn hub_halves() -> (Graph<VecMemory>, Vec<EdgeRef>) {
 /// One edge lookup by handle in a paged hub bucket.
 #[bench(raw)]
 fn edge_lookup_65536() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let (hub, _) = seed_hub(&mut g, 65536);
     let half = EdgeRef::new(hub, LABEL, Direction::Outgoing, Position::new(40_000));
     bench_fn(|| black_box(g.edge_target(half)))
@@ -108,7 +108,7 @@ fn counterpart_1024_batched() -> BenchResult {
 /// 1024 counterparts of parallel edges, one call each.
 #[bench(raw)]
 fn counterpart_parallel_1024_loop() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let (_, halves) = seed_parallel(&mut g, 1024);
     bench_fn(|| black_box(live_each(&halves, |half| g.counterpart(half))))
 }
@@ -116,7 +116,7 @@ fn counterpart_parallel_1024_loop() -> BenchResult {
 /// The same 1024 counterparts through one `ReadBatch`, reusing both buckets.
 #[bench(raw)]
 fn counterpart_parallel_1024_batched() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let (_, halves) = seed_parallel(&mut g, 1024);
     bench_fn(|| black_box(live_batched(&g, &halves, ReadBatch::counterparts_each)))
 }

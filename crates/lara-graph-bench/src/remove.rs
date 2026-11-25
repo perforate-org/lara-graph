@@ -1,12 +1,11 @@
 //! Removing a hub's edges one at a time or batched, compacting what is left, and refilling the
 //! holes.
 
-use crate::{LABEL, directed, heap_graph, nodes, seed_hub, seed_parallel, stable_graph};
+use crate::{Bench, LABEL, directed, graph, nodes, seed_hub, seed_parallel};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use lara_graph::{
     Direction, EdgeRef, Graph, Halves, Memory, NewEdge, NodeId, Placement, Progress, Removal,
-    VecMemory,
 };
 
 fn remove_hub_edges<M: Memory>(mut g: Graph<M>, degree: u32) -> (Graph<M>, Vec<EdgeRef>) {
@@ -32,7 +31,7 @@ fn remove_all<M: Memory>(g: &mut Graph<M>, halves: &[EdgeRef]) -> Vec<Removal> {
 }
 
 /// Compacts `hub`'s out bucket until done.
-fn compact_fully(g: &mut Graph<VecMemory>, hub: NodeId) {
+fn compact_fully(g: &mut Bench, hub: NodeId) {
     while g
         .compact(hub, (LABEL, Direction::Outgoing))
         .unwrap_or_else(|e| panic!("compact: {e}"))
@@ -42,27 +41,27 @@ fn compact_fully(g: &mut Graph<VecMemory>, hub: NodeId) {
 }
 
 #[bench(raw)]
-fn hub_remove_edges_4096_batched_stable() -> BenchResult {
-    let (mut g, halves) = remove_hub_edges(stable_graph(), 4096);
+fn hub_remove_edges_4096_batched() -> BenchResult {
+    let (mut g, halves) = remove_hub_edges(graph(), 4096);
     bench_fn(|| black_box(remove_all(&mut g, &halves)))
 }
 
 #[bench(raw)]
-fn hub_remove_edges_4096_loop_stable() -> BenchResult {
-    let (mut g, halves) = remove_hub_edges(stable_graph(), 4096);
+fn hub_remove_edges_4096_loop() -> BenchResult {
+    let (mut g, halves) = remove_hub_edges(graph(), 4096);
     bench_fn(|| remove_each(&mut g, &halves))
 }
 
 #[bench(raw)]
 fn hub_remove_edges_parallel_4096_loop() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let (_, halves) = seed_parallel(&mut g, 4096);
     bench_fn(|| remove_each(&mut g, &halves))
 }
 
 #[bench(raw)]
 fn hub_remove_edges_parallel_4096_batched() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let (_, halves) = seed_parallel(&mut g, 4096);
     bench_fn(|| black_box(remove_all(&mut g, &halves)))
 }
@@ -70,7 +69,7 @@ fn hub_remove_edges_parallel_4096_batched() -> BenchResult {
 /// Removes every other edge of a hub by handle, then compacts it until done (ic-stable-lara
 /// `bench_labeled_stage2_hub_delete_half_by_slot_then_compact_<degree>`).
 fn remove_half_then_compact(degree: u32) -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let (hub, edges) = seed_hub(&mut g, degree);
     bench_fn(|| {
         {
@@ -100,7 +99,7 @@ fn hub_remove_half_compact_65536() -> BenchResult {
 /// The same removal and compaction through `remove_edges` for the removal half.
 #[bench(raw)]
 fn hub_remove_half_compact_65536_batched() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let (hub, edges) = seed_hub(&mut g, 65536);
     let halves: Vec<EdgeRef> = edges.iter().step_by(2).map(Halves::canonical).collect();
     bench_fn(|| {
@@ -123,8 +122,8 @@ enum Refill {
 /// A hub of `degree` edges with every other one removed, and the targets that refill its holes
 /// (Gleaph's `Unordered`): fresh leaves, which take the holes from the front, or a second edge
 /// to each remaining leaf, which takes the first hole after that leaf's edge.
-fn holed_hub(degree: u32, to: Refill) -> (Graph<VecMemory>, NodeId, Vec<NodeId>) {
-    let mut g = heap_graph();
+fn holed_hub(degree: u32, to: Refill) -> (Bench, NodeId, Vec<NodeId>) {
+    let mut g = graph();
     let (hub, edges) = seed_hub(&mut g, degree);
     for halves in edges.iter().step_by(2) {
         black_box(
@@ -192,7 +191,7 @@ fn hub_refill_holes_parallel_65536() -> BenchResult {
 /// and the hub's half leaves it.
 #[bench(raw)]
 fn hub_remove_one_65536() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let (_, edges) = seed_hub(&mut g, 65536);
     let middle = edges
         .get(30_000)

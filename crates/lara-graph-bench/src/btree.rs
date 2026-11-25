@@ -11,11 +11,10 @@
 //! fresh leaves, one label, scans repeated 51 times. Targets are distinct here, so the key needs
 //! no duplicate tie-breaker; a multigraph needs four more bytes for a half id.
 //!
-//! Heap benches use [`VectorMemory`], the same `Rc<RefCell<Vec<u8>>>` backend as the lara-graph
-//! `VecMemory`, and `lara_vector_*` runs the same workload through lara-graph on that backend.
-//! `*_stable` benches use `MemoryManager<DefaultMemoryImpl>`; on wasm32 `DefaultMemoryImpl` is
-//! `Ic0StableMemory`, the canister's real stable memory. The `lara_stable_*` benches are the same
-//! workload through lara-graph on five such virtual memories.
+//! The map lives in a `MemoryManager` virtual memory over `DefaultMemoryImpl` (on wasm32 the
+//! canister's stable memory), as lara-graph's benches do. Its lara-graph counterparts:
+//! `btree_visit_*` against `hub_visit_*`, `btree_scan_*` against `hub_scan_*`, `btree_insert_*`
+//! against `hub_insert_*` and `btree_two_hop` against `two_hop_ordered`.
 
 use alloc::borrow::Cow;
 use alloc::vec::Vec;
@@ -23,11 +22,11 @@ use alloc::vec::Vec;
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use ic_stable_structures::{
-    DefaultMemoryImpl, StableBTreeMap, Storable, VectorMemory,
+    DefaultMemoryImpl, StableBTreeMap, Storable,
     memory_manager::{MemoryId, MemoryManager, VirtualMemory},
     storable::Bound,
 };
-use lara_graph::{Graph, Memories, NodeId};
+use lara_graph::NodeId;
 
 use crate::two_hop::{FANOUT, SATELLITES};
 
@@ -191,11 +190,6 @@ fn two_hop<M: ic_stable_structures::Memory>(memory: M) -> BenchResult {
     })
 }
 
-/// A lara-graph over the same `VectorMemory` backend as the B-tree heap benches.
-fn vector_graph() -> Graph<VectorMemory> {
-    Graph::new(Memories::from_fn(|_| VectorMemory::default()))
-}
-
 /// A `MemoryManager` virtual memory, as a canister wires one.
 fn stable_memory() -> VirtualMemory<DefaultMemoryImpl> {
     let manager = MemoryManager::init(DefaultMemoryImpl::default());
@@ -204,139 +198,48 @@ fn stable_memory() -> VirtualMemory<DefaultMemoryImpl> {
 
 #[bench(raw)]
 fn btree_visit_1024() -> BenchResult {
-    visit(VectorMemory::default(), 1024)
-}
-
-#[bench(raw)]
-fn btree_visit_65536() -> BenchResult {
-    visit(VectorMemory::default(), 65536)
-}
-
-#[bench(raw)]
-fn btree_scan_1024() -> BenchResult {
-    scan(VectorMemory::default(), 1024)
-}
-
-#[bench(raw)]
-fn btree_scan_65536() -> BenchResult {
-    scan(VectorMemory::default(), 65536)
-}
-
-#[bench(raw)]
-fn btree_insert_1024() -> BenchResult {
-    insert(VectorMemory::default(), 1024)
-}
-
-#[bench(raw)]
-fn btree_insert_4096() -> BenchResult {
-    insert(VectorMemory::default(), 4096)
-}
-
-#[bench(raw)]
-fn btree_insert_65536() -> BenchResult {
-    insert(VectorMemory::default(), 65536)
-}
-
-#[bench(raw)]
-fn btree_two_hop() -> BenchResult {
-    two_hop(VectorMemory::default())
-}
-
-#[bench(raw)]
-fn btree_visit_1024_stable() -> BenchResult {
     visit(stable_memory(), 1024)
 }
 
 #[bench(raw)]
-fn btree_visit_65536_stable() -> BenchResult {
+fn btree_visit_65536() -> BenchResult {
     visit(stable_memory(), 65536)
 }
 
 #[bench(raw)]
-fn btree_scan_1024_stable() -> BenchResult {
+fn btree_scan_1024() -> BenchResult {
     scan(stable_memory(), 1024)
 }
 
 #[bench(raw)]
-fn btree_scan_65536_stable() -> BenchResult {
+fn btree_scan_65536() -> BenchResult {
     scan(stable_memory(), 65536)
 }
 
 #[bench(raw)]
-fn btree_insert_1024_stable() -> BenchResult {
+fn btree_insert_1024() -> BenchResult {
     insert(stable_memory(), 1024)
 }
 
 #[bench(raw)]
-fn btree_insert_4096_stable() -> BenchResult {
+fn btree_insert_4096() -> BenchResult {
     insert(stable_memory(), 4096)
 }
 
 #[bench(raw)]
-fn btree_insert_65536_stable() -> BenchResult {
+fn btree_insert_65536() -> BenchResult {
     insert(stable_memory(), 65536)
 }
 
 #[bench(raw)]
-fn btree_two_hop_stable() -> BenchResult {
+fn btree_two_hop() -> BenchResult {
     two_hop(stable_memory())
-}
-
-#[bench(raw)]
-fn lara_vector_visit_1024() -> BenchResult {
-    crate::scan::visit_hub(vector_graph(), 1024)
-}
-
-#[bench(raw)]
-fn lara_vector_visit_65536() -> BenchResult {
-    crate::scan::visit_hub(vector_graph(), 65536)
-}
-
-#[bench(raw)]
-fn lara_vector_scan_1024() -> BenchResult {
-    crate::scan::scan_hub(vector_graph(), 1024)
-}
-
-#[bench(raw)]
-fn lara_vector_scan_65536() -> BenchResult {
-    crate::scan::scan_hub(vector_graph(), 65536)
-}
-
-#[bench(raw)]
-fn lara_vector_two_hop() -> BenchResult {
-    let mut graph = vector_graph();
-    let hub = crate::two_hop::build(&mut graph, crate::two_hop::Layout::Ordered);
-    bench_fn(|| black_box(crate::two_hop::visit(&graph, hub)))
-}
-
-#[bench(raw)]
-fn lara_stable_visit_1024() -> BenchResult {
-    crate::scan::visit_hub(crate::stable_graph(), 1024)
-}
-
-#[bench(raw)]
-fn lara_stable_visit_65536() -> BenchResult {
-    crate::scan::visit_hub(crate::stable_graph(), 65536)
-}
-
-#[bench(raw)]
-fn lara_stable_scan_65536() -> BenchResult {
-    crate::scan::scan_hub(crate::stable_graph(), 65536)
-}
-
-#[bench(raw)]
-fn lara_stable_insert_1024() -> BenchResult {
-    crate::insert::grow_hub(crate::stable_graph(), 1024)
-}
-
-#[bench(raw)]
-fn lara_stable_insert_65536() -> BenchResult {
-    crate::insert::grow_hub(crate::stable_graph(), 65536)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ic_stable_structures::VectorMemory;
 
     #[test]
     fn scans_only_the_hub_out() {

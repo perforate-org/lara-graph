@@ -1,7 +1,7 @@
 //! Node labels: a far node's label checked during an expansion, as `(a)-[]->(b:L)` does for
 //! every neighbour, one node at a time.
 
-use crate::{LABEL, directed, heap_graph, node, nodes, stable_graph};
+use crate::{LABEL, directed, graph, node, nodes};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use core::ops::ControlFlow;
@@ -32,26 +32,18 @@ fn check_each<M: Memory>(g: &Graph<M>, all: &[NodeId]) -> u32 {
     hits
 }
 
-/// 1024 label checks on nodes with one label, in heap memory.
+/// 1024 label checks on nodes with one label.
 #[bench(raw)]
 fn has_node_label_1024() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let all = labelled(&mut g, 1024, 1);
     bench_fn(|| black_box(check_each(&g, &all)))
 }
 
-/// The same in virtual stable memory, as Gleaph's `label_checks` runs.
+/// The 1024 checks of `has_node_label_1024` as one batch: eight cells read at once.
 #[bench(raw)]
-fn has_node_label_1024_stable() -> BenchResult {
-    let mut g = stable_graph();
-    let all = labelled(&mut g, 1024, 1);
-    bench_fn(|| black_box(check_each(&g, &all)))
-}
-
-/// The 1024 checks of `has_node_label_1024_stable` as one batch: eight cells read at once.
-#[bench(raw)]
-fn has_node_label_1024_batched_stable() -> BenchResult {
-    let mut g = stable_graph();
+fn has_node_label_1024_batched() -> BenchResult {
+    let mut g = graph();
     let all = labelled(&mut g, 1024, 1);
     bench_fn(|| {
         let mut has = Vec::new();
@@ -64,8 +56,8 @@ fn has_node_label_1024_batched_stable() -> BenchResult {
 
 /// 1024 label checks on nodes with eight labels each: a binary search of a spilled set.
 #[bench(raw)]
-fn has_node_label_spilled_1024_stable() -> BenchResult {
-    let mut g = stable_graph();
+fn has_node_label_spilled_1024() -> BenchResult {
+    let mut g = graph();
     let all = labelled(&mut g, 1024, 8);
     bench_fn(|| black_box(check_each(&g, &all)))
 }
@@ -73,8 +65,8 @@ fn has_node_label_spilled_1024_stable() -> BenchResult {
 /// An expansion from a hub of 1024 edges keeping the neighbours with a label:
 /// `(hub)-[]->(b:L)`.
 #[bench(raw)]
-fn expand_label_filter_1024_stable() -> BenchResult {
-    let mut g = stable_graph();
+fn expand_label_filter_1024() -> BenchResult {
+    let mut g = graph();
     let hub = node(&mut g);
     let all = labelled(&mut g, 1024, 1);
     for &x in &all {
@@ -97,8 +89,8 @@ fn expand_label_filter_1024_stable() -> BenchResult {
 
 /// Labels 1024 nodes with one label each, in stable memory.
 #[bench(raw)]
-fn set_node_labels_1024_stable() -> BenchResult {
-    let mut g = stable_graph();
+fn set_node_labels_1024() -> BenchResult {
+    let mut g = graph();
     let all = nodes(&mut g, 1024);
     bench_fn(|| {
         for &x in &all {
@@ -110,8 +102,8 @@ fn set_node_labels_1024_stable() -> BenchResult {
 
 /// Labels 1024 nodes with eight labels each: a spilled set per node.
 #[bench(raw)]
-fn set_node_labels_spilled_1024_stable() -> BenchResult {
-    let mut g = stable_graph();
+fn set_node_labels_spilled_1024() -> BenchResult {
+    let mut g = graph();
     let all = nodes(&mut g, 1024);
     let labels: Vec<Label> = (0..8).map(Label::new).collect();
     bench_fn(|| {
@@ -143,16 +135,16 @@ fn scan(g: &Graph<impl Memory>, label: Label) -> u32 {
 
 /// The nodes of a label 16 of 10,000 nodes have, in stable memory: Gleaph's rare-label scan.
 #[bench(raw)]
-fn nodes_with_label_rare_10k_stable() -> BenchResult {
-    let mut g = stable_graph();
+fn nodes_with_label_rare_10k() -> BenchResult {
+    let mut g = graph();
     scan_fixture(&mut g, 16);
     bench_fn(|| black_box(scan(&g, Label::new(1))))
 }
 
 /// The nodes of a label 9,984 of 10,000 nodes have: Gleaph's common-label scan.
 #[bench(raw)]
-fn nodes_with_label_common_10k_stable() -> BenchResult {
-    let mut g = stable_graph();
+fn nodes_with_label_common_10k() -> BenchResult {
+    let mut g = graph();
     scan_fixture(&mut g, 16);
     bench_fn(|| black_box(scan(&g, Label::new(0))))
 }

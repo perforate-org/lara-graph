@@ -3,13 +3,11 @@
 //! window is built, and again after it has turned over once, with holes refilled and optionally
 //! a bucket compacted once its holes reach its live edges (see `examples/churn.rs` for space).
 
-use crate::{LABEL, heap_graph, nodes};
+use crate::{Bench, LABEL, graph, nodes};
 use alloc::collections::VecDeque;
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::ops::ControlFlow;
-use lara_graph::{
-    Direction, Graph, NewEdge, NodeId, Order, Placement, Progress, Removal, VecMemory,
-};
+use lara_graph::{Direction, NewEdge, NodeId, Order, Placement, Progress, Removal};
 
 const NODES: u32 = 8192;
 /// Live edges: degree 8.
@@ -43,7 +41,7 @@ impl Rng {
 }
 
 struct Window {
-    graph: Graph<VecMemory>,
+    graph: Bench,
     nodes: Vec<NodeId>,
     live: VecDeque<(NodeId, NodeId)>,
     rng: Rng,
@@ -52,7 +50,7 @@ struct Window {
 
 impl Window {
     fn new(compaction: Compaction) -> Self {
-        let mut graph = heap_graph();
+        let mut graph = graph();
         let nodes = nodes(&mut graph, NODES);
         let mut window = Self {
             graph,

@@ -1,4 +1,6 @@
 //! Instruction counts of lara-graph operations on the Internet Computer, measured with canbench.
+//! Every bench runs on the memory a canister gives a graph: seven virtual memories of a
+//! `MemoryManager` over `DefaultMemoryImpl` (stable memory on wasm32), through [`graph`].
 //!
 //! Scenarios mirror ic-stable-lara's `canbench_results.yml` where one exists, so the two can be
 //! compared. Every edge here is stored at both ends, as Gleaph needs; ic-stable-lara's
@@ -11,7 +13,7 @@ use ic_stable_structures::DefaultMemoryImpl;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use lara_graph::{
     Direction, EdgeRef, Error, Graph, Halves, Label, Memories, Memory, NewEdge, NodeId, Placement,
-    Position, ReadBatch, VecMemory,
+    Position, ReadBatch,
 };
 
 mod all_labels;
@@ -32,14 +34,11 @@ mod values;
 
 const LABEL: Label = Label::new(2);
 
-/// A graph in six heap memories.
-#[must_use]
-pub fn heap_graph() -> Graph<VecMemory> {
-    Graph::new(Memories::from_fn(|_| VecMemory::new()))
-}
+/// The graph every bench measures.
+type Bench = Graph<VirtualMemory<DefaultMemoryImpl>>;
 
 /// A graph in seven virtual stable memories (ids 0..7), as a canister wires it.
-fn stable_graph() -> Graph<VirtualMemory<DefaultMemoryImpl>> {
+fn graph() -> Bench {
     let manager = MemoryManager::init(DefaultMemoryImpl::default());
     Graph::init(Memories::from_fn(|role| {
         manager.get(MemoryId::new(role.index()))

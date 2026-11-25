@@ -4,7 +4,7 @@
 //! the cost of the whole search. A breadth-first search over the same grid, without values,
 //! separates that read from the queue's work.
 
-use crate::{LABEL, heap_graph, nodes, stable_graph};
+use crate::{LABEL, graph, nodes};
 use alloc::collections::{BinaryHeap, VecDeque};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::cmp::Reverse;
@@ -119,18 +119,10 @@ fn first(all: &[NodeId]) -> NodeId {
     all.first().copied().unwrap_or_else(|| panic!("empty grid"))
 }
 
-/// Dijkstra over the grid in heap memory, from a corner: 1024 nodes settled, 3968 edges read.
+/// Dijkstra over the grid, from a corner: 1024 nodes settled, 3968 edges read.
 #[bench(raw)]
 fn shortest_paths_grid_1024() -> BenchResult {
-    let mut g = heap_graph();
-    let all = grid(&mut g);
-    bench_fn(|| black_box(dijkstra(&g, &all, first(&all))))
-}
-
-/// The same in virtual stable memory.
-#[bench(raw)]
-fn shortest_paths_grid_1024_stable() -> BenchResult {
-    let mut g = stable_graph();
+    let mut g = graph();
     let all = grid(&mut g);
     bench_fn(|| black_box(dijkstra(&g, &all, first(&all))))
 }
@@ -138,7 +130,7 @@ fn shortest_paths_grid_1024_stable() -> BenchResult {
 /// Breadth-first search over the same grid, without values or a priority queue.
 #[bench(raw)]
 fn bfs_grid_1024() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let all = grid(&mut g);
     bench_fn(|| black_box(bfs(&g, &all, first(&all))))
 }

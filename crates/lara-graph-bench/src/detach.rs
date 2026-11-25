@@ -1,11 +1,11 @@
 //! Detaching nodes: a hub whole or in steps, a satellite of a hub, and many of a hub's
 //! neighbours one by one or after a sweep of the bucket they share.
 
-use crate::{LABEL, directed, heap_graph, node, nodes, seed_hub, seed_parallel};
+use crate::{Bench, LABEL, directed, graph, node, nodes, seed_hub, seed_parallel};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use core::num::NonZeroU32;
-use lara_graph::{DetachingSet, Direction, Graph, Memory, NodeId, Position, Progress, VecMemory};
+use lara_graph::{DetachingSet, Direction, Graph, Memory, NodeId, Position, Progress};
 
 fn budget(n: u32) -> NonZeroU32 {
     NonZeroU32::new(n).unwrap_or(NonZeroU32::MIN)
@@ -24,7 +24,7 @@ fn detach_rest<M: Memory>(g: &mut Graph<M>, v: NodeId, step: u32) {
 /// A hub with 1024 parallel edges to one target: every step re-enters the same opposite bucket.
 #[bench(raw)]
 fn detach_parallel_1024() -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let (hub, _) = seed_parallel(&mut g, 1024);
     bench_fn(|| {
         g.detach(hub).unwrap_or_else(|e| panic!("detach: {e}"));
@@ -38,7 +38,7 @@ fn detach_parallel_1024() -> BenchResult {
 /// Detaches a hub of `degree` leaves in steps of `step` edges (ic-stable-lara
 /// `bench_l_s2_det_hub_<degree>` and its stepped variant).
 fn detach_hub(degree: u32, step: u32) -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let (hub, _) = seed_hub(&mut g, degree);
     bench_fn(|| {
         g.detach(hub).unwrap_or_else(|e| panic!("detach: {e}"));
@@ -69,7 +69,7 @@ fn detach_hub_65536() -> BenchResult {
 /// Detaches a satellite whose one edge is the last into a hub of in-degree `degree`: the other
 /// half is found by scanning the hub's in bucket (ic-stable-lara `bench_l_s2_det_sat_<degree>`).
 fn detach_satellite(degree: u32) -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let hub = node(&mut g);
     for source in nodes(&mut g, degree) {
         directed(&mut g, source, hub);
@@ -109,7 +109,7 @@ enum Detaching {
 
 /// Detaches `n` of a hub's 65536 in-neighbours, spread evenly.
 fn detach_many(n: u32, how: Detaching) -> BenchResult {
-    let mut g = heap_graph();
+    let mut g = graph();
     let hub = node(&mut g);
     let sources = nodes(&mut g, 65536);
     for &s in &sources {
@@ -134,7 +134,7 @@ fn detach_many(n: u32, how: Detaching) -> BenchResult {
 }
 
 /// Sweeps the hub's in-bucket of edges from `detaching`, to its end.
-fn sweep_all(g: &mut Graph<VecMemory>, hub: NodeId, detaching: &DetachingSet) {
+fn sweep_all(g: &mut Bench, hub: NodeId, detaching: &DetachingSet) {
     let mut from = Some(Position::new(0));
     while let Some(at) = from {
         let sweep = g
