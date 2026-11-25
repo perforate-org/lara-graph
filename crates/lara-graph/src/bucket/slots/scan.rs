@@ -54,6 +54,59 @@ impl Span {
     }
 }
 
+/// The position of the live edge `skip` live edges precede in `d`, counted in `order`: where a
+/// read that skips the first `skip` edges starts; `None` when `d` has no more. A paged bucket skips
+/// whole pages by the live counts its page index keeps, reading only the page it lands in.
+pub(crate) fn nth_live<M: Memory>(
+    d: &Descriptor,
+    view: &Pages<'_, M>,
+    order: Order,
+    skip: u32,
+) -> Option<Position> {
+    let span = match d {
+        Descriptor::Paged(paged) => page_of_nth(view, paged, order, skip)?,
+        Descriptor::Tiny(_) | Descriptor::Run(_) => (Span::all(d, order), skip),
+    };
+    let (span, mut left) = span;
+    visit(d, view, span, Window::Page, |e| {
+        if left == 0 {
+            ControlFlow::Break(e.position())
+        } else {
+            left -= 1;
+            ControlFlow::Continue(())
+        }
+    })
+}
+
+/// The data page holding the live edge `skip` live edges precede, in `order`, as the span of its
+/// positions and how many of its live edges come first.
+fn page_of_nth<M: Memory>(
+    view: &Pages<'_, M>,
+    paged: &Paged,
+    order: Order,
+    mut skip: u32,
+) -> Option<(Span, u32)> {
+    let numbers = 0..paged::data_pages(paged.stored);
+    let found = paged::visit_leaves(view, paged, (numbers, order), |number, leaf| {
+        let low = number * PAGE_SLOTS;
+        let high = (low + PAGE_SLOTS).min(paged.stored);
+        let live = match leaf.page {
+            Some(_) => (high - low).saturating_sub(u32::from(leaf.tombstones)),
+            None => 0,
+        };
+        if skip < live {
+            ControlFlow::Break((Span::new(low, high, order), skip))
+        } else {
+            skip -= live;
+            ControlFlow::Continue(())
+        }
+    });
+    match found {
+        ControlFlow::Break(found) => Some(found),
+        ControlFlow::Continue(()) => None,
+    }
+}
+
 /// Calls `f` with each live edge in `span`, in its order, until it breaks. Reads the descriptor
 /// and page data only, skipping pages that are all tombstones.
 pub(crate) fn visit<M: Memory, B>(

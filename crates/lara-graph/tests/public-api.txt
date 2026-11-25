@@ -94,6 +94,7 @@ pub fn lara_graph::DetachingSet::iter(&self) -> impl core::iter::traits::iterato
 pub struct lara_graph::EdgeRef
 impl lara_graph::EdgeRef
 pub const fn lara_graph::EdgeRef::direction(&self) -> lara_graph::Direction
+pub const fn lara_graph::EdgeRef::is_canonical(&self, lara_graph::NodeId) -> bool
 pub const fn lara_graph::EdgeRef::label(&self) -> lara_graph::Label
 pub const fn lara_graph::EdgeRef::new(lara_graph::NodeId, lara_graph::Label, lara_graph::Direction, lara_graph::Position) -> Self
 pub const fn lara_graph::EdgeRef::node(&self) -> lara_graph::NodeId
@@ -128,6 +129,7 @@ pub fn lara_graph::Graph<M>::degree(&self, lara_graph::NodeId, (lara_graph::Labe
 pub fn lara_graph::Graph<M>::edge_target(&self, lara_graph::EdgeRef) -> core::result::Result<core::option::Option<lara_graph::NodeId>, lara_graph::Error>
 pub fn lara_graph::Graph<M>::holes(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction)) -> core::result::Result<u32, lara_graph::Error>
 pub fn lara_graph::Graph<M>::neighbors(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), &mut alloc::vec::Vec<lara_graph::Neighbor>) -> core::result::Result<(), lara_graph::Error>
+pub fn lara_graph::Graph<M>::nth_position(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction), lara_graph::Order, u32) -> core::result::Result<core::option::Option<lara_graph::Position>, lara_graph::Error>
 impl<M: lara_graph::Memory> lara_graph::Graph<M>
 pub fn lara_graph::Graph<M>::detach(&mut self, lara_graph::NodeId) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::Graph<M>::detach_many(&mut self, &[lara_graph::NodeId]) -> core::result::Result<(), lara_graph::BatchError>
@@ -188,6 +190,7 @@ pub type lara_graph::Memories<M>::Item = (lara_graph::MemoryRole, M)
 pub fn lara_graph::Memories<M>::into_iter(self) -> Self::IntoIter
 pub struct lara_graph::Move
 impl lara_graph::Move
+pub const fn lara_graph::Move::edge_refs(&self, lara_graph::NodeId, (lara_graph::Label, lara_graph::Direction)) -> (lara_graph::EdgeRef, lara_graph::EdgeRef)
 pub const fn lara_graph::Move::from(&self) -> lara_graph::Position
 pub const fn lara_graph::Move::target(&self) -> lara_graph::NodeId
 pub const fn lara_graph::Move::to(&self) -> lara_graph::Position
@@ -226,6 +229,9 @@ impl<M: lara_graph::Memory> lara_graph::ReadBatch<'_, M>
 pub fn lara_graph::ReadBatch<'_, M>::counterparts_each(&mut self, &[lara_graph::EdgeRef], &mut alloc::vec::Vec<core::option::Option<lara_graph::EdgeRef>>) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::ReadBatch<'_, M>::edge_targets_each(&mut self, &[lara_graph::EdgeRef], &mut alloc::vec::Vec<core::option::Option<lara_graph::NodeId>>) -> core::result::Result<(), lara_graph::Error>
 pub fn lara_graph::ReadBatch<'_, M>::edge_values_each(&mut self, &[lara_graph::EdgeRef], &mut alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>) -> core::result::Result<(), lara_graph::Error>
+impl<M: lara_graph::Memory> lara_graph::ReadBatch<'_, M>
+pub fn lara_graph::ReadBatch<'_, M>::has_node_label_each(&mut self, &[lara_graph::NodeId], lara_graph::Label, &mut alloc::vec::Vec<bool>) -> core::result::Result<(), lara_graph::Error>
+pub fn lara_graph::ReadBatch<'_, M>::node_labels_each<B>(&mut self, &[lara_graph::NodeId], impl core::ops::function::FnMut(lara_graph::NodeId, lara_graph::Label) -> core::ops::control_flow::ControlFlow<B>) -> core::result::Result<core::option::Option<B>, lara_graph::Error>
 pub struct lara_graph::RemovedEdge
 impl lara_graph::RemovedEdge
 pub const fn lara_graph::RemovedEdge::halves(&self) -> lara_graph::Halves

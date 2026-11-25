@@ -2,6 +2,7 @@
 
 mod buffers;
 mod halves;
+mod node_labels;
 mod view;
 
 use crate::bucket::LabelBucket;
@@ -14,6 +15,7 @@ use crate::graph::locate::Found;
 use crate::graph::locate::LastBucket;
 use crate::id::{Direction, Label, Neighbor, NodeId, NodeState, Position};
 use crate::input::Order;
+use crate::node::labels::CellLines;
 use crate::node::store::RecordLines;
 use crate::store::memory::Memory;
 use alloc::vec::Vec;
@@ -27,6 +29,7 @@ use view::BatchView;
 pub struct ReadBatch<'g, M: Memory> {
     graph: &'g Graph<M>,
     records: RecordLines,
+    label_cells: CellLines,
     list_page: ListPageCache,
     last_bucket: LastBucket<Option<Descriptor>>,
     last_found: LastBucket<Option<Found>>,
@@ -38,6 +41,7 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         Self {
             graph,
             records: RecordLines::default(),
+            label_cells: CellLines::default(),
             list_page: ListPageCache::new(),
             last_bucket: LastBucket::default(),
             last_found: LastBucket::default(),

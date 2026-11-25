@@ -90,6 +90,12 @@ impl<M: Memory> LabelStore<M> {
         Ok(())
     }
 
+    /// The eight cells from node `base` on, when the memory covers them all.
+    fn line(&self, base: u32) -> Option<[u8; LINE_BYTES]> {
+        (self.room.saturating_sub(base) >= LINE_CELLS)
+            .then(|| Region::new(&self.memory).read_array(cell_at(base)))
+    }
+
     /// `v`'s label cell. `v` is covered.
     pub(crate) fn cell(&self, v: NodeId) -> LabelSet {
         LabelSet::decode(Region::new(&self.memory).read_array::<CELL_BYTES>(cell_at(v.index())))
@@ -181,6 +187,48 @@ fn room<M: Memory>(memory: &M) -> u32 {
     let bytes = memory.size().saturating_mul(PAGE_SIZE);
     let cell = u64::try_from(CELL_BYTES).unwrap_or(5);
     u32::try_from(bytes.saturating_sub(CELLS_START) / cell).unwrap_or(u32::MAX)
+}
+
+/// Cells a batch reads at once: 40 bytes for eight dense ids.
+const LINE_CELLS: u32 = 8;
+const LINE_BYTES: usize = CELL_BYTES * 8;
+
+/// A batch read's line of label cells. Local to one call, so no invalidation is needed.
+pub(crate) struct CellLines {
+    base: u32,
+    bytes: [u8; LINE_BYTES],
+}
+
+impl Default for CellLines {
+    fn default() -> Self {
+        Self {
+            base: u32::MAX,
+            bytes: [0; LINE_BYTES],
+        }
+    }
+}
+
+impl CellLines {
+    /// `v`'s cell, reading one 40-byte line per eight dense ids. `v` is covered.
+    #[inline]
+    pub(crate) fn cell<M: Memory>(&mut self, store: &LabelStore<M>, v: NodeId) -> LabelSet {
+        let base = v.index() / LINE_CELLS * LINE_CELLS;
+        if base != self.base {
+            // A line the memory does not cover whole takes the single-cell path.
+            let Some(line) = store.line(base) else {
+                return store.cell(v);
+            };
+            self.bytes = line;
+            self.base = base;
+        }
+        let at = usize::try_from(v.index() - base).unwrap_or(0) * CELL_BYTES;
+        let cell = self
+            .bytes
+            .get(at..at + CELL_BYTES)
+            .and_then(|b| b.try_into().ok())
+            .unwrap_or_else(|| crate::store::corrupt::corrupt("label cell line"));
+        LabelSet::decode(cell)
+    }
 }
 
 /// Where node `index`'s cell starts, and so where the cells before it end.

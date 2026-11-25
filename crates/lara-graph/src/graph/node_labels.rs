@@ -2,6 +2,8 @@
 
 use super::{Error, Graph};
 use crate::id::{Label, NodeId, NodeState};
+use crate::node::labels::CellLines;
+use crate::node::labels::set::LabelSet;
 use crate::store::memory::Memory;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
@@ -33,9 +35,7 @@ impl<M: Memory> Graph<M> {
     pub fn node_labels(&self, v: NodeId, out: &mut Vec<Label>) -> Result<(), Error> {
         self.check(v)?;
         out.clear();
-        self.labels
-            .cell(v)
-            .extend_into(&self.label_bucket_lists.pages(), out);
+        self.extend_labels(self.labels.cell(v), out);
         Ok(())
     }
 
@@ -46,10 +46,7 @@ impl<M: Memory> Graph<M> {
     /// [`Error::UnknownNode`].
     pub fn has_node_label(&self, v: NodeId, label: Label) -> Result<bool, Error> {
         self.check(v)?;
-        Ok(self
-            .labels
-            .cell(v)
-            .contains(&self.label_bucket_lists.pages(), label))
+        Ok(self.set_has(self.labels.cell(v), label))
     }
 
     /// Calls `f` with each node that has `label`, in ascending id order, starting after `after`
@@ -64,7 +61,7 @@ impl<M: Memory> Graph<M> {
         let from = after.map_or(0, |v| v.index().saturating_add(1));
         self.labels.visit(
             &self.label_bucket_lists.pages(),
-            (label, from, self.node_count()),
+            (label, from, self.nodes.count()),
             &mut f,
         )
     }
@@ -78,5 +75,25 @@ impl<M: Memory> Graph<M> {
     /// Drops `v`'s labels and postings as it is deleted. Cannot fail: removals never allocate.
     pub(super) fn clear_node_labels(&mut self, v: NodeId) {
         self.labels.clear(&mut self.label_bucket_lists, v);
+    }
+
+    /// `v`'s label cell, through a batch's line of cells. `v` is known.
+    pub(in crate::graph) fn label_cell_in(&self, lines: &mut CellLines, v: NodeId) -> LabelSet {
+        lines.cell(&self.labels, v)
+    }
+
+    /// `v`'s label cell. `v` is known.
+    pub(in crate::graph) fn label_cell(&self, v: NodeId) -> LabelSet {
+        self.labels.cell(v)
+    }
+
+    /// Whether the set `cell` holds `label`.
+    pub(in crate::graph) fn set_has(&self, cell: LabelSet, label: Label) -> bool {
+        cell.contains(&self.label_bucket_lists.pages(), label)
+    }
+
+    /// Appends the labels of the set `cell`, ascending, to `out`.
+    pub(in crate::graph) fn extend_labels(&self, cell: LabelSet, out: &mut Vec<Label>) {
+        cell.extend_into(&self.label_bucket_lists.pages(), out);
     }
 }

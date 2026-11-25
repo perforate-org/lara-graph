@@ -146,6 +146,27 @@ impl<M: Memory> Graph<M> {
 }
 
 impl<M: Memory> Graph<M> {
+    /// The position of the live edge that `skip` live edges precede in `v`'s `(label,
+    /// direction)` bucket, counted in `order`: where a read that skips the first `skip` edges
+    /// starts, as [`Self::visit_window`] reads on from it. `None` when the bucket has no more.
+    /// A large bucket skips whole pages by the live counts its page index keeps, so the cost
+    /// follows the pages, not `skip`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`].
+    pub fn nth_position(
+        &self,
+        v: NodeId,
+        (label, direction): (Label, Direction),
+        order: Order,
+        skip: u32,
+    ) -> Result<Option<Position>, Error> {
+        Ok(self
+            .bucket(v, LabelBucketKey { label, direction })?
+            .and_then(|d| slots::nth_live(&d, &self.edge_view().pages(), order, skip)))
+    }
+
     /// Number of live edges in `v`'s `(label, direction)` bucket.
     ///
     /// # Errors

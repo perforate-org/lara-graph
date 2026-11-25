@@ -28,7 +28,7 @@ mod scan;
 
 use grow::{cells_len, paged_append, run_append, tiny_to_run};
 pub(crate) use positions::read_positions;
-pub(crate) use scan::{Span, Window, find, find_in, read, visit, visit_beside};
+pub(crate) use scan::{Span, Window, find, find_in, nth_live, read, visit, visit_beside};
 
 /// Pages one [`insert`] can take from the store. The worst case is a paged bucket whose index
 /// deepens: a data page, a new top and the fresh nodes on the path below it (two at most, as

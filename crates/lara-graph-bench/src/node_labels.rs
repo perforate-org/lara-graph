@@ -48,6 +48,20 @@ fn has_node_label_1024_stable() -> BenchResult {
     bench_fn(|| black_box(check_each(&g, &all)))
 }
 
+/// The 1024 checks of `has_node_label_1024_stable` as one batch: eight cells read at once.
+#[bench(raw)]
+fn has_node_label_1024_batched_stable() -> BenchResult {
+    let mut g = stable_graph();
+    let all = labelled(&mut g, 1024, 1);
+    bench_fn(|| {
+        let mut has = Vec::new();
+        g.read_batch()
+            .has_node_label_each(&all, Label::new(0), &mut has)
+            .unwrap_or_else(|e| panic!("labels: {e}"));
+        black_box(has.iter().filter(|&&h| h).count())
+    })
+}
+
 /// 1024 label checks on nodes with eight labels each: a binary search of a spilled set.
 #[bench(raw)]
 fn has_node_label_spilled_1024_stable() -> BenchResult {

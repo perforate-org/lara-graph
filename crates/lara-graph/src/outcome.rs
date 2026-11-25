@@ -3,7 +3,7 @@
 
 #[cfg(doc)]
 use crate::graph::Graph;
-use crate::id::{Halves, NodeId, Position};
+use crate::id::{Direction, EdgeRef, Halves, Label, NodeId, Position};
 use alloc::vec::Vec;
 
 /// An edge that compaction moved to a new position.
@@ -35,6 +35,21 @@ impl Move {
     #[must_use]
     pub const fn target(&self) -> NodeId {
         self.target
+    }
+
+    /// The moved half before and after the move, in `node`'s `(label, direction)` bucket: the
+    /// bucket [`Graph::compact`] was given. [`EdgeRef::is_canonical`] with [`Self::target`] tells
+    /// whether keys held for the edge move with it.
+    #[must_use]
+    pub const fn edge_refs(
+        &self,
+        node: NodeId,
+        (label, direction): (Label, Direction),
+    ) -> (EdgeRef, EdgeRef) {
+        (
+            EdgeRef::new(node, label, direction, self.from),
+            EdgeRef::new(node, label, direction, self.to),
+        )
     }
 }
 

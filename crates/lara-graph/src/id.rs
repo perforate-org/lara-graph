@@ -237,6 +237,18 @@ impl EdgeRef {
     pub const fn position(&self) -> Position {
         self.position
     }
+
+    /// Whether this is its edge's canonical half (see [`Halves`]), `other_end` being the node at
+    /// the edge's other end: the out half of a directed edge, or the undirected half at the larger
+    /// node.
+    #[must_use]
+    pub const fn is_canonical(&self, other_end: NodeId) -> bool {
+        match self.direction {
+            Direction::Outgoing => true,
+            Direction::Incoming => false,
+            Direction::Undirected => self.node.index() >= other_end.index(),
+        }
+    }
 }
 
 /// The halves of one edge, the canonical one first: where a caller keys what belongs to the
@@ -260,12 +272,7 @@ pub enum Halves {
 impl Halves {
     /// An edge's halves from any half and its counterpart.
     pub(crate) fn of(half: EdgeRef, other: EdgeRef) -> Self {
-        let half_first = match half.direction() {
-            Direction::Outgoing => true,
-            Direction::Incoming => false,
-            Direction::Undirected => half.node() >= other.node(),
-        };
-        if half_first {
+        if half.is_canonical(other.node()) {
             Self::new(half, other)
         } else {
             Self::new(other, half)

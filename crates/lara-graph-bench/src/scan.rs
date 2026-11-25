@@ -104,3 +104,38 @@ fn hub_scan_1024_stable() -> BenchResult {
 fn hub_scan_65536() -> BenchResult {
     scan_hub(heap_graph(), 65536)
 }
+
+/// GQL `OFFSET 60000` over a hub of 65536 edges: where the 60,001st edge is, from the page index's
+/// live counts, against counting edges up to it.
+#[bench(raw)]
+fn offset_60000_of_hub_65536_stable() -> BenchResult {
+    let mut g = stable_graph();
+    let (hub, _) = seed_hub(&mut g, 65536);
+    bench_fn(|| {
+        black_box(
+            g.nth_position(hub, (LABEL, Direction::Outgoing), Order::Ascending, 60_000)
+                .unwrap_or_else(|e| panic!("offset: {e}")),
+        )
+    })
+}
+
+/// The same `OFFSET 60000`, counting edges through `visit_neighbors`.
+#[bench(raw)]
+fn offset_60000_of_hub_65536_counted_stable() -> BenchResult {
+    let mut g = stable_graph();
+    let (hub, _) = seed_hub(&mut g, 65536);
+    bench_fn(|| {
+        let mut left = 60_000u32;
+        black_box(
+            g.visit_neighbors(hub, (LABEL, Direction::Outgoing), Order::Ascending, |e| {
+                if left == 0 {
+                    ControlFlow::Break(e.position())
+                } else {
+                    left -= 1;
+                    ControlFlow::Continue(())
+                }
+            })
+            .unwrap_or_else(|e| panic!("offset: {e}")),
+        )
+    })
+}

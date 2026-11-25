@@ -221,3 +221,60 @@ fn node_labels_that_run_out_of_memory_change_nothing() {
     }
     check(&g);
 }
+
+/// A batch reads each node's labels, and whether it has one, as single reads do: for dense runs
+/// of ids (read eight cells at a time), sparse ids, the last partial line, and sets of any size.
+#[test]
+fn batched_label_reads_agree_with_single_reads() {
+    let backing = Backing::default();
+    let mut g = backing.create(37);
+    for i in 0..37u32 {
+        let raw: Vec<u16> = (0..i % 5 * 3)
+            .map(|k| u16::try_from(k * 7 + i).unwrap())
+            .collect();
+        g.set_node_labels(v(i), &set(&raw)).unwrap();
+    }
+    let dense: Vec<NodeId> = (0..37).map(v).collect();
+    let sparse: Vec<NodeId> = [36, 3, 17, 0, 29, 36].map(v).to_vec();
+    for nodes in [dense, sparse] {
+        let mut batch = g.read_batch();
+        let mut listed = Vec::new();
+        assert_eq!(
+            batch.node_labels_each(&nodes, |x, label| {
+                listed.push((x.index(), label.get()));
+                ControlFlow::<()>::Continue(())
+            }),
+            Ok(None)
+        );
+        let single: Vec<(u32, u16)> = nodes
+            .iter()
+            .flat_map(|&x| {
+                labels_of(&g, x)
+                    .into_iter()
+                    .map(move |label| (x.index(), label))
+            })
+            .collect();
+        assert_eq!(listed, single);
+        for label in [0, 7, 14, 21, 1000] {
+            let mut has = Vec::new();
+            batch
+                .has_node_label_each(&nodes, l(label), &mut has)
+                .unwrap();
+            let single: Vec<bool> = nodes
+                .iter()
+                .map(|&x| g.has_node_label(x, l(label)).unwrap())
+                .collect();
+            assert_eq!(has, single, "label {label}");
+        }
+    }
+    let mut batch = g.read_batch();
+    let mut has = Vec::new();
+    assert_eq!(
+        batch.has_node_label_each(&[v(0), v(99)], l(0), &mut has),
+        Err(Error::UnknownNode(v(99)))
+    );
+    assert_eq!(
+        batch.node_labels_each(&[v(1), v(1)], |_, _| ControlFlow::Break(7)),
+        Ok(Some(7))
+    );
+}

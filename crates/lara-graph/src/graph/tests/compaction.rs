@@ -137,3 +137,53 @@ fn a_dead_last_page_is_kept_for_inserts() {
     );
     check(&g);
 }
+
+/// A move names the moved half before and after, and whether it is canonical agrees with the
+/// halves the graph reports, for directed buckets on both sides and undirected ones either way.
+#[test]
+fn moves_name_their_halves_and_whether_they_are_canonical() {
+    let backing = Backing::default();
+    let mut g = backing.create(4);
+    // Node 1 has out edges to 0, in edges from 3, and undirected edges to 0 (smaller) and 3.
+    for _ in 0..8 {
+        insert(&mut g, v(1), l(0), v(0));
+        insert(&mut g, v(3), l(0), v(1));
+        for other in [0, 3] {
+            g.add_edge(NewEdge::undirected(
+                v(1),
+                l(1),
+                v(other),
+                Placement::Append,
+                &[],
+            ))
+            .unwrap();
+        }
+    }
+    for key in [
+        (l(0), Direction::Outgoing),
+        (l(0), Direction::Incoming),
+        (l(1), Direction::Undirected),
+    ] {
+        for at in [0, 2, 4] {
+            let half = EdgeRef::new(v(1), key.0, key.1, p(at));
+            g.remove_edge(half).unwrap();
+        }
+        let moves = g.compact(v(1), key).unwrap();
+        assert_ne!(moves.changes(), &[]);
+        for m in moves.changes() {
+            let (before, after) = m.edge_refs(v(1), key);
+            assert_eq!((before.position(), after.position()), (m.from(), m.to()));
+            let other = g.counterpart(after).unwrap().unwrap();
+            assert_eq!(other.node(), m.target());
+            // Out halves are canonical, in halves not; an undirected half is at node 1, canonical
+            // against node 0 and not against node 3.
+            let expected = match key.1 {
+                Direction::Outgoing => true,
+                Direction::Incoming => false,
+                Direction::Undirected => m.target() == v(0),
+            };
+            assert_eq!(after.is_canonical(m.target()), expected);
+        }
+    }
+    check(&g);
+}

@@ -7,6 +7,8 @@ use crate::bucket::stored::Stored;
 use crate::graph::Graph;
 use crate::id::NodeId;
 use crate::node::label_bucket_list::{self, LabelBucketList, Listed};
+use crate::node::labels::CellLines;
+use crate::node::labels::set::LabelSet;
 use crate::node::record::Record;
 use crate::node::store::RecordLines;
 use crate::store::corrupt::corrupt;
@@ -181,5 +183,19 @@ pub(super) fn for_each_list<M: Memory, B>(
     match mode {
         Mode::Dense => list_page.for_each(view, list, f),
         Mode::Sparse => view.walk(list, f),
+    }
+}
+
+/// `v`'s label cell, through the batch's line in `Dense` mode.
+#[inline]
+pub(super) fn label_cell<M: Memory>(
+    graph: &Graph<M>,
+    lines: &mut CellLines,
+    v: NodeId,
+    mode: Mode,
+) -> LabelSet {
+    match mode {
+        Mode::Dense => graph.label_cell_in(lines, v),
+        Mode::Sparse => graph.label_cell(v),
     }
 }

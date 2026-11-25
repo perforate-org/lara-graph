@@ -108,3 +108,52 @@ fn positional_reads_see_holes_released_pages_and_the_end() {
         .unwrap();
     assert_eq!(out, [None; 5]);
 }
+
+/// The position after skipping any number of live edges agrees with the live edges listed in
+/// order, in tiny, run and paged buckets with holes, whole dead pages included, both ways.
+#[test]
+fn nth_position_skips_live_edges_in_order() {
+    let backing = Backing::default();
+    let mut g = backing.create(2);
+    let key = (l(0), Direction::Outgoing);
+    let check_all = |g: &Graph<VecMemory>| {
+        let live = edges(g, v(0), l(0));
+        for order in [Order::Ascending, Order::Descending] {
+            let listed: Vec<u32> = match order {
+                Order::Ascending => live.iter().map(|&(at, _)| at).collect(),
+                Order::Descending => live.iter().rev().map(|&(at, _)| at).collect(),
+            };
+            for skip in 0..=u32::try_from(listed.len()).unwrap() + 1 {
+                let expected = listed.get(usize::try_from(skip).unwrap()).copied().map(p);
+                assert_eq!(
+                    g.nth_position(v(0), key, order, skip),
+                    Ok(expected),
+                    "{order:?} {skip}"
+                );
+            }
+        }
+    };
+    for count in [1u32, 3, 900, 3000] {
+        while edges(&g, v(0), l(0)).len() < usize::try_from(count).unwrap() {
+            insert(&mut g, v(0), l(0), v(1));
+        }
+        check_all(&g);
+    }
+    // Holes everywhere, then a whole dead page.
+    for at in (0..3000).step_by(7) {
+        remove(&mut g, v(0), l(0), p(at));
+    }
+    check_all(&g);
+    for at in 1024..2048 {
+        remove(&mut g, v(0), l(0), p(at));
+    }
+    check_all(&g);
+    // Compaction releases the dead page and leaves its index entry hollow.
+    g.compact(v(0), key).unwrap();
+    assert!(matches!(
+        out_bucket(&g, v(0), l(0)),
+        Some(Descriptor::Paged(_))
+    ));
+    check_all(&g);
+    assert_eq!(g.nth_position(v(1), key, Order::Ascending, 0), Ok(None));
+}
