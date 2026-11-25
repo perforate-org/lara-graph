@@ -42,7 +42,7 @@ mod outcome;
 mod store;
 
 pub use error::{BatchError, Error, InitError};
-pub use graph::{DetachingSet, Graph, Memories, MemoryRole, ReadBatch};
+pub use graph::{DetachingSet, Graph, Graph as StableGraph, Memories, MemoryRole, ReadBatch};
 pub use id::{Direction, EdgeRef, Halves, Label, Neighbor, NodeId, NodeState, Position, Width};
 pub use input::{Cursor, EdgeKind, EdgeValue, NewEdge, Order, Placement};
 
