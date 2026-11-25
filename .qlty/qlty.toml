@@ -2,16 +2,8 @@
 # cargo directly (`just gate`). The gate fails on any finding, so these thresholds are the rule.
 config_version = "0"
 
-# Only the crates are gated; the rest is paper, experiments and generated output.
-exclude_patterns = [
-  "**/target/**",
-  "dgap/**",
-  "experiments/**",
-  "charged-ieee/**",
-  "paper/**",
-  "docs/**",
-  "plans/**",
-]
+# Only the crates are gated, not generated output.
+exclude_patterns = ["**/target/**"]
 
 # Integration tests; unit tests inside `src` are analyzed like the code they test.
 test_patterns = ["crates/*/tests/**"]

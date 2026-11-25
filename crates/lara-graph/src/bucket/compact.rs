@@ -24,7 +24,9 @@ use crate::store::memory::{Memory, WriteError};
 use crate::store::page_store::{Extent, PageId, PageStore};
 use alloc::vec::Vec;
 
-/// Paged buckets with this many live edges or fewer are packed back into a run.
+/// Paged buckets with this many live edges or fewer are packed back into a run. Half a page below
+/// the point where a run becomes paged, so a bucket near the line does not change form back and
+/// forth.
 pub(crate) const DEMOTE_AT: u32 = PAGE_SLOTS / 2;
 
 /// What a step leaves.

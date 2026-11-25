@@ -6,11 +6,17 @@
 //!    a label bucket list read and one data read. A read cannot consult allocation metadata.
 //! 2. **Bounded update cost.** An insert or removal copies at most one run below a page or one
 //!    page of index entries; a full one-page run becomes the first data page without copying.
+//!    Every update finishes within its call: there is no deferred maintenance. Work a caller may
+//!    spread out (compaction, detaching a node) is offered as bounded steps it calls.
 //! 3. Supporting mechanisms: a few edges live inline in the descriptor, edges keep stable
 //!    positions (removal leaves a hole), and freed pages serve any use.
 //!
 //! Every piece of state lives behind the memory seam, so a graph can be reopened. Behaviour is
 //! carried by types rather than by raw integers or flags.
+//!
+//! The code is the specification: each module documents its persistent layout and the reasons
+//! for its choices, `tests/public-api.txt` pins the public surface, and
+//! `crates/lara-graph-bench/canbench_results.yml` holds the measured costs.
 //!
 //! The crate is `no_std` + `alloc`.
 

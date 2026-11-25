@@ -11,7 +11,9 @@ mod patch;
 
 pub(super) use patch::{Lowered, Patched, lower, lower_one, raise};
 
-/// Postings a segment is cut to when it is rebuilt.
+/// Postings a segment is cut to when it is rebuilt. Against 16, the index takes 16 % fewer pages
+/// for distinct targets and 8 % fewer for random ones, for a removal from the leaf's side 7 %
+/// dearer; 32 saved 17 % more space but made pairing and detaching a satellite 16-23 % dearer.
 const SEGMENT_TARGET: usize = 24;
 /// Postings a segment may grow to before it is cut.
 const SEGMENT_MAX: usize = 2 * SEGMENT_TARGET;

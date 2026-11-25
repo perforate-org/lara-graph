@@ -45,7 +45,9 @@ use core::num::NonZeroU32;
 
 /// Bytes per descriptor.
 pub(crate) const DESCRIPTOR_BYTES: usize = 13;
-/// Slots stored inline in a tiny descriptor.
+/// Slots stored inline in a tiny descriptor. Most of a sparse graph's buckets hold one to three
+/// edges, so per-bucket descriptors dominate its memory: a bucket's fourth edge moves it to a run
+/// once (about 3.5K instructions), while more inline slots would widen every descriptor.
 pub(crate) const TINY_SLOTS: usize = 3;
 /// Slots in a page, and in the largest run.
 pub(crate) const PAGE_SLOTS: u32 = 1024;

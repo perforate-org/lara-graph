@@ -17,8 +17,8 @@ const VERSION: u8 = 1;
 
 /// A multigraph with dense node ids and labeled edges, directed or undirected.
 ///
-/// Every edge is stored at both ends (see [`EdgeRef`]), so traversal runs either way. Each
-/// `(node, label, direction)` has a bucket addressed by [`Position`]. Positions are stable:
+/// Every edge is stored at both ends (see [`EdgeRef`](crate::id::EdgeRef)), so traversal runs either way. Each
+/// `(node, label, direction)` has a bucket addressed by [`Position`](crate::id::Position). Positions are stable:
 /// removing an edge leaves a hole that a later insert may fill, and only [`Graph::compact`] moves
 /// edges.
 ///

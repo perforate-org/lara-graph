@@ -71,12 +71,6 @@ filtering neighbours by a label during a traversal stays cheap. `visit_nodes_wit
 a label's nodes in ascending id order, resuming after any node and stopping when the callback
 breaks, and `node_label_count` their number. A deleted node loses its labels.
 
-| Operation | Instructions in stable memory (canbench) |
-| --- | --- |
-| `has_node_label`, a node with one label | about 270 |
-| `visit_nodes_with_label`, 16 of 10,000 nodes | about 2.1 K in all |
-| `set_node_labels`, one label on a new node | about 3.8 K |
-
 ## Batch operations
 
 Single operations return `Result<_, Error>` and are all-or-none. Batch operations take a slice
@@ -93,8 +87,7 @@ was changed.
 For an empty graph with nodes and widths already declared, `bulk_load` builds every bucket and
 its target index in one pass. Within a bucket, positions follow input order; the `placement` of
 each `NewEdge` is ignored because there are no holes yet. It returns `Error::NotEmpty` if the
-graph already holds edges. On the stable-memory hub benchmark, bulk load is about 51 % cheaper
-than `add_edges`.
+graph already holds edges. It is much cheaper than `add_edges` for the same edges.
 
 `BatchError::Unchanged` means no element was applied. `BatchError::PartiallyApplied` means the
 elements before `index` were applied; only `add_edges` can return it. A canister can turn a partial batch into an all-or-none
@@ -126,15 +119,19 @@ Each memory starts, as ic-stable-structures' do, with a 3-byte magic and a versi
 | `LabelBucketListPages`, `LabelBucketListDirectory` | each node's label bucket list, the width table, larger node label sets and each label's nodes |
 | `NodeLabels` | one 5-byte label cell per node, and the root of the label postings |
 
-The byte layouts are drawn in the modules' documentation. The design and its measurements are in
-[`crates/lara-graph/DESIGN.md`](crates/lara-graph/DESIGN.md).
+## Where things are written down
+
+The code is the one source of truth. Each module's documentation (`cargo doc
+--document-private-items`) draws its persistent layout and gives the reasons for its choices;
+`crates/lara-graph/tests/public-api.txt` pins the public API; the measured instruction counts
+of every operation are in
+[`crates/lara-graph-bench/canbench_results.yml`](crates/lara-graph-bench/canbench_results.yml).
 
 ## Repository
 
 ```text
 crates/lara-graph/        the crate
 crates/lara-graph-bench/  canbench instruction counts on the IC
-docs/                     design notes and measurements
 ```
 
 The original lara-graph, which ported DGAP's PMA to relocatable spans, is kept under the tag

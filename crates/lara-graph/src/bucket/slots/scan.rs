@@ -19,7 +19,8 @@ use core::ops::ControlFlow;
 pub(crate) enum Window {
     /// A whole run or data page: for scans that read everything.
     Page,
-    /// 32 slots, then 128 at a time: for searches that usually stop early, often at once.
+    /// 32 slots, then 128 at a time: for searches that usually stop early, often at once. A first
+    /// read of 16 made a block scan take two reads.
     Short,
 }
 
@@ -203,7 +204,7 @@ pub(crate) fn find_in<M: Memory>(
     mut wanted: impl FnMut(Neighbor) -> bool,
 ) -> Option<Neighbor> {
     // Its own loop rather than `visit`: the two compile to different code, and each is the
-    // faster one for its use on the IC (`docs/ic-measurements-2026-11-22.md`).
+    // faster one for its use on the IC (measured with canbench).
     let span = Span::new(low, high.min(d.stored()), Order::Ascending);
     scan(d, view, span, Window::Short.slots(), |first, bytes| {
         for (at, slot) in (first..).zip(Slot::decode_all(bytes)) {

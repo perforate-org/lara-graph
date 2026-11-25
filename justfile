@@ -3,13 +3,17 @@
 crate := "lara-graph"
 
 # Every gate; CI and pre-commit run this.
-gate: fmt clippy test smells
+gate: fmt clippy test doc smells
 
 fmt:
     cargo fmt -p {{crate}} --check
 
 clippy:
     cargo clippy -p {{crate}} --all-targets --all-features -- -D warnings
+
+# The modules' documentation is the specification: every link in it must resolve.
+doc:
+    RUSTDOCFLAGS="-D warnings" cargo doc -p {{crate}} --all-features --document-private-items --no-deps
 
 # Includes the public API snapshot (`tests/public_api.rs`).
 test:

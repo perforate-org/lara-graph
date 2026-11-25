@@ -16,6 +16,11 @@
 //! Allocation fails only when a memory cannot grow, and grows before changing anything. Release
 //! never fails.
 //!
+//! Chosen over a TLSF span allocator with boundary tags (32 bytes per span) and over PMA leaves:
+//! per-bucket runs are mostly 8-16 slots, and counted with their metadata the page store used the
+//! least memory of the three, with fewer memory calls and the same copying. The TLSF allocator is
+//! in the history under the tag `lara-graph-legacy`.
+//!
 //! # Directory memory
 //!
 //! ```text

@@ -11,6 +11,10 @@
 //! target with millions of parallel edges. Changes come in batches applied within reserved memory;
 //! a counting pass tells how much a large batch needs (`tree`). A removal's single decrement is
 //! written in place and needs none.
+//!
+//! Chosen over a hash table, a per-target directory and a compact hash, which were prototyped and
+//! measured: on the IC each message pays a base fee, so their instruction savings were small, and
+//! only the tree keeps every operation's cost bounded the same way whatever the targets look like.
 
 mod bits;
 mod leaf;
@@ -27,7 +31,9 @@ pub(crate) use tree::{
 #[cfg(test)]
 pub(crate) use tree::{count_before, postings, select, zeros_per_segment};
 
-/// Positions per block.
+/// Positions per block. Against 64, inserts cost 2-10 % less and the index takes 6 % fewer pages
+/// for distinct targets (49 % for parallel edges), while pairing through a hub costs 15 % more
+/// (about 2.6K instructions); 256 made that 40 %.
 pub(crate) const BLOCK: u32 = 128;
 
 /// Pages one edge's change to an index can take: a split per level and a new root, or building

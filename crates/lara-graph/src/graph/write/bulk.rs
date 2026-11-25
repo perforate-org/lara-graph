@@ -25,7 +25,7 @@ impl<M: Memory> Graph<M> {
     /// Builds the graph from `edges` in one pass. The graph must have its nodes and width
     /// declarations already, and no edges; otherwise this returns [`Error::NotEmpty`].
     ///
-    /// Within a bucket, edges get positions in input order, like [`Placement::Append`]. The
+    /// Within a bucket, edges get positions in input order, like [`Placement::Append`](crate::input::Placement::Append). The
     /// `placement` of each [`NewEdge`] is ignored because there are no holes to reuse.
     ///
     /// # Errors

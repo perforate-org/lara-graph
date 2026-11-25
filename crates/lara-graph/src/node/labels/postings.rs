@@ -2,7 +2,7 @@
 //!
 //! Node ids are cut into chunks of 65,536 (their high 16 bits). Each label keeps a table of its
 //! chunks, and each chunk a container of the low 16 bits of its members: a sorted list of up to
-//! [`MAX_LISTED`] in one extent, or a bitmap of the whole chunk in two pages. Both tables are value
+//! [`MAX_LISTED`](super::set::MAX_LISTED) in one extent, or a bitmap of the whole chunk in two pages. Both tables are value
 //! planes (`values`): a label's chunk table is a plane of chunk cells, and the directory is a plane
 //! of label cells whose root the node labels memory's header holds. A missing cell reads as zeros,
 //! which is an empty chunk or a label nobody has.

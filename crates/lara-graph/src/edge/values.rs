@@ -45,7 +45,7 @@ impl<M: Memory> EdgeStore<M> {
 
     /// `bucket`, which has no values, ready for values of `width`, all zero: a small bucket as a
     /// run with them beside its slots, others (never tiny) with an empty value plane, which
-    /// [`Self::publish`] gives a header. Within reserved memory.
+    /// `Graph::publish` gives a header. Within reserved memory.
     pub(super) fn with_values(&mut self, bucket: LabelBucket, width: Width) -> LabelBucket {
         let small = match bucket.slots {
             Descriptor::Tiny(_) => true,

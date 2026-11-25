@@ -7,7 +7,7 @@ use crate::store::memory::Memory;
 use crate::store::page_store::{PageId, Pages};
 
 /// Calls `f` with each block where `target` has a unit of count, ascending. One descent per leaf
-/// its postings touch, each read once: listing a target's blocks with [`nth`] instead would
+/// its postings touch, each read once: listing a target's blocks with [`nth`](super::lookup::nth) instead would
 /// descend and walk again for every block.
 pub(crate) fn visit_blocks<M: Memory>(
     view: &Pages<'_, M>,

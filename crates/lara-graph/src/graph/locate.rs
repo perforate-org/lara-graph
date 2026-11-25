@@ -152,7 +152,7 @@ impl<M: Memory> Graph<M> {
         Ok(self.pair_from(half, own))
     }
 
-    /// [`pair`] with `half`'s own bucket already found.
+    /// [`Self::pair`] with `half`'s own bucket already found.
     pub(in crate::graph) fn pair_from(&self, half: EdgeRef, own: Found) -> Option<Pair> {
         let view = self.edge_view().pages();
         let other = slots::get(&own.bucket.slots, half.position(), &view)?;

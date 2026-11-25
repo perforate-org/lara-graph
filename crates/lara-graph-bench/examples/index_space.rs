@@ -1,6 +1,6 @@
 //! Space of a hub target index, measured on synthetic hubs before building it.
 //!
-//! The index under study (docs/target-index-design-2026-11-22.md) is a counted B+ tree of
+//! The index under study is a counted B+ tree of
 //! `(target, block, count)` postings: `count` live edges to `target` among the `block`-th run of
 //! `B` positions. Leaves are 4096-byte pages of delta-coded postings; internal nodes hold a
 //! separator, a child page and a subtree count per child.
