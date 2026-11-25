@@ -115,7 +115,7 @@ mod read;
 mod write;
 
 pub use memories::{Memories, MemoryRole};
-pub use read::ReadBatch;
+pub use read::{ReadBatch, TargetSet};
 pub use write::DetachingSet;
 
 #[cfg(test)]

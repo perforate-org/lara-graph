@@ -121,3 +121,57 @@ fn common_targets_of_many_match_the_intersection_of_all() {
         assert_eq!(got, model, "nodes {group:?}");
     }
 }
+
+#[test]
+fn a_target_set_intersects_with_every_bucket_and_stays_as_it_was() {
+    let backing = Backing::default();
+    let g = graph(&backing);
+    // Hubs (bitmaps, and probed when the other side is small), small nodes whose few targets
+    // spread wide (hash tables), and a node with no bucket.
+    for a in [0, 1, 2, 3, 7, 40, 41, 81, 399] {
+        let mut set = g.target_set(v(a), (LABEL, Direction::Outgoing)).unwrap();
+        let ours: BTreeSet<u32> = sorted_model(&g, a).into_iter().collect();
+        assert_eq!(set.len(), ours.len(), "node {a}");
+        assert!(ours.iter().all(|&t| set.contains(v(t))), "node {a}");
+        let mut out = vec![v(5)];
+        for b in 0..NODES {
+            let theirs: BTreeSet<u32> = sorted_model(&g, b).into_iter().collect();
+            let model: Vec<u32> = ours.intersection(&theirs).copied().collect();
+            g.common_with(&mut set, v(b), (LABEL, Direction::Outgoing), &mut out)
+                .unwrap();
+            let got: Vec<u32> = out.iter().map(|t| t.index()).collect();
+            assert_eq!(got, model, "nodes {a} and {b}");
+        }
+        assert_eq!(set.len(), ours.len(), "node {a}: the set is unchanged");
+        assert!(
+            g.common_with(&mut set, v(NODES), (LABEL, Direction::Outgoing), &mut out)
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn target_sets_hold_proxies_with_local_nodes() {
+    let backing = Backing::default();
+    let mut g = backing.create(4);
+    let proxy = g.add_proxy().unwrap();
+    for from in [0, 1] {
+        for to in [v(2), proxy, v(3), proxy] {
+            insert(&mut g, v(from), LABEL, to);
+        }
+    }
+    insert(&mut g, v(2), LABEL, proxy);
+    let mut set = g.target_set(v(0), (LABEL, Direction::Outgoing)).unwrap();
+    assert_eq!(set.len(), 3);
+    assert!(set.contains(proxy) && !set.contains(v(1)));
+    let mut out = Vec::new();
+    g.common_with(&mut set, v(1), (LABEL, Direction::Outgoing), &mut out)
+        .unwrap();
+    assert_eq!(out, [v(2), v(3), proxy]);
+    g.common_with(&mut set, v(2), (LABEL, Direction::Outgoing), &mut out)
+        .unwrap();
+    assert_eq!(out, [proxy]);
+    g.common_targets_of(&[v(0), v(1), v(2)], (LABEL, Direction::Outgoing), &mut out)
+        .unwrap();
+    assert_eq!(out, [proxy]);
+}

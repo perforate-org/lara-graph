@@ -1,7 +1,8 @@
-//! Sorted views and shared targets (`sorted_targets`, `common_targets`) by bucket size: a run of
-//! up to a page is read and sorted in the heap, a paged hub walks its target index. Each sorted
-//! read has an unsorted one beside it, collecting the same targets in position order, so the
-//! difference is the cost of the order.
+//! Sorted views and shared targets (`sorted_targets`, `common_targets`, `target_set` with
+//! `common_with`) by bucket size: a bucket is read and sorted in the heap. Each sorted read has an
+//! unsorted one beside it, collecting the same targets in position order, so the difference is
+//! the cost of the order; intersections with many nodes are measured a pair at a time and with
+//! one set reused.
 
 use crate::{LABEL, directed, heap_graph, node, nodes};
 use canbench_rs::{BenchResult, bench, bench_fn};
@@ -144,7 +145,7 @@ fn sorted_1024() -> BenchResult {
     sorted(1024)
 }
 
-/// Paged: the indexed blocks come from the target index in order.
+/// Paged: read whole and sorted like a run.
 #[bench(raw)]
 fn unsorted_4096() -> BenchResult {
     unsorted(4096)
@@ -185,7 +186,7 @@ fn common_1024() -> BenchResult {
     common(1024, 1024)
 }
 
-/// Two hubs: both target indexes walked and merged.
+/// Two hubs, both read whole: the first as a bitmap, the second looked up in it.
 #[bench(raw)]
 fn common_4096_4096() -> BenchResult {
     common(4096, 4096)
@@ -202,7 +203,7 @@ fn common_65536_256() -> BenchResult {
     common(65536, 256)
 }
 
-/// Past the lookup ratio: the hub is walked whole and merged.
+/// Past the lookup ratio: the hub is read whole and looked up in the small one's bitmap.
 #[bench(raw)]
 fn common_65536_1024() -> BenchResult {
     common(65536, 1024)
@@ -229,4 +230,121 @@ fn common3_1024() -> BenchResult {
 #[bench(raw)]
 fn common3_65536_1024_64() -> BenchResult {
     common_of(&[65536, 1024, 64])
+}
+
+/// `nodes` nodes of `degree` edges each to random nodes among them.
+fn random_graph(nodes_n: u32, degree: u32) -> (Graph<VecMemory>, Vec<NodeId>) {
+    let mut g = heap_graph();
+    let pool = nodes(&mut g, nodes_n);
+    let mut rng = Rng(0x5851_F42D_4C95_7F2D);
+    for &from in &pool {
+        for _ in 0..degree {
+            let to = rng.pick(&pool);
+            black_box(directed(&mut g, from, to));
+        }
+    }
+    (g, pool)
+}
+
+/// How a node is intersected with many others.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pairing {
+    /// A `common_targets` per pair.
+    Pairs,
+    /// One `target_set`, intersected with each through `common_with`.
+    Reused,
+}
+
+/// Lists the triangles of a random graph: for each edge `u -> w`, the targets `u` and `w` share.
+fn triangles(nodes_n: u32, degree: u32, pairing: Pairing) -> BenchResult {
+    let (g, pool) = random_graph(nodes_n, degree);
+    let mut targets = Vec::new();
+    let mut out = Vec::new();
+    bench_fn(|| {
+        let mut found = 0usize;
+        for &u in &pool {
+            g.sorted_targets(u, OUT, &mut targets)
+                .unwrap_or_else(|e| panic!("targets: {e}"));
+            if pairing == Pairing::Reused {
+                let mut set = g.target_set(u, OUT).unwrap_or_else(|e| panic!("set: {e}"));
+                for &w in &targets {
+                    g.common_with(&mut set, w, OUT, &mut out)
+                        .unwrap_or_else(|e| panic!("common: {e}"));
+                    found += out.len();
+                }
+            } else {
+                for &w in &targets {
+                    g.common_targets(u, w, OUT, &mut out)
+                        .unwrap_or_else(|e| panic!("common: {e}"));
+                    found += out.len();
+                }
+            }
+        }
+        black_box(found);
+    })
+}
+
+/// Triangles of 1024 nodes of degree 16, a pair at a time.
+#[bench(raw)]
+fn triangles_1024_16_pairs() -> BenchResult {
+    triangles(1024, 16, Pairing::Pairs)
+}
+
+/// The same, each node's set built once for its edges.
+#[bench(raw)]
+fn triangles_1024_16_reused() -> BenchResult {
+    triangles(1024, 16, Pairing::Reused)
+}
+
+#[bench(raw)]
+fn triangles_256_64_pairs() -> BenchResult {
+    triangles(256, 64, Pairing::Pairs)
+}
+
+#[bench(raw)]
+fn triangles_256_64_reused() -> BenchResult {
+    triangles(256, 64, Pairing::Reused)
+}
+
+/// One node of 1024 edges against 64 nodes of 64 edges, all among the same 2048 nodes:
+/// `common_targets` per pair, or one set intersected with each.
+fn one_against_many(pairing: Pairing) -> BenchResult {
+    let mut g = heap_graph();
+    let pool = nodes(&mut g, 2048);
+    let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+    let big = spread(&mut g, 1024, &pool, &mut rng);
+    let small: Vec<NodeId> = (0..64)
+        .map(|_| spread(&mut g, 64, &pool, &mut rng))
+        .collect();
+    let mut out = Vec::new();
+    bench_fn(|| {
+        let mut found = 0usize;
+        if pairing == Pairing::Reused {
+            let mut set = g
+                .target_set(big, OUT)
+                .unwrap_or_else(|e| panic!("set: {e}"));
+            for &w in &small {
+                g.common_with(&mut set, w, OUT, &mut out)
+                    .unwrap_or_else(|e| panic!("common: {e}"));
+                found += out.len();
+            }
+        } else {
+            for &w in &small {
+                g.common_targets(big, w, OUT, &mut out)
+                    .unwrap_or_else(|e| panic!("common: {e}"));
+                found += out.len();
+            }
+        }
+        black_box(found);
+    })
+}
+
+#[bench(raw)]
+fn common_1024_x64_pairs() -> BenchResult {
+    one_against_many(Pairing::Pairs)
+}
+
+#[bench(raw)]
+fn common_1024_x64_reused() -> BenchResult {
+    one_against_many(Pairing::Reused)
 }

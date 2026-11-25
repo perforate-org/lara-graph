@@ -9,3 +9,4 @@ mod sorted;
 mod values;
 
 pub use batch::ReadBatch;
+pub use sorted::TargetSet;

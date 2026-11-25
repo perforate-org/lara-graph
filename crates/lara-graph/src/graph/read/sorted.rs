@@ -8,12 +8,13 @@
 //! decodes every posting and cost half again as much as reading and sorting (30.4M against
 //! 19.8M instructions for 65536 edges), so it is not used here.
 //!
-//! Buckets are intersected without sorting them: the smallest one's targets go into a hash
-//! table, and each larger one keeps those it holds, read once or, for a paged bucket many times
-//! larger than the candidates left, through its target index ([`PROBE_RATIO`]). Only the result
-//! is sorted.
+//! Buckets are intersected without sorting them: one bucket's targets make a [`TargetSet`] (a
+//! bitmap over a narrow range, else a hash table), and each other bucket keeps those it holds,
+//! read once or, for a paged bucket many times larger than the set, through its target index
+//! ([`PROBE_RATIO`]). A set is built once and serves any number of buckets, so listing triangles
+//! reads each node's bucket once per set rather than once per pair. Only the result is ordered.
 
-mod candidates;
+mod target_set;
 
 use crate::bucket::slots::{self, Span, Window};
 use crate::bucket::{LabelBucket, LabelBucketKey};
@@ -23,8 +24,8 @@ use crate::id::{Direction, Label, NodeId};
 use crate::input::Order;
 use crate::store::memory::Memory;
 use alloc::vec::Vec;
-use candidates::Candidates;
 use core::ops::ControlFlow;
+pub use target_set::TargetSet;
 
 /// How many times more live edges a paged bucket must hold than the candidates left for an
 /// intersection to look each candidate up in its index instead of reading it whole: a lookup cost
@@ -75,10 +76,8 @@ impl<M: Memory> Graph<M> {
     /// Replaces the contents of `out` with the nodes that every one of `nodes`' `(label,
     /// direction)` buckets holds a live edge to, ascending, each once; empty for no nodes.
     ///
-    /// Nothing is sorted but the result. The smallest bucket's targets go into a hash table;
-    /// each larger bucket, smallest first, keeps those it holds: it is read once and its targets
-    /// looked up in the table, or, when it is a paged bucket over a hundred times larger than the
-    /// candidates left, each candidate is looked up in its target index.
+    /// The smallest bucket's targets make a [`TargetSet`]; each larger bucket, smallest first,
+    /// keeps those it holds (see [`Self::common_with`]), and what it keeps is the next set.
     ///
     /// # Errors
     ///
@@ -98,17 +97,72 @@ impl<M: Memory> Graph<M> {
         let Some(smallest) = buckets.next() else {
             return Ok(());
         };
-        let mut candidates =
-            Candidates::with_room(usize::try_from(smallest.slots.live()).unwrap_or(0));
-        self.visit_targets(&smallest, |t| candidates.insert(t));
-        for bucket in buckets {
-            if candidates.alive() == 0 {
+        let mut set = self.set_of(&smallest);
+        let mut found = Vec::new();
+        let mut rest = buckets.peekable();
+        if rest.peek().is_none() {
+            found = set.keys();
+            sort_indexes(&mut found);
+        }
+        while let Some(bucket) = rest.next() {
+            found.clear();
+            self.intersect(&mut set, &bucket, &mut found);
+            if found.is_empty() || rest.peek().is_none() {
                 break;
             }
-            self.narrow(&mut candidates, &bucket);
+            set = TargetSet::of(&found);
         }
-        let mut found = candidates.survivors();
-        sort_indexes(&mut found);
+        out.extend(found.into_iter().map(NodeId::new));
+        Ok(())
+    }
+
+    /// The targets of `v`'s `(label, direction)` bucket, each once, as a set to intersect with
+    /// other buckets through [`Self::common_with`]: built once, it serves any number of them, as
+    /// listing triangles or common neighbours wants. Empty when `v` has no such bucket.
+    ///
+    /// A set whose targets lie within a range of 256 node ids per target is a bitmap, looked up
+    /// with a shift and a mask; a sparser one is a hash table.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`].
+    pub fn target_set(
+        &self,
+        v: NodeId,
+        (label, direction): (Label, Direction),
+    ) -> Result<TargetSet, Error> {
+        Ok(
+            match self.read_label_bucket(v, LabelBucketKey { label, direction })? {
+                Some(bucket) => self.set_of(&bucket),
+                None => TargetSet::of(&[]),
+            },
+        )
+    }
+
+    /// Replaces the contents of `out` with the nodes both `set` and `w`'s `(label, direction)`
+    /// bucket hold, ascending, each once. `set` is left as it was, ready for the next bucket.
+    ///
+    /// `w`'s bucket is read once and each target looked up in `set`; a paged bucket over a
+    /// hundred times larger than `set` instead has each of `set`'s targets looked up in its
+    /// target index.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`] for `w`.
+    pub fn common_with(
+        &self,
+        set: &mut TargetSet,
+        w: NodeId,
+        (label, direction): (Label, Direction),
+        out: &mut Vec<NodeId>,
+    ) -> Result<(), Error> {
+        out.clear();
+        let bucket = self.read_label_bucket(w, LabelBucketKey { label, direction })?;
+        let Some(bucket) = bucket.filter(|_| !set.is_empty()) else {
+            return Ok(());
+        };
+        let mut found = Vec::new();
+        self.intersect(set, &bucket, &mut found);
         out.extend(found.into_iter().map(NodeId::new));
         Ok(())
     }
@@ -130,22 +184,31 @@ impl<M: Memory> Graph<M> {
         Ok((!missing).then_some(buckets))
     }
 
-    /// Keeps the candidates `bucket` holds: read whole and looked up in the candidates, or for a
-    /// paged bucket [`PROBE_RATIO`] times larger than them, each candidate looked up in its index.
-    fn narrow(&self, candidates: &mut Candidates, bucket: &LabelBucket) {
-        candidates.next_round();
-        let left = u32::try_from(candidates.previous_count()).unwrap_or(u32::MAX);
+    /// `bucket`'s targets as a set.
+    fn set_of(&self, bucket: &LabelBucket) -> TargetSet {
+        let mut targets = Vec::with_capacity(usize::try_from(bucket.slots.live()).unwrap_or(0));
+        self.visit_targets(bucket, |t| targets.push(t));
+        TargetSet::of(&targets)
+    }
+
+    /// Appends the targets both `set` and `bucket` hold, ascending, to `out`: `bucket` read whole
+    /// and looked up in `set`, or for a paged bucket [`PROBE_RATIO`] times larger, each of `set`'s
+    /// targets looked up in its index.
+    fn intersect(&self, set: &mut TargetSet, bucket: &LabelBucket, out: &mut Vec<u32>) {
+        set.begin();
+        let left = u32::try_from(set.len()).unwrap_or(u32::MAX);
         let probe =
             bucket.index.tree().is_some() && left.saturating_mul(PROBE_RATIO) < bucket.slots.live();
-        if !probe {
-            self.visit_targets(bucket, |t| candidates.keep(t));
-            return;
-        }
-        for t in candidates.previous() {
-            if self.holds(bucket, NodeId::new(t)) {
-                candidates.keep(t);
+        if probe {
+            for t in set.keys() {
+                if self.holds(bucket, NodeId::new(t)) {
+                    set.hit(t);
+                }
             }
+        } else {
+            self.visit_targets(bucket, |t| set.hit(t));
         }
+        set.finish(out);
     }
 
     /// Calls `f` with the index of each live target of `bucket`, in position order.
