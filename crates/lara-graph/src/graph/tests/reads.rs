@@ -1,9 +1,14 @@
 //! Reading one bucket: visiting its neighbors, windows over its positions and reads at given
-//! positions.
+//! positions. Reads through a batch, of the edges between two nodes, and of sorted and shared
+//! targets have modules of their own.
 
 use super::model::Rng;
 use super::*;
 use crate::id::Neighbor;
+
+mod batch;
+mod between;
+mod sorted;
 
 #[test]
 fn visiting_neighbors_sees_live_edges_in_order_and_stops_on_break() {

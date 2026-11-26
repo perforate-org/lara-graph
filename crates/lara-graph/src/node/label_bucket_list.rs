@@ -249,6 +249,10 @@ fn find_stored(entries: &[[u8; ENTRY_BYTES]], key: LabelBucketKey) -> Option<Sto
 }
 
 /// [`lookup_stored`] over entries already copied into `bytes`, at `offset`.
+///
+/// Inlined into the read batch that calls it: left to the codegen units, it kept a stack frame
+/// and batched degrees and visits cost 3-5 % more (`degree_1024_batched`).
+#[inline]
 pub(crate) fn lookup_stored_in(
     bytes: &[u8],
     offset: usize,

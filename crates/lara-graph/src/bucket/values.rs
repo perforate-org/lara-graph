@@ -196,7 +196,6 @@ pub(crate) fn visit<M: Memory, B>(
     mut f: impl FnMut(u32, &[u8]) -> core::ops::ControlFlow<B>,
 ) -> Option<B> {
     let cpp = cells_per_page(width);
-    let w = width_len(width);
     let (first_page, end_page) = (low / cpp, high.div_ceil(cpp));
     let mut buf = ReadBuf::new();
     for step in 0..end_page.saturating_sub(first_page) {
@@ -209,28 +208,41 @@ pub(crate) fn visit<M: Memory, B>(
         if a >= b {
             continue;
         }
-        let len = usize::try_from(b - a).unwrap_or(0) * w;
-        // The cells with storage: a run may cover only the front of its chunk.
-        let cell = cell_at(view, plane, width, a);
-        let stored = stored_cells(plane, width, cell, (a, b));
-        let chunk: &[u8] = match cell {
-            // All stored: read in place, nothing to zero.
-            Some(at) if stored == b - a => buf.fill(view, at, len),
-            _ => {
-                let chunk = buf.take(len);
-                let (head, tail) = chunk.split_at_mut(usize::try_from(stored).unwrap_or(0) * w);
-                if let Some(at) = cell.filter(|_| !head.is_empty()) {
-                    view.read_into(at, head);
-                }
-                tail.fill(0);
-                chunk
-            }
-        };
+        let chunk = read_chunk(view, plane, width, (a, b), &mut buf);
         if let core::ops::ControlFlow::Break(done) = f(a, chunk) {
             return Some(done);
         }
     }
     None
+}
+
+/// The values of positions `a..b`, all on one value page (or in the run), read into `buf`;
+/// missing storage comes as zeros.
+fn read_chunk<'b, M: Memory>(
+    view: &Pages<'_, M>,
+    plane: Plane,
+    width: Width,
+    (a, b): (u32, u32),
+    buf: &'b mut ReadBuf,
+) -> &'b [u8] {
+    let w = width_len(width);
+    let len = usize::try_from(b - a).unwrap_or(0) * w;
+    // The cells with storage: a run may cover only the front of its chunk.
+    let cell = cell_at(view, plane, width, a);
+    let stored = stored_cells(plane, width, cell, (a, b));
+    match cell {
+        // All stored: read in place, nothing to zero.
+        Some(at) if stored == b - a => buf.fill(view, at, len),
+        _ => {
+            let chunk = buf.take(len);
+            let (head, tail) = chunk.split_at_mut(usize::try_from(stored).unwrap_or(0) * w);
+            if let Some(at) = cell.filter(|_| !head.is_empty()) {
+                view.read_into(at, head);
+            }
+            tail.fill(0);
+            chunk
+        }
+    }
 }
 
 /// How many of positions `a..b`, all on one value page (or in the run), have storage, given the

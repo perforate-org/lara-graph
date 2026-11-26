@@ -4,11 +4,11 @@
 //! the cost of the order; intersections with many nodes are measured a pair at a time and with
 //! one set reused.
 
-use crate::{Bench, LABEL, directed, graph, node, nodes};
+use crate::{Bench, BenchMemory, LABEL, directed, graph, node, nodes};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use core::ops::ControlFlow;
-use lara_graph::{Direction, NodeId, Order, TargetSet};
+use lara_graph::{Direction, NodeId, Order, ReadBatch, TargetSet};
 
 const OUT: (lara_graph::Label, Direction) = (LABEL, Direction::Outgoing);
 
@@ -271,49 +271,78 @@ fn triangles(nodes_n: u32, degree: u32, pairing: Pairing) -> BenchResult {
         for &u in &pool {
             g.sorted_targets(u, OUT, &mut targets)
                 .unwrap_or_else(|e| panic!("targets: {e}"));
-            match pairing {
-                Pairing::Pairs => {
-                    for &w in &targets {
-                        g.common_targets(u, w, OUT, &mut out)
-                            .unwrap_or_else(|e| panic!("common: {e}"));
-                        found += out.len();
-                    }
-                }
-                Pairing::Reused => {
-                    g.target_set_into(&mut set, u, OUT)
-                        .unwrap_or_else(|e| panic!("set: {e}"));
-                    for &w in &targets {
-                        g.common_with(&mut set, (w, None), OUT, &mut out)
-                            .unwrap_or_else(|e| panic!("common: {e}"));
-                        found += out.len();
-                    }
-                }
+            found += match pairing {
+                Pairing::Pairs => pairs(&g, u, &targets, &mut out),
+                Pairing::Reused => reused(&g, &mut set, u, &targets, &mut out),
                 Pairing::Batched | Pairing::Ordered => {
-                    g.target_set_into(&mut set, u, OUT)
-                        .unwrap_or_else(|e| panic!("set: {e}"));
                     let ordered = pairing == Pairing::Ordered;
-                    let from = if ordered {
-                        targets.partition_point(|&w| w <= u)
-                    } else {
-                        0
-                    };
-                    batch
-                        .common_with_each(
-                            &mut set,
-                            targets.get(from..).unwrap_or(&[]),
-                            OUT,
-                            |w| ordered.then_some(w),
-                            |_, shared| {
-                                found += shared.len();
-                                ControlFlow::<()>::Continue(())
-                            },
-                        )
-                        .unwrap_or_else(|e| panic!("common: {e}"));
+                    batched(&g, &mut batch, &mut set, (u, ordered), &targets)
                 }
-            }
+            };
         }
         black_box(found);
     })
+}
+
+/// The targets `u` shares with each of `targets`, counted, a pair at a time.
+fn pairs(g: &Bench, u: NodeId, targets: &[NodeId], out: &mut Vec<NodeId>) -> usize {
+    let mut found = 0;
+    for &w in targets {
+        g.common_targets(u, w, OUT, out)
+            .unwrap_or_else(|e| panic!("common: {e}"));
+        found += out.len();
+    }
+    found
+}
+
+/// [`pairs`] through `u`'s set, built once.
+fn reused(
+    g: &Bench,
+    set: &mut TargetSet,
+    u: NodeId,
+    targets: &[NodeId],
+    out: &mut Vec<NodeId>,
+) -> usize {
+    g.target_set_into(set, u, OUT)
+        .unwrap_or_else(|e| panic!("set: {e}"));
+    let mut found = 0;
+    for &w in targets {
+        g.common_with(set, (w, None), OUT, out)
+            .unwrap_or_else(|e| panic!("common: {e}"));
+        found += out.len();
+    }
+    found
+}
+
+/// [`reused`] through one read batch; `ordered` counts each triangle once, as `u < w < x`.
+fn batched(
+    g: &Bench,
+    batch: &mut ReadBatch<'_, BenchMemory>,
+    set: &mut TargetSet,
+    (u, ordered): (NodeId, bool),
+    targets: &[NodeId],
+) -> usize {
+    g.target_set_into(set, u, OUT)
+        .unwrap_or_else(|e| panic!("set: {e}"));
+    let from = if ordered {
+        targets.partition_point(|&w| w <= u)
+    } else {
+        0
+    };
+    let mut found = 0;
+    batch
+        .common_with_each(
+            set,
+            targets.get(from..).unwrap_or(&[]),
+            OUT,
+            |w| ordered.then_some(w),
+            |_, shared| {
+                found += shared.len();
+                ControlFlow::<()>::Continue(())
+            },
+        )
+        .unwrap_or_else(|e| panic!("common: {e}"));
+    found
 }
 
 /// Triangles of 1024 nodes of degree 16, a pair at a time.

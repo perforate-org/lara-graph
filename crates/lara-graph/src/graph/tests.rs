@@ -123,9 +123,7 @@ fn out_bucket<M: Memory>(g: &Graph<M>, x: NodeId, label: Label) -> Option<Descri
     .unwrap()
 }
 
-mod batch_reads;
 mod batch_writes;
-mod between;
 mod bucket_forms;
 mod compaction;
 mod detach;
@@ -138,6 +136,5 @@ mod model;
 mod node_labels;
 mod proxies;
 mod reads;
-mod sorted;
 
 use invariants::check;

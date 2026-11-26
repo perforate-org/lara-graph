@@ -1,7 +1,6 @@
 //! Sorted views and shared targets against a plain model: small buckets, paged ones with their
 //! indexed blocks and unindexed tails, parallel edges and holes.
 
-use super::model::Rng;
 use super::*;
 
 const NODES: u32 = 400;

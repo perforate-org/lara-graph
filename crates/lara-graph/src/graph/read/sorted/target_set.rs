@@ -1,11 +1,16 @@
 //! A set of node indexes built once from one bucket's targets, to intersect with many others: a
-//! dense bitmap over the targets' range when it is narrow, else an open-addressing hash table.
-//! Each intersection is a query that marks the targets it finds, so the set itself never changes
-//! and repeats in the other bucket (parallel edges) are found once.
+//! dense bitmap over the targets' range when it is narrow ([`bits`]), else an open-addressing
+//! hash table ([`table`]). Each intersection is a query that marks the targets it finds, so the
+//! set itself never changes and repeats in the other bucket (parallel edges) are found once.
+
+mod bits;
+mod table;
 
 use super::sort_indexes;
 use crate::id::NodeId;
 use alloc::vec::Vec;
+use bits::Bits;
+use table::Table;
 
 /// Ids of range a target may stand for in a bitmap. A bitmap and its marks then take up to 64
 /// bytes a key, four times the hash table, but a lookup is a shift and a mask: intersecting 65536
@@ -13,12 +18,39 @@ use alloc::vec::Vec;
 /// through the hash table (`common_65536_1024`), while at 64 ids a key it stayed a hash table.
 const BITMAP_RANGE_PER_KEY: u64 = 256;
 
-/// A query's matches past which the bitmap's marks are scanned in order rather than sorted: one
-/// word of marks per this many matches.
-const SCAN_WORDS_PER_MATCH: usize = 8;
+/// Targets a set is filled from or intersected with, which may repeat: a bucket's.
+pub(super) trait Targets {
+    /// How many targets, repeats counted.
+    fn count(&self) -> usize;
 
-/// A slot no key occupies. No node has the index `u32::MAX`: the last proxy's is one less.
-const EMPTY: u32 = u32::MAX;
+    /// Whether looking each of `candidates` set targets up in these is cheaper than reading them
+    /// all.
+    fn probes(&self, candidates: usize) -> bool;
+
+    /// Calls `f` with each target.
+    fn visit(&self, f: impl FnMut(u32));
+
+    /// Whether `t` is among the targets.
+    fn holds(&self, t: u32) -> bool;
+}
+
+impl Targets for [u32] {
+    fn count(&self) -> usize {
+        self.len()
+    }
+
+    fn probes(&self, _: usize) -> bool {
+        false
+    }
+
+    fn visit(&self, f: impl FnMut(u32)) {
+        self.iter().copied().for_each(f);
+    }
+
+    fn holds(&self, t: u32) -> bool {
+        self.contains(&t)
+    }
+}
 
 /// The targets one bucket holds, each once, ready to intersect with others
 /// ([`crate::Graph::common_with`]). Built by [`crate::Graph::target_set`], or refilled by
@@ -37,19 +69,8 @@ pub struct TargetSet {
 }
 
 enum Lookup {
-    /// For each 64 ids from `base`, the bits of the targets and the marks of the current query's
-    /// matches, side by side: one allocation, one place a lookup reads.
-    Bits { base: u32, words: Vec<[u64; 2]> },
-    /// Linear probing, at most half full: each slot's key and the last query that matched it.
-    /// Stamps only grow, so the keys stamped `alive` or later are the set: narrowing it to a
-    /// query's matches raises `alive` to that query.
-    Hash {
-        slots: Vec<[u32; 2]>,
-        mask: usize,
-        shift: u32,
-        query: u32,
-        alive: u32,
-    },
+    Bits(Bits),
+    Hash(Table),
 }
 
 impl Default for TargetSet {
@@ -64,10 +85,7 @@ impl TargetSet {
     pub const fn new() -> Self {
         Self {
             len: 0,
-            lookup: Lookup::Bits {
-                base: 0,
-                words: Vec::new(),
-            },
+            lookup: Lookup::Bits(Bits::new()),
             matches: Vec::new(),
             spare_words: Vec::new(),
             spare_slots: Vec::new(),
@@ -83,78 +101,108 @@ impl TargetSet {
         set
     }
 
-    /// Takes the buffer a bucket's targets are read into, empty, to give back to [`Self::fill_read`].
-    pub(super) fn take_read(&mut self) -> Vec<u32> {
+    /// Refills the set with `targets`, read into the buffer it keeps for them.
+    pub(super) fn refill<T: Targets + ?Sized>(&mut self, targets: &T) {
         let mut read = core::mem::take(&mut self.read);
         read.clear();
-        read
-    }
-
-    /// Refills the set from `read`, the targets a bucket held, and keeps the buffer.
-    pub(super) fn fill_read(&mut self, read: Vec<u32>) {
+        read.reserve(targets.count());
+        targets.visit(|t| read.push(t));
         self.fill(&read);
         self.read = read;
     }
 
-    /// Refills the set with `targets`, which may repeat, in the memory it already took.
-    pub(super) fn fill(&mut self, targets: &[u32]) {
-        let empty = Lookup::Bits {
-            base: 0,
-            words: Vec::new(),
-        };
-        match core::mem::replace(&mut self.lookup, empty) {
-            Lookup::Bits { words, .. } => self.spare_words = words,
-            Lookup::Hash { slots, .. } => self.spare_slots = slots,
-        }
-        self.matches.clear();
-        let (mut min, mut max) = (u32::MAX, 0);
-        for &t in targets {
-            min = min.min(t);
-            max = max.max(t);
-        }
-        let mut len = 0;
-        if targets.is_empty() {
-            self.len = 0;
+    /// Appends the targets both the set and `targets` hold from index `from` on, ascending, to
+    /// `out`, and leaves the set as it was.
+    pub(super) fn common_from<T: Targets + ?Sized>(
+        &mut self,
+        targets: &T,
+        from: u32,
+        out: &mut Vec<u32>,
+    ) {
+        self.mark(targets, from);
+        self.finish_from(from, out);
+    }
+
+    /// Appends the targets the set and every one of `rest` hold, ascending, to `out`: each of
+    /// `rest` in turn keeps in the set those it holds, the set narrowed in place, so it is left
+    /// holding what they share, or less once none is left.
+    pub(super) fn narrow_to_common<T: Targets>(
+        &mut self,
+        rest: impl IntoIterator<Item = T>,
+        out: &mut Vec<u32>,
+    ) {
+        let mut rest = rest.into_iter().peekable();
+        if rest.peek().is_none() {
+            let mut keys = self.keys();
+            sort_indexes(&mut keys);
+            out.append(&mut keys);
             return;
         }
-        self.lookup = if u64::from(max - min) < width(targets.len()) {
-            let range = u64::from(max - min) + 1;
-            let mut words = core::mem::take(&mut self.spare_words);
-            words.clear();
-            words.resize(usize::try_from(range.div_ceil(64)).unwrap_or(0), [0; 2]);
-            for &t in targets {
-                let off = t - min;
-                if let Some([word, _]) = words.get_mut(word_of(off)) {
-                    let bit = bit_of(off);
-                    len += usize::from(*word & bit == 0);
-                    *word |= bit;
+        // Each round keeps in the set what the bucket holds; the last one lists it.
+        while let Some(targets) = rest.next() {
+            self.mark(&targets, 0);
+            if rest.peek().is_none() {
+                self.finish(out);
+                return;
+            }
+            self.narrow();
+            if self.is_empty() {
+                return;
+            }
+        }
+    }
+
+    /// Starts a query matching the targets `targets` holds from index `from` on: `targets` read
+    /// whole and looked up in the set, or, if it [probes](Targets::probes), each of the set's
+    /// targets looked up in it.
+    fn mark<T: Targets + ?Sized>(&mut self, targets: &T, from: u32) {
+        self.begin();
+        if targets.probes(self.len) {
+            for t in self.keys() {
+                if t >= from && targets.holds(t) {
+                    self.hit(t);
                 }
             }
-            Lookup::Bits { base: min, words }
         } else {
-            let size = (2 * targets.len()).next_power_of_two().max(16);
-            let mut slots = core::mem::take(&mut self.spare_slots);
-            slots.clear();
-            slots.resize(size, [EMPTY, 0]);
-            let mask = size - 1;
-            let shift = 32 - size.trailing_zeros().min(32);
-            for &t in targets {
-                let at = slot_of(&slots, mask, shift, t);
-                if let Some(slot) = slots.get_mut(at)
-                    && slot[0] == EMPTY
-                {
-                    slot[0] = t;
-                    len += 1;
+            self.mark_read(targets, from);
+        }
+    }
+
+    /// [`Self::mark`] reading `targets` whole.
+    fn mark_read<T: Targets + ?Sized>(&mut self, targets: &T, from: u32) {
+        if from == 0 {
+            // Unbounded, the loop keeps no comparison: with it, intersections cost 2-11 % more.
+            targets.visit(|t| self.hit(t));
+        } else {
+            targets.visit(|t| {
+                if t >= from {
+                    self.hit(t);
                 }
-            }
-            Lookup::Hash {
-                slots,
-                mask,
-                shift,
-                query: 0,
-                alive: 0,
-            }
+            });
+        }
+    }
+
+    /// Refills the set with `targets`, which may repeat, in the memory it already took.
+    fn fill(&mut self, targets: &[u32]) {
+        match core::mem::replace(&mut self.lookup, Lookup::Bits(Bits::new())) {
+            Lookup::Bits(bits) => self.spare_words = bits.into_words(),
+            Lookup::Hash(table) => self.spare_slots = table.into_slots(),
+        }
+        self.matches.clear();
+        self.len = 0;
+        let Some((min, max)) = range(targets) else {
+            return;
         };
+        let (lookup, len) = if u64::from(max - min) < width(targets.len()) {
+            let words = core::mem::take(&mut self.spare_words);
+            let (bits, len) = Bits::of(words, targets, (min, max));
+            (Lookup::Bits(bits), len)
+        } else {
+            let slots = core::mem::take(&mut self.spare_slots);
+            let (table, len) = Table::of(slots, targets);
+            (Lookup::Hash(table), len)
+        };
+        self.lookup = lookup;
         self.len = len;
     }
 
@@ -173,100 +221,36 @@ impl TargetSet {
     /// Whether the set holds `t`.
     #[must_use]
     pub fn contains(&self, t: NodeId) -> bool {
-        let t = t.index();
         match &self.lookup {
-            Lookup::Bits { base, words } => t
-                .checked_sub(*base)
-                .and_then(|off| words.get(word_of(off)).map(|[w, _]| w & bit_of(off) != 0))
-                .unwrap_or(false),
-            Lookup::Hash {
-                slots,
-                mask,
-                shift,
-                alive,
-                ..
-            } => slots
-                .get(slot_of(slots, *mask, *shift, t))
-                .is_some_and(|s| s[0] == t && s[1] >= *alive),
+            Lookup::Bits(bits) => bits.contains(t.index()),
+            Lookup::Hash(table) => table.contains(t.index()),
         }
     }
 
     /// The targets, each once: ascending from a bitmap, in no order from a hash table.
-    pub(super) fn keys(&self) -> Vec<u32> {
+    fn keys(&self) -> Vec<u32> {
         let mut keys = Vec::with_capacity(self.len);
         match &self.lookup {
-            Lookup::Bits { base, words } => {
-                for (i, [word, _]) in words.iter().enumerate() {
-                    push_bits(*word, *base + word_start(i), &mut keys);
-                }
-            }
-            Lookup::Hash { slots, alive, .. } => {
-                keys.extend(
-                    slots
-                        .iter()
-                        .filter(|s| s[0] != EMPTY && s[1] >= *alive)
-                        .map(|s| s[0]),
-                );
-            }
+            Lookup::Bits(bits) => bits.push_keys(&mut keys),
+            Lookup::Hash(table) => table.push_keys(&mut keys),
         }
         keys
     }
 
     /// Starts a query: no target is matched yet.
-    pub(super) fn begin(&mut self) {
+    fn begin(&mut self) {
         self.matches.clear();
-        if let Lookup::Hash {
-            slots,
-            query,
-            alive,
-            ..
-        } = &mut self.lookup
-        {
-            if *query == u32::MAX {
-                // Out of stamps: the set's keys restart at 1, the others at 0.
-                for slot in slots.iter_mut() {
-                    slot[1] = u32::from(slot[1] >= *alive);
-                }
-                *alive = 1;
-                *query = 1;
-            }
-            *query += 1;
+        if let Lookup::Hash(table) = &mut self.lookup {
+            table.begin();
         }
     }
 
     /// Matches `t` if the set holds it and this query has not matched it yet.
     #[inline]
-    pub(super) fn hit(&mut self, t: u32) {
+    fn hit(&mut self, t: u32) {
         let new = match &mut self.lookup {
-            Lookup::Bits { base, words } => {
-                let Some(off) = t.checked_sub(*base) else {
-                    return;
-                };
-                let bit = bit_of(off);
-                match words.get_mut(word_of(off)) {
-                    Some([held, seen]) if *held & bit != 0 && *seen & bit == 0 => {
-                        *seen |= bit;
-                        true
-                    }
-                    _ => false,
-                }
-            }
-            Lookup::Hash {
-                slots,
-                mask,
-                shift,
-                query,
-                alive,
-            } => {
-                let at = slot_of(slots, *mask, *shift, t);
-                match slots.get_mut(at) {
-                    Some(slot) if slot[0] == t && slot[1] >= *alive && slot[1] != *query => {
-                        slot[1] = *query;
-                        true
-                    }
-                    _ => false,
-                }
-            }
+            Lookup::Bits(bits) => bits.hit(t),
+            Lookup::Hash(table) => table.hit(t),
         };
         if new {
             self.matches.push(t);
@@ -274,53 +258,41 @@ impl TargetSet {
     }
 
     /// Ends the query: its matches, ascending, appended to `out`, and the marks cleared.
-    pub(super) fn finish(&mut self, out: &mut Vec<u32>) {
+    fn finish(&mut self, out: &mut Vec<u32>) {
         self.finish_from(0, out);
     }
 
     /// [`Self::finish`] for a query that matched nothing below index `from`: a bitmap's scan
     /// starts at `from`'s word.
-    pub(super) fn finish_from(&mut self, from: u32, out: &mut Vec<u32>) {
+    fn finish_from(&mut self, from: u32, out: &mut Vec<u32>) {
         match &mut self.lookup {
-            Lookup::Bits { base, words } => {
-                let skip = word_of(from.saturating_sub(*base)).min(words.len());
-                let tail = words.get_mut(skip..).unwrap_or(&mut []);
-                if self.matches.len().saturating_mul(SCAN_WORDS_PER_MATCH) >= tail.len() {
-                    for (i, [_, seen]) in (skip..).zip(tail.iter_mut()) {
-                        push_bits(*seen, *base + word_start(i), out);
-                        *seen = 0;
-                    }
-                    self.matches.clear();
-                    return;
-                }
-                for &t in &self.matches {
-                    let off = t - *base;
-                    if let Some([_, seen]) = words.get_mut(word_of(off)) {
-                        *seen &= !bit_of(off);
-                    }
-                }
+            Lookup::Bits(bits) => bits.finish_from(from, &mut self.matches, out),
+            Lookup::Hash(_) => {
+                sort_indexes(&mut self.matches);
+                out.append(&mut self.matches);
             }
-            Lookup::Hash { .. } => {}
         }
-        sort_indexes(&mut self.matches);
-        out.append(&mut self.matches);
     }
 
     /// Ends the query by keeping only its matches: a k-way intersection's next round, without
     /// building a new set.
-    pub(super) fn narrow(&mut self) {
+    fn narrow(&mut self) {
         self.len = self.matches.len();
         self.matches.clear();
         match &mut self.lookup {
-            Lookup::Bits { words, .. } => {
-                for [held, seen] in words.iter_mut() {
-                    *held = *seen;
-                    *seen = 0;
-                }
-            }
-            Lookup::Hash { query, alive, .. } => *alive = *query,
+            Lookup::Bits(bits) => bits.narrow(),
+            Lookup::Hash(table) => table.narrow(),
         }
     }
+}
+
+/// The smallest and largest of `targets`; `None` for none.
+fn range(targets: &[u32]) -> Option<(u32, u32)> {
+    let (first, rest) = targets.split_first()?;
+    Some(
+        rest.iter()
+            .fold((*first, *first), |(min, max), &t| (min.min(t), max.max(t))),
+    )
 }
 
 /// The widest range of ids `n` targets make a bitmap for.
@@ -328,46 +300,6 @@ fn width(n: usize) -> u64 {
     u64::try_from(n)
         .unwrap_or(u64::MAX)
         .saturating_mul(BITMAP_RANGE_PER_KEY)
-}
-
-/// Appends `from + i` for each set bit `i` of `word`, ascending.
-fn push_bits(word: u64, from: u32, out: &mut Vec<u32>) {
-    let mut rest = word;
-    while rest != 0 {
-        out.push(from + rest.trailing_zeros());
-        rest &= rest - 1;
-    }
-}
-
-/// The offset of word `i`'s first bit: below the bitmap's range, which fits a `u32`.
-fn word_start(i: usize) -> u32 {
-    u32::try_from(i * 64).unwrap_or(u32::MAX)
-}
-
-fn word_of(off: u32) -> usize {
-    usize::try_from(off >> 6).unwrap_or(usize::MAX)
-}
-
-fn bit_of(off: u32) -> u64 {
-    1 << (off & 63)
-}
-
-/// The slot holding `key`, or the empty one where it would go: linear probing from its home, the
-/// top bits of the key times the golden ratio. The table is at most half full, so an empty slot
-/// ends every probe.
-#[inline]
-fn slot_of(slots: &[[u32; 2]], mask: usize, shift: u32, key: u32) -> usize {
-    let top = key
-        .wrapping_mul(0x9E37_79B9)
-        .checked_shr(shift)
-        .unwrap_or(0);
-    let mut at = usize::try_from(top).unwrap_or(0) & mask;
-    loop {
-        match slots.get(at) {
-            Some(&[k, _]) if k != key && k != EMPTY => at = (at + 1) & mask,
-            Some(_) | None => return at,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -441,10 +373,10 @@ mod tests {
     #[test]
     fn dense_targets_make_a_bitmap_and_sparse_ones_a_hash_table() {
         let dense = TargetSet::of(&[10, 12, 10, 70, 11]);
-        assert!(matches!(dense.lookup, Lookup::Bits { .. }));
+        assert!(matches!(dense.lookup, Lookup::Bits(_)));
         assert_eq!(dense.keys(), [10, 11, 12, 70]);
         let sparse = TargetSet::of(&[5, 1 << 20, 5, NodeId::FIRST_PROXY]);
-        assert!(matches!(sparse.lookup, Lookup::Hash { .. }));
+        assert!(matches!(sparse.lookup, Lookup::Hash(_)));
         let mut keys = sparse.keys();
         keys.sort_unstable();
         assert_eq!(keys, [5, 1 << 20, NodeId::FIRST_PROXY]);
@@ -472,8 +404,8 @@ mod tests {
     #[test]
     fn a_hash_table_survives_its_query_count_wrapping() {
         let mut set = TargetSet::of(&[3, 1 << 20, 1 << 25]);
-        if let Lookup::Hash { query, .. } = &mut set.lookup {
-            *query = u32::MAX - 2;
+        if let Lookup::Hash(table) = &mut set.lookup {
+            table.set_query(u32::MAX - 2);
         }
         for _ in 0..2 {
             assert_eq!(query(&mut set, &[1 << 25, 3, 3]), [3, 1 << 25]);

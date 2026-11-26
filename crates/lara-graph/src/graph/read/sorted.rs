@@ -18,6 +18,7 @@ mod target_set;
 
 use crate::bucket::slots::{self, Span, Window};
 use crate::bucket::{LabelBucket, LabelBucketKey};
+use crate::edge::EdgeView;
 use crate::error::Error;
 use crate::graph::Graph;
 use crate::id::{Direction, Label, NodeId};
@@ -26,6 +27,7 @@ use crate::store::memory::Memory;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 pub use target_set::TargetSet;
+use target_set::Targets;
 
 /// How many times more live edges a paged bucket must hold than the candidates left for an
 /// intersection to look each candidate up in its index instead of reading it whole: a lookup cost
@@ -93,30 +95,14 @@ impl<M: Memory> Graph<M> {
             return Ok(());
         };
         buckets.sort_by_key(|b| b.slots.live());
-        let mut buckets = buckets.into_iter();
+        let mut buckets = buckets.iter();
         let Some(smallest) = buckets.next() else {
             return Ok(());
         };
         let mut set = TargetSet::new();
-        self.fill_set(&mut set, &smallest);
-        let mut rest = buckets.peekable();
+        set.refill(&self.targets_of(smallest));
         let mut found = Vec::new();
-        if rest.peek().is_none() {
-            found = set.keys();
-            sort_indexes(&mut found);
-        }
-        // Each round keeps in the set what the bucket holds; the last one lists it.
-        while let Some(bucket) = rest.next() {
-            self.match_bucket(&mut set, &bucket, 0);
-            if rest.peek().is_none() {
-                set.finish(&mut found);
-                break;
-            }
-            set.narrow();
-            if set.is_empty() {
-                break;
-            }
-        }
+        set.narrow_to_common(buckets.map(|b| self.targets_of(b)), &mut found);
         out.extend(found.into_iter().map(NodeId::new));
         Ok(())
     }
@@ -154,8 +140,8 @@ impl<M: Memory> Graph<M> {
         (label, direction): (Label, Direction),
     ) -> Result<(), Error> {
         match self.read_label_bucket(v, LabelBucketKey { label, direction })? {
-            Some(bucket) => self.fill_set(set, &bucket),
-            None => set.fill(&[]),
+            Some(bucket) => set.refill(&self.targets_of(&bucket)),
+            None => set.refill::<[u32]>(&[]),
         }
         Ok(())
     }
@@ -208,15 +194,6 @@ impl<M: Memory> Graph<M> {
         Ok((!missing).then_some(buckets))
     }
 
-    /// Refills `set` with `bucket`'s targets.
-    fn fill_set(&self, set: &mut TargetSet, bucket: &LabelBucket) {
-        let mut read = set.take_read();
-        read.reserve(usize::try_from(bucket.slots.live()).unwrap_or(0));
-        self.visit_targets(bucket, |t| read.push(t));
-        set.fill_read(read);
-    }
-
-    /// Appends the targets both `set` and `bucket` hold, ascending, to `out`.
     /// Appends the targets both `set` and `bucket` hold from index `from` on, ascending, to
     /// `out`.
     pub(in crate::graph) fn intersect_from(
@@ -226,48 +203,15 @@ impl<M: Memory> Graph<M> {
         from: u32,
         out: &mut Vec<u32>,
     ) {
-        self.match_bucket(set, bucket, from);
-        set.finish_from(from, out);
+        set.common_from(&self.targets_of(bucket), from, out);
     }
 
-    /// A query of `set` matching the targets `bucket` holds from index `from` on: `bucket` read
-    /// whole and looked up in `set`, or for a paged bucket [`PROBE_RATIO`] times larger, each of
-    /// `set`'s targets looked up in its index.
-    fn match_bucket(&self, set: &mut TargetSet, bucket: &LabelBucket, from: u32) {
-        set.begin();
-        let left = u32::try_from(set.len()).unwrap_or(u32::MAX);
-        let probe =
-            bucket.index.tree().is_some() && left.saturating_mul(PROBE_RATIO) < bucket.slots.live();
-        if probe {
-            for t in set.keys() {
-                if t >= from && self.holds(bucket, NodeId::new(t)) {
-                    set.hit(t);
-                }
-            }
-        } else if from == 0 {
-            // Unbounded, the loop keeps no comparison: with it, intersections cost 2-11 % more.
-            self.visit_targets(bucket, |t| set.hit(t));
-        } else {
-            self.visit_targets(bucket, |t| {
-                if t >= from {
-                    set.hit(t);
-                }
-            });
+    /// `bucket`'s targets, to fill or intersect a [`TargetSet`] with.
+    fn targets_of<'a>(&'a self, bucket: &'a LabelBucket) -> BucketTargets<'a, M> {
+        BucketTargets {
+            view: self.edge_view(),
+            bucket,
         }
-    }
-
-    /// Calls `f` with the index of each live target of `bucket`, in position order.
-    fn visit_targets(&self, bucket: &LabelBucket, mut f: impl FnMut(u32)) {
-        slots::visit(
-            &bucket.slots,
-            &self.edge_view().pages(),
-            Span::all(&bucket.slots, Order::Ascending),
-            Window::Page,
-            |e| {
-                f(e.target().index());
-                ControlFlow::<()>::Continue(())
-            },
-        );
     }
 
     /// `bucket`'s live targets, ascending, once per edge, appended to `out`.
@@ -287,19 +231,54 @@ impl<M: Memory> Graph<M> {
         sort_indexes(&mut keys);
         out.extend(keys.into_iter().map(NodeId::new));
     }
+}
 
-    /// Whether the paged `bucket` holds a live edge to `t`: the blocks its index lists for `t` and
-    /// its unindexed last block, scanned for it.
-    fn holds(&self, bucket: &LabelBucket, t: NodeId) -> bool {
-        let view = self.edge_view().pages();
+/// The live targets of a bucket: read whole, or, for a paged bucket [`PROBE_RATIO`] times larger
+/// than the candidates, each candidate looked up in its target index.
+struct BucketTargets<'a, M: Memory> {
+    view: EdgeView<'a, M>,
+    bucket: &'a LabelBucket,
+}
+
+impl<M: Memory> Targets for BucketTargets<'_, M> {
+    fn count(&self) -> usize {
+        usize::try_from(self.bucket.slots.live()).unwrap_or(0)
+    }
+
+    fn probes(&self, candidates: usize) -> bool {
+        let candidates = u32::try_from(candidates).unwrap_or(u32::MAX);
+        self.bucket.index.tree().is_some()
+            && candidates.saturating_mul(PROBE_RATIO) < self.bucket.slots.live()
+    }
+
+    /// In position order.
+    fn visit(&self, mut f: impl FnMut(u32)) {
+        slots::visit(
+            &self.bucket.slots,
+            &self.view.pages(),
+            Span::all(&self.bucket.slots, Order::Ascending),
+            Window::Page,
+            |e| {
+                f(e.target().index());
+                ControlFlow::<()>::Continue(())
+            },
+        );
+    }
+
+    /// For a paged bucket: the blocks its index lists for `t` and its unindexed last block,
+    /// scanned for it.
+    fn holds(&self, t: u32) -> bool {
+        let t = NodeId::new(t);
+        let bucket = self.bucket;
+        let pages = self.view.pages();
         let spans = self
-            .edge_view()
+            .view
             .indexed_spans_to(bucket, t)
             .unwrap_or_else(|| alloc::vec![(0, bucket.slots.stored())]);
         spans.iter().any(|&(low, high)| {
             slots::visit(
                 &bucket.slots,
-                &view,
+                &pages,
                 Span::new(low, high, Order::Ascending),
                 Window::Page,
                 |e| {

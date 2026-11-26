@@ -15,6 +15,21 @@ use core::mem::MaybeUninit;
 const SMALL_READ: usize = 128;
 const _: () = assert!(SMALL_READ >= 32 * 4);
 
+/// The body of [`ReadBuf::fill`] and [`ReadBuf::fill_inlined`]: a macro rather than a shared
+/// function, so that each compiles exactly as written. Routing both through one always-inlined
+/// function cost visits of runs 3-7 % (`visit_run_1024_batched`), the crate's code being split
+/// into codegen units differently.
+macro_rules! read_at {
+    ($buf:ident, $view:ident, $at:ident, $len:ident) => {{
+        if $len <= SMALL_READ {
+            return $view.read_uninit($at, $buf.small.get_mut(..$len).unwrap_or(&mut []));
+        }
+        let bytes = $buf.heap_of($len);
+        $view.read_into($at, bytes);
+        bytes
+    }};
+}
+
 /// Where reads land: a small stack buffer that reads fill without zeroing it, else one heap
 /// buffer sized by the first read that needs it and never zeroed again.
 pub(crate) struct ReadBuf {
@@ -48,12 +63,7 @@ impl ReadBuf {
         at: ByteOffset,
         len: usize,
     ) -> &[u8] {
-        if len <= SMALL_READ {
-            return view.read_uninit(at, self.small.get_mut(..len).unwrap_or(&mut []));
-        }
-        let bytes = self.heap_of(len);
-        view.read_into(at, bytes);
-        bytes
+        read_at!(self, view, at, len)
     }
 
     /// Reads `len` bytes at `at`.
@@ -63,12 +73,7 @@ impl ReadBuf {
         at: ByteOffset,
         len: usize,
     ) -> &[u8] {
-        if len <= SMALL_READ {
-            return view.read_uninit(at, self.small.get_mut(..len).unwrap_or(&mut []));
-        }
-        let bytes = self.heap_of(len);
-        view.read_into(at, bytes);
-        bytes
+        read_at!(self, view, at, len)
     }
 
     /// The heap buffer's first `len` bytes, holding whatever an earlier read left there.

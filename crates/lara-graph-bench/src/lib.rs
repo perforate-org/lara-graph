@@ -34,8 +34,11 @@ mod values;
 
 const LABEL: Label = Label::new(2);
 
+/// The memory a canister gives a graph.
+type BenchMemory = VirtualMemory<DefaultMemoryImpl>;
+
 /// The graph every bench measures.
-type Bench = Graph<VirtualMemory<DefaultMemoryImpl>>;
+type Bench = Graph<BenchMemory>;
 
 /// A graph in seven virtual stable memories (ids 0..7), as a canister wires it.
 fn graph() -> Bench {
