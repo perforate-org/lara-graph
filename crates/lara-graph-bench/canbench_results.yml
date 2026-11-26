@@ -16,49 +16,49 @@ benches:
   all_labels_batched_1:
     total:
       calls: 1
-      instructions: 1702267
+      instructions: 1730011
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   all_labels_batched_8:
     total:
       calls: 1
-      instructions: 6435232
+      instructions: 6382006
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   all_labels_by_label_1:
     total:
       calls: 1
-      instructions: 2304552
+      instructions: 2317864
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   all_labels_by_label_8:
     total:
       calls: 1
-      instructions: 18577212
+      instructions: 18650940
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   all_labels_visit_1:
     total:
       calls: 1
-      instructions: 1923340
+      instructions: 1937676
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   all_labels_visit_8:
     total:
       calls: 1
-      instructions: 7051532
+      instructions: 7149836
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bfs_grid_1024:
     total:
       calls: 1
-      instructions: 1271715
+      instructions: 1278883
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -121,399 +121,399 @@ benches:
   bulk_hub_4096:
     total:
       calls: 1
-      instructions: 14819067
+      instructions: 14839552
       heap_increase: 6
       stable_memory_increase: 0
     scopes: {}
   bulk_hub_65536:
     total:
       calls: 1
-      instructions: 254751650
+      instructions: 255079335
       heap_increase: 116
       stable_memory_increase: 0
     scopes: {}
   churn_fresh_1024:
     total:
       calls: 1
-      instructions: 16786022
+      instructions: 17051238
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   churn_fresh_compacting_1024:
     total:
       calls: 1
-      instructions: 16857960
+      instructions: 17123862
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   churn_turned_1024:
     total:
       calls: 1
-      instructions: 17695736
+      instructions: 17960952
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   churn_turned_compacting_1024:
     total:
       calls: 1
-      instructions: 19066922
+      instructions: 19340313
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   common3_1024:
     total:
       calls: 1
-      instructions: 287065
+      instructions: 287089
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   common3_256:
     total:
       calls: 1
-      instructions: 79816
+      instructions: 79840
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   common3_64:
     total:
       calls: 1
-      instructions: 27869
+      instructions: 27893
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   common3_65536_1024_64:
     total:
       calls: 1
-      instructions: 161104
+      instructions: 161128
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   common_1024:
     total:
       calls: 1
-      instructions: 220599
+      instructions: 220615
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   common_1024_x64_pairs:
     total:
       calls: 1
-      instructions: 5776153
+      instructions: 5777177
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   common_1024_x64_reused:
     total:
       calls: 1
-      instructions: 843218
+      instructions: 843738
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   common_16:
     total:
       calls: 1
-      instructions: 9933
+      instructions: 9949
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   common_256:
     total:
       calls: 1
-      instructions: 62141
+      instructions: 62157
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   common_4096_4096:
     total:
       calls: 1
-      instructions: 827523
+      instructions: 827539
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   common_64:
     total:
       calls: 1
-      instructions: 22202
+      instructions: 22218
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   common_65536_1024:
     total:
       calls: 1
-      instructions: 4600931
+      instructions: 4600947
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   common_65536_256:
     total:
       calls: 1
-      instructions: 3170684
+      instructions: 3170700
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   common_65536_64:
     total:
       calls: 1
-      instructions: 821940
+      instructions: 821956
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   contains_edge_absent_1024:
     total:
       calls: 1
-      instructions: 1704193
+      instructions: 1711361
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   contains_edge_hub_to_satellite_1024:
     total:
       calls: 1
-      instructions: 2069755
+      instructions: 2086139
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   contains_edge_small_1024:
     total:
       calls: 1
-      instructions: 1597697
+      instructions: 1604865
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   counterpart_1024_batched:
     total:
       calls: 1
-      instructions: 2183044
+      instructions: 2217894
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   counterpart_1024_loop:
     total:
       calls: 1
-      instructions: 3936524
+      instructions: 4006156
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   counterpart_from_hub_tail_4096:
     total:
       calls: 1
-      instructions: 4095
+      instructions: 4163
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   counterpart_into_hub_4096:
     total:
       calls: 1
-      instructions: 17717
+      instructions: 17785
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   counterpart_parallel_1024_batched:
     total:
       calls: 1
-      instructions: 43577727
+      instructions: 43577795
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   counterpart_parallel_1024_loop:
     total:
       calls: 1
-      instructions: 45919430
+      instructions: 45989062
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   counterpart_parallel_from_hub_65536:
     total:
       calls: 1
-      instructions: 94120
+      instructions: 94188
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   counterpart_parallel_from_target_65536:
     total:
       calls: 1
-      instructions: 83446
+      instructions: 83514
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   degree_1024:
     total:
       calls: 1
-      instructions: 780552
+      instructions: 787720
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   degree_1024_batched:
     total:
       calls: 1
-      instructions: 675375
+      instructions: 676495
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   degree_absent_label_1024:
     total:
       calls: 1
-      instructions: 594184
+      instructions: 579848
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   degree_absent_label_1024_batched:
     total:
       calls: 1
-      instructions: 487258
+      instructions: 466874
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   detach_1024_of_hub_65536:
     total:
       calls: 1
-      instructions: 33367619
+      instructions: 33485379
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   detach_1024_of_hub_65536_swept:
     total:
       calls: 1
-      instructions: 25179732
+      instructions: 25312484
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   detach_4096_of_hub_65536:
     total:
       calls: 1
-      instructions: 135774712
+      instructions: 136245752
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   detach_4096_of_hub_65536_swept:
     total:
       calls: 1
-      instructions: 81445548
+      instructions: 81974588
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   detach_hub_1024:
     total:
       calls: 1
-      instructions: 4009559
+      instructions: 4088441
       heap_increase: 1
       stable_memory_increase: 0
     scopes: {}
   detach_hub_4096:
     total:
       calls: 1
-      instructions: 24205616
+      instructions: 24521017
       heap_increase: 4
       stable_memory_increase: 0
     scopes: {}
   detach_hub_4096_step_64:
     total:
       calls: 1
-      instructions: 25208171
+      instructions: 25522773
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   detach_hub_65536:
     total:
       calls: 1
-      instructions: 402596710
+      instructions: 407642979
       heap_increase: 57
       stable_memory_increase: 0
     scopes: {}
   detach_parallel_1024:
     total:
       calls: 1
-      instructions: 3653692
+      instructions: 3710068
       heap_increase: 1
       stable_memory_increase: 0
     scopes: {}
   detach_satellite_1024:
     total:
       calls: 1
-      instructions: 20613
+      instructions: 20728
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   detach_satellite_4096:
     total:
       calls: 1
-      instructions: 21107
+      instructions: 21222
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   detach_satellite_65536:
     total:
       calls: 1
-      instructions: 21859
+      instructions: 21974
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   edge_lookup_1024_batched:
     total:
       calls: 1
-      instructions: 653969
+      instructions: 653977
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   edge_lookup_1024_loop:
     total:
       calls: 1
-      instructions: 1514760
+      instructions: 1522952
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   edge_lookup_65536:
     total:
       calls: 1
-      instructions: 1650
+      instructions: 1658
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   edge_value_1024_batched:
     total:
       calls: 1
-      instructions: 1921384
+      instructions: 1921418
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   edge_value_1024_loop:
     total:
       calls: 1
-      instructions: 2807063
+      instructions: 2841879
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   edges_between_hubs_4096:
     total:
       calls: 1
-      instructions: 114398
+      instructions: 114414
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   edges_between_parallel_65536:
     total:
       calls: 1
-      instructions: 37283
+      instructions: 37299
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   expand_label_filter_1024:
     total:
       calls: 1
-      instructions: 309067
+      instructions: 309075
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   has_edges_1024:
     total:
       calls: 1
-      instructions: 775421
+      instructions: 786685
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   has_edges_1024_batched:
     total:
       calls: 1
-      instructions: 607659
+      instructions: 617867
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -541,268 +541,268 @@ benches:
   hub_insert_1024:
     total:
       calls: 1
-      instructions: 6406631
+      instructions: 6491572
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   hub_insert_4096:
     total:
       calls: 1
-      instructions: 32639336
+      instructions: 32917833
       heap_increase: 1
       stable_memory_increase: 0
     scopes: {}
   hub_insert_4096_batched:
     total:
       calls: 1
-      instructions: 31973483
+      instructions: 32112784
       heap_increase: 2
       stable_memory_increase: 0
     scopes: {}
   hub_insert_65536:
     total:
       calls: 1
-      instructions: 546087049
+      instructions: 550236266
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   hub_insert_mixed_4096:
     total:
       calls: 1
-      instructions: 31050078
+      instructions: 31353153
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   hub_insert_mixed_4096_batched:
     total:
       calls: 1
-      instructions: 31909856
+      instructions: 32069711
       heap_increase: 2
       stable_memory_increase: 0
     scopes: {}
   hub_insert_parallel_4096:
     total:
       calls: 1
-      instructions: 32198675
+      instructions: 32685660
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   hub_insert_parallel_4096_batched:
     total:
       calls: 1
-      instructions: 27652881
+      instructions: 27861950
       heap_increase: 1
       stable_memory_increase: 0
     scopes: {}
   hub_insert_undirected_4096:
     total:
       calls: 1
-      instructions: 32741878
+      instructions: 33020375
       heap_increase: 1
       stable_memory_increase: 0
     scopes: {}
   hub_insert_undirected_4096_batched:
     total:
       calls: 1
-      instructions: 33106470
+      instructions: 33245771
       heap_increase: 2
       stable_memory_increase: 0
     scopes: {}
   hub_insert_valued_4096:
     total:
       calls: 1
-      instructions: 50237251
+      instructions: 50502088
       heap_increase: 1
       stable_memory_increase: 0
     scopes: {}
   hub_refill_holes_65536:
     total:
       calls: 1
-      instructions: 820559878
+      instructions: 822624262
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   hub_refill_holes_65536_batched:
     total:
       calls: 1
-      instructions: 755343132
+      instructions: 756293438
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   hub_refill_holes_parallel_65536:
     total:
       calls: 1
-      instructions: 1018456819
+      instructions: 1022192371
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   hub_refill_holes_parallel_65536_batched:
     total:
       calls: 1
-      instructions: 1012530077
+      instructions: 1015151551
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   hub_remove_edges_4096_batched:
     total:
       calls: 1
-      instructions: 44958157
+      instructions: 45294070
       heap_increase: 4
       stable_memory_increase: 0
     scopes: {}
   hub_remove_edges_4096_loop:
     total:
       calls: 1
-      instructions: 54302573
+      instructions: 54687597
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   hub_remove_edges_parallel_4096_batched:
     total:
       calls: 1
-      instructions: 92493084
+      instructions: 92603752
       heap_increase: 4
       stable_memory_increase: 0
     scopes: {}
   hub_remove_edges_parallel_4096_loop:
     total:
       calls: 1
-      instructions: 108758117
+      instructions: 109061221
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   hub_remove_half_compact_4096:
     total:
       calls: 1
-      instructions: 32691924
+      instructions: 32884505
       heap_increase: 1
       stable_memory_increase: 0
     scopes:
       compaction:
         calls: 1
-        instructions: 2863895
+        instructions: 2863964
         heap_increase: 1
         stable_memory_increase: 0
       removals:
         calls: 1
-        instructions: 29826107
+        instructions: 30018619
         heap_increase: 0
         stable_memory_increase: 0
   hub_remove_half_compact_65536:
     total:
       calls: 1
-      instructions: 584955666
+      instructions: 588036977
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       compaction:
         calls: 1
-        instructions: 88804729
+        instructions: 88805848
         heap_increase: 0
         stable_memory_increase: 0
       removals:
         calls: 1
-        instructions: 496149015
+        instructions: 499229207
         heap_increase: 0
         stable_memory_increase: 0
   hub_remove_half_compact_65536_batched:
     total:
       calls: 1
-      instructions: 509788602
+      instructions: 512476738
       heap_increase: 29
       stable_memory_increase: 0
     scopes:
       compaction:
         calls: 1
-        instructions: 88804711
+        instructions: 88805830
         heap_increase: 0
         stable_memory_increase: 0
       removals:
         calls: 1
-        instructions: 420981950
+        instructions: 423668967
         heap_increase: 29
         stable_memory_increase: 0
   hub_remove_one_65536:
     total:
       calls: 1
-      instructions: 29303
+      instructions: 29397
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   hub_scan_1024:
     total:
       calls: 1
-      instructions: 2746010
+      instructions: 2746418
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   hub_scan_65536:
     total:
       calls: 1
-      instructions: 158754602
+      instructions: 158755010
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   hub_targets_at_256_of_65536:
     total:
       calls: 1
-      instructions: 85158
+      instructions: 85166
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   hub_visit_1024:
     total:
       calls: 1
-      instructions: 1259157
+      instructions: 1259565
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   hub_visit_65536:
     total:
       calls: 1
-      instructions: 63725946
+      instructions: 63726354
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   hub_visit_descending_65536:
     total:
       calls: 1
-      instructions: 75415146
+      instructions: 75415554
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   hub_visit_values_65536:
     total:
       calls: 1
-      instructions: 87576077
+      instructions: 87576485
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   hub_visit_with_values_1024:
     total:
       calls: 1
-      instructions: 2243617
+      instructions: 2244025
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   hub_windows_descending_65536:
     total:
       calls: 1
-      instructions: 2635549
+      instructions: 2637597
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   labels_1024:
     total:
       calls: 1
-      instructions: 1029465
+      instructions: 1035609
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   labels_1024_batched:
     total:
       calls: 1
-      instructions: 430525
+      instructions: 438557
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -837,14 +837,14 @@ benches:
   offset_60000_of_hub_65536:
     total:
       calls: 1
-      instructions: 38123
+      instructions: 38131
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   offset_60000_of_hub_65536_counted:
     total:
       calls: 1
-      instructions: 2016346
+      instructions: 2016354
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -865,14 +865,14 @@ benches:
   set_edge_value_1024_batched:
     total:
       calls: 1
-      instructions: 6603629
+      instructions: 6686607
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   set_edge_value_1024_loop:
     total:
       calls: 1
-      instructions: 7671033
+      instructions: 7771385
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -893,273 +893,273 @@ benches:
   set_value_4096:
     total:
       calls: 1
-      instructions: 7661
+      instructions: 7759
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   shortest_paths_grid_1024:
     total:
       calls: 1
-      instructions: 2263162
+      instructions: 2270330
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   small_insert_3rd_512:
     total:
       calls: 1
-      instructions: 3815275
+      instructions: 3857771
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   small_insert_4th_512:
     total:
       calls: 1
-      instructions: 3147581
+      instructions: 3190077
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   small_insert_5th_512:
     total:
       calls: 1
-      instructions: 4698080
+      instructions: 4740576
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   sorted_1024:
     total:
       calls: 1
-      instructions: 206142
+      instructions: 206150
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   sorted_16:
     total:
       calls: 1
-      instructions: 4946
+      instructions: 4954
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   sorted_256:
     total:
       calls: 1
-      instructions: 54846
+      instructions: 54854
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   sorted_4096:
     total:
       calls: 1
-      instructions: 936866
+      instructions: 936874
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   sorted_64:
     total:
       calls: 1
-      instructions: 17022
+      instructions: 17030
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   sorted_65536:
     total:
       calls: 1
-      instructions: 14800922
+      instructions: 14800930
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   triangles_1024_16_batched:
     total:
       calls: 1
-      instructions: 50135939
+      instructions: 50264963
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   triangles_1024_16_ordered:
     total:
       calls: 1
-      instructions: 26768785
+      instructions: 26840185
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   triangles_1024_16_pairs:
     total:
       calls: 1
-      instructions: 131618952
+      instructions: 131855496
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   triangles_1024_16_reused:
     total:
       calls: 1
-      instructions: 50799670
+      instructions: 50928694
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   triangles_256_64_batched:
     total:
       calls: 1
-      instructions: 138680277
+      instructions: 138798549
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   triangles_256_64_ordered:
     total:
       calls: 1
-      instructions: 54106948
+      instructions: 54167183
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   triangles_256_64_pairs:
     total:
       calls: 1
-      instructions: 338990974
+      instructions: 339222142
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   triangles_256_64_reused:
     total:
       calls: 1
-      instructions: 152466096
+      instructions: 152584368
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   two_hop_ordered:
     total:
       calls: 1
-      instructions: 1295251
+      instructions: 1302427
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   two_hop_scattered:
     total:
       calls: 1
-      instructions: 1295251
+      instructions: 1302427
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   two_hop_shuffled:
     total:
       calls: 1
-      instructions: 1295251
+      instructions: 1302427
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   unsorted_1024:
     total:
       calls: 1
-      instructions: 50486
+      instructions: 50494
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   unsorted_16:
     total:
       calls: 1
-      instructions: 2794
+      instructions: 2802
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   unsorted_256:
     total:
       calls: 1
-      instructions: 15390
+      instructions: 15398
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   unsorted_4096:
     total:
       calls: 1
-      instructions: 179680
+      instructions: 179688
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   unsorted_64:
     total:
       calls: 1
-      instructions: 6214
+      instructions: 6222
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   unsorted_65536:
     total:
       calls: 1
-      instructions: 2726792
+      instructions: 2726800
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   visit_inline_1024:
     total:
       calls: 1
-      instructions: 840959
+      instructions: 855295
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   visit_inline_1024_batched:
     total:
       calls: 1
-      instructions: 649819
+      instructions: 655083
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   visit_run_1024:
     total:
       calls: 1
-      instructions: 1303807
+      instructions: 1310975
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   visit_run_1024_batch_context:
     total:
       calls: 1
-      instructions: 1138032
+      instructions: 1139152
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   visit_run_1024_batched:
     total:
       calls: 1
-      instructions: 1140331
+      instructions: 1141451
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   visit_run_1024_batched_scattered:
     total:
       calls: 1
-      instructions: 1322380
+      instructions: 1329548
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   visit_run_1024_batched_shuffled:
     total:
       calls: 1
-      instructions: 1352503
+      instructions: 1359551
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   visit_values_many_1024_batched:
     total:
       calls: 1
-      instructions: 1779038
+      instructions: 1787230
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   visit_values_many_1024_loop:
     total:
       calls: 1
-      instructions: 1816847
+      instructions: 1825039
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   visit_with_values_many_1024_batched:
     total:
       calls: 1
-      instructions: 1167760
+      instructions: 1175952
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   visit_with_values_many_1024_loop:
     total:
       calls: 1
-      instructions: 1211695
+      instructions: 1219887
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}

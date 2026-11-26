@@ -1,7 +1,8 @@
 //! Per-node label bucket lists: which `(label, direction)` label buckets a node has, and their
 //! descriptors.
 //!
-//! Entries are 13 bytes (label, direction, 10-byte listed descriptor), sorted by key. A list starts
+//! Entries are 12 bytes (label and a 10-byte listed descriptor, the direction in its free bits),
+//! sorted by key. A list starts
 //! **flat**: one extent in the page store, read whole and searched in memory; adding a bucket
 //! shifts entries in place or moves the list to the next class. A flat list that would outgrow a
 //! page becomes **tiered** (`tiered`): a small top extent lists leaf pages with their first key and
@@ -24,11 +25,11 @@
 //!
 //! ```text
 //! ---------------------------------------- <- Extent start
-//! Entry 0                         ↕ 13 bytes
+//! Entry 0                         ↕ 12 bytes
 //! ----------------------------------------
 //! ...
 //! ----------------------------------------
-//! Entry count - 1                 ↕ 13 bytes
+//! Entry count - 1                 ↕ 12 bytes
 //! ----------------------------------------
 //! Unused space
 //! ```
@@ -41,17 +42,15 @@
 //! ---------------------------------------- <- Offset 0
 //! Label                           ↕ 2 bytes
 //! ----------------------------------------
-//! Direction: 0 out, 1 in, 2 undir.↕ 1 byte
-//! ----------------------------------------
-//! Stored: listed descriptor or    ↕ 10 bytes
-//!   header ref
+//! Stored: listed descriptor or    ↕ 10 bytes      (bits 1-2 of the last byte the direction:
+//!   header ref                                     0 out, 1 in, 2 undirected)
 //! ----------------------------------------
 //! ```
 
 mod tiered;
 
 use crate::bucket::LabelBucketKey;
-use crate::bucket::descriptor::LISTED_BYTES;
+use crate::bucket::descriptor::{LISTED_BYTES, LISTED_FREE_BITS};
 use crate::bucket::stored::Stored;
 use crate::id::{Direction, EdgeLabel};
 use crate::store::corrupt::corrupt;
@@ -62,9 +61,9 @@ use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
 /// Bytes per list entry.
-const ENTRY_BYTES: usize = 3 + LISTED_BYTES;
+const ENTRY_BYTES: usize = 2 + LISTED_BYTES;
 /// Entries a flat list or a leaf holds: as many as a count byte can take but for 255 ([`TIERED`]),
-/// 254 of the 315 a page has room for. Tests use a handful so that lists tier early.
+/// 254 of the 341 a page has room for. Tests use a handful so that lists tier early.
 const LEAF_ENTRIES: usize = crate::store::scale::Scale::pick(8, 254);
 const _: () = assert!(LEAF_ENTRIES * ENTRY_BYTES <= 4096);
 const _: () = assert!(crate::store::page_store::PAGE_BYTES == 4096);
@@ -80,12 +79,21 @@ const _: () = assert!(LEAF_ENTRIES < 0xFF);
 const DIRECTION_OUTGOING: u8 = 0;
 const DIRECTION_INCOMING: u8 = 1;
 const DIRECTION_UNDIRECTED: u8 = 2;
+/// Where an entry keeps its direction: the listed descriptor's free bits.
+const DIRECTION_SHIFT: u32 = LISTED_FREE_BITS.trailing_zeros();
+const _: () = assert!(DIRECTION_UNDIRECTED << DIRECTION_SHIFT & !LISTED_FREE_BITS == 0);
 
 /// A key as the list stores and orders it.
 impl LabelBucketKey {
     /// The key's place in key order: the label, then the direction.
     fn rank(self) -> u32 {
-        rank_of(self.encode())
+        (u32::from(self.label.get()) << 8) | u32::from(self.direction_bits())
+    }
+
+    /// The direction as an entry's last byte holds it.
+    fn direction_bits(self) -> u8 {
+        let [_, _, direction] = self.encode();
+        direction << DIRECTION_SHIFT
     }
 
     fn encode(self) -> [u8; 3] {
@@ -129,9 +137,36 @@ enum Shape {
 /// in it, at byte offset `at`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct EntryAt {
-    leaf: u16,
+    /// The leaf, and in the top two bits the key's direction, which [`set`] keeps beside the
+    /// descriptor it writes: a field of its own made every lookup's copies of this larger.
+    leaf_and_direction: u16,
     index: usize,
     at: ByteOffset,
+}
+
+/// Where [`EntryAt`] keeps the direction: above any leaf's index.
+const LEAF_DIRECTION_SHIFT: u32 = 14;
+const _: () = assert!(tiered::TOP_ENTRIES < 1 << LEAF_DIRECTION_SHIFT);
+
+impl EntryAt {
+    fn new(leaf: u16, index: usize, at: ByteOffset, key: LabelBucketKey) -> Self {
+        let [_, _, direction] = key.encode();
+        Self {
+            leaf_and_direction: leaf | (u16::from(direction) << LEAF_DIRECTION_SHIFT),
+            index,
+            at,
+        }
+    }
+
+    const fn leaf(self) -> u16 {
+        self.leaf_and_direction & ((1 << LEAF_DIRECTION_SHIFT) - 1)
+    }
+
+    /// The direction as the entry's last byte holds it.
+    fn direction_bits(self) -> u8 {
+        let direction = u8::try_from(self.leaf_and_direction >> LEAF_DIRECTION_SHIFT).unwrap_or(0);
+        direction << DIRECTION_SHIFT
+    }
 }
 
 /// The result of looking a key up in a list.
@@ -174,11 +209,7 @@ pub(crate) fn lookup<M: Memory>(
 ) -> Lookup {
     match list.map(|LabelBucketList(shape)| shape) {
         None => Lookup::Absent {
-            gap: EntryAt {
-                leaf: 0,
-                index: 0,
-                at: ByteOffset::new(0),
-            },
+            gap: EntryAt::new(0, 0, ByteOffset::new(0), key),
         },
         Some(Shape::Flat { extent, count }) => {
             search(pages, extent.offset(), usize::from(count), key, 0)
@@ -233,19 +264,24 @@ const SCANNED_ENTRIES: usize = 8;
 
 /// The bucket `key` names among sorted `entries`: a short list compared entry by entry on the
 /// key's encoded bytes, a longer one searched by rank.
-#[inline]
+///
+/// Inlined into every lookup: out of line, batched degrees and visits cost 2-5 % more
+/// (`degree_1024_batched`).
+#[expect(clippy::inline_always, reason = "measured: see the doc")]
+#[inline(always)]
 fn find_stored(entries: &[[u8; ENTRY_BYTES]], key: LabelBucketKey) -> Option<Stored> {
     let entry = if entries.len() <= SCANNED_ENTRIES {
-        let want = key.encode();
+        let label = key.label.get().to_le_bytes();
+        let direction = key.direction_bits();
         entries
             .iter()
-            .find(|&&[k0, k1, k2, ..]| [k0, k1, k2] == want)
+            .find(|&&[l0, l1, .., last]| [l0, l1] == label && last & LISTED_FREE_BITS == direction)
     } else {
         let want = key.rank();
-        let found = entries.binary_search_by(|&[k0, k1, k2, ..]| rank_of([k0, k1, k2]).cmp(&want));
+        let found = entries.binary_search_by(|e| rank_of(e).cmp(&want));
         found.ok().and_then(|index| entries.get(index))
     };
-    entry.map(|&[_, _, _, rest @ ..]| Stored::decode(rest))
+    entry.map(|e| Stored::decode(listed_of(e)))
 }
 
 /// [`lookup_stored`] over entries already copied into `bytes`, at `offset`.
@@ -272,23 +308,19 @@ fn search<M: Memory>(
     key: LabelBucketKey,
     leaf: u16,
 ) -> Lookup {
-    let place = |index| EntryAt {
-        leaf,
-        index,
-        at: entry_offset(base, index),
-    };
+    let place = |index| EntryAt::new(leaf, index, entry_offset(base, index), key);
     // Entries are compared as encoded, and only the one found is decoded: decoding each key
     // the search probes cost about a seventh of a node visit on the IC (`degree_1024`).
     let want = key.rank();
     pages.with_read(base, count * ENTRY_BYTES, |bytes| {
         let (entries, _) = bytes.as_chunks::<ENTRY_BYTES>();
-        let found = entries.binary_search_by(|&[k0, k1, k2, ..]| rank_of([k0, k1, k2]).cmp(&want));
+        let found = entries.binary_search_by(|e| rank_of(e).cmp(&want));
         match found {
             Ok(index) => Lookup::Present {
                 entry: place(index),
                 stored: entries
                     .get(index)
-                    .map_or_else(|| corrupt("list entry"), |&e| decode_entry(e).1),
+                    .map_or_else(|| corrupt("list entry"), |e| Stored::decode(listed_of(e))),
             },
             Err(index) => Lookup::Absent { gap: place(index) },
         }
@@ -305,11 +337,7 @@ pub(crate) fn first<M: Memory>(
         Shape::Tiered { top } => (tiered::first_leaf(pages, top), 0),
     };
     let (key, descriptor) = decode_entry(pages.read_array(leaf_page));
-    let entry = EntryAt {
-        leaf,
-        index: 0,
-        at: leaf_page,
-    };
+    let entry = EntryAt::new(leaf, 0, leaf_page, key);
     (entry, key, descriptor)
 }
 
@@ -375,9 +403,8 @@ pub(crate) fn for_each_bytes<B>(
 ) -> Option<B> {
     let entries = bytes.get(at..)?.get(..count * ENTRY_BYTES)?;
     let (entries, _) = entries.as_chunks::<ENTRY_BYTES>();
-    for &[k0, k1, k2, rest @ ..] in entries {
-        let key = LabelBucketKey::decode([k0, k1, k2]);
-        if let ControlFlow::Break(value) = f(key, Listed(rest)) {
+    for entry in entries {
+        if let ControlFlow::Break(value) = f(key_of(entry), Listed(listed_of(entry))) {
             return Some(value);
         }
     }
@@ -423,16 +450,7 @@ pub(crate) fn one_batch<M: Memory>(
         }
         let within = usize::try_from(extent.offset().get() - extent.page().offset().get())
             .unwrap_or_else(|_| corrupt("bucket list offset"));
-        let [l0, l1] = key.label.get().to_le_bytes();
-        let direction = match key.direction {
-            Direction::Outgoing => DIRECTION_OUTGOING,
-            Direction::Incoming => DIRECTION_INCOMING,
-            Direction::Undirected => DIRECTION_UNDIRECTED,
-        };
-        buffer[within] = l0;
-        buffer[within + 1] = l1;
-        buffer[within + 2] = direction;
-        buffer[within + 3..within + ENTRY_BYTES].copy_from_slice(&stored.encode());
+        buffer[within..within + ENTRY_BYTES].copy_from_slice(&encode_entry(key, &stored));
         out.push(LabelBucketList(Shape::Flat { extent, count: 1 }));
     }
     if let Some(page) = page {
@@ -488,29 +506,53 @@ pub(crate) fn extents<M: Memory>(pages: &Pages<'_, M>, list: LabelBucketList) ->
     }
 }
 
-/// An encoded key's place in key order, without decoding it: the label, then the direction
-/// byte, whose values follow [`Direction`]'s order (checked by a test).
-fn rank_of([l0, l1, direction]: [u8; 3]) -> u32 {
-    (u32::from(u16::from_le_bytes([l0, l1])) << 8) | u32::from(direction)
+/// An entry's place in key order, without decoding its key: the label, then the direction bits,
+/// whose values follow [`Direction`]'s order (checked by a test).
+#[inline]
+fn rank_of(entry: &[u8; ENTRY_BYTES]) -> u32 {
+    let &[l0, l1, .., last] = entry;
+    (u32::from(u16::from_le_bytes([l0, l1])) << 8) | u32::from(last & LISTED_FREE_BITS)
+}
+
+#[inline]
+fn key_of(entry: &[u8; ENTRY_BYTES]) -> LabelBucketKey {
+    let &[l0, l1, .., last] = entry;
+    LabelBucketKey::decode([l0, l1, (last & LISTED_FREE_BITS) >> DIRECTION_SHIFT])
+}
+
+/// An entry's listed descriptor, its direction bits left in: decoding ignores them.
+#[inline]
+const fn listed_of(entry: &[u8; ENTRY_BYTES]) -> [u8; LISTED_BYTES] {
+    let &[_, _, s0, s1, s2, s3, s4, s5, s6, s7, s8, s9] = entry;
+    [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9]
 }
 
 #[inline]
 fn decode_entry(entry: [u8; ENTRY_BYTES]) -> (LabelBucketKey, Stored) {
-    let [k0, k1, k2, rest @ ..] = entry;
-    (LabelBucketKey::decode([k0, k1, k2]), Stored::decode(rest))
+    (key_of(&entry), Stored::decode(listed_of(&entry)))
+}
+
+/// The listed descriptor with `direction` bits in its free ones.
+#[inline]
+fn with_direction(d: &Stored, direction: u8) -> [u8; LISTED_BYTES] {
+    let [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9] = d.encode();
+    [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9 | direction]
 }
 
 /// Laid out by hand, as are the other hot encoders: chaining parts as iterators compiles to
 /// slow code on the IC (a 32-byte directory record cost about 1,500 instructions that way).
 fn encode_entry(key: LabelBucketKey, d: &Stored) -> [u8; ENTRY_BYTES] {
-    let [k0, k1, k2] = key.encode();
-    let [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9] = d.encode();
-    [k0, k1, k2, s0, s1, s2, s3, s4, s5, s6, s7, s8, s9]
+    let [l0, l1] = key.label.get().to_le_bytes();
+    let [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9] = with_direction(d, key.direction_bits());
+    [l0, l1, s0, s1, s2, s3, s4, s5, s6, s7, s8, s9]
 }
 
-/// Publishes a bucket's new descriptor in place. Cannot fail.
+/// Publishes a bucket's new descriptor in place, keeping the entry's direction. Cannot fail.
 pub(crate) fn set<M: Memory>(store: &PageStore<M>, entry: EntryAt, d: &Stored) {
-    store.write(ByteOffset::new(entry.at.get() + 3), &d.encode());
+    store.write(
+        ByteOffset::new(entry.at.get() + 2),
+        &with_direction(d, entry.direction_bits()),
+    );
 }
 
 /// Adds a bucket for `key` at `gap`. Returns the list's new reference; on error the old list is
@@ -653,6 +695,20 @@ mod proofs {
     fn keys_rank_in_key_order() {
         let (a, b) = (any_key(), any_key());
         assert_eq!(a.rank().cmp(&b.rank()), a.cmp(&b));
+    }
+
+    /// An entry holds its key and its listed bytes apart: its rank is its key's, and the
+    /// direction bits leave what the listed bytes decode to alone.
+    #[kani::proof]
+    fn entries_hold_key_and_descriptor_apart() {
+        let key = any_key();
+        let listed: [u8; LISTED_BYTES] = kani::any();
+        kani::assume(crate::bucket::descriptor::listed_kind(&listed) != 2);
+        let stored = Stored::decode(listed);
+        let entry = encode_entry(key, &stored);
+        assert_eq!(key_of(&entry), key);
+        assert_eq!(rank_of(&entry), key.rank());
+        assert_eq!(Stored::decode(listed_of(&entry)), stored);
     }
 
     /// Any seven bytes decode to a list reference that encodes back to itself.
