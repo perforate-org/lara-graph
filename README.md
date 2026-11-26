@@ -138,10 +138,10 @@ Each memory starts, as ic-stable-structures' do, with a 3-byte magic and a versi
 
 | Role | Holds |
 | --- | --- |
-| `Nodes` | one 7-byte record per node |
+| `Nodes` | one 8-byte record per node |
 | `Pages` | label buckets (edges, their values and target indexes), each node's label bucket list, the width table, larger node label sets and each label's nodes; before every 128 of them, a page of 32-byte allocation records |
 | `NodeLabels` | one 6-byte label cell per node, and the root of the label postings |
-| `Proxies` | one 7-byte record per proxy; optional, and empty until the first proxy |
+| `Proxies` | one 8-byte record per proxy; optional, and empty until the first proxy |
 
 ## Where things are written down
 

@@ -5,7 +5,7 @@ use crate::store::memory::Memory;
 /// What one of a graph's memories holds. Each memory must be used by one graph only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MemoryRole {
-    /// One 7-byte record per node.
+    /// One 8-byte record per node.
     Nodes,
     /// The pages: label buckets (edges, their values and target indexes), each node's label
     /// bucket list, the width table, larger node label sets and each label's nodes; and before
@@ -13,7 +13,7 @@ pub enum MemoryRole {
     Pages,
     /// One 6-byte label cell per node.
     NodeLabels,
-    /// One 7-byte record per proxy ([`crate::NodeId::proxy`]). Nothing is written to it until
+    /// One 8-byte record per proxy ([`crate::NodeId::proxy`]). Nothing is written to it until
     /// the first proxy is added, so a graph without proxies leaves it empty.
     Proxies,
 }

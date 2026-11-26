@@ -89,6 +89,19 @@ fn degree_1024() -> BenchResult {
     per_satellite(|g, s| two_hop::degree(g, s, Direction::Outgoing))
 }
 
+/// A label no satellite has edges under: lookups of it miss.
+const ABSENT: lara_graph::EdgeLabel = lara_graph::EdgeLabel::new(9);
+
+/// Asks each satellite for its degree under a label it has no bucket for: a lookup that misses,
+/// the record read and the list searched for nothing.
+#[bench(raw)]
+fn degree_absent_label_1024() -> BenchResult {
+    per_satellite(|g, s| {
+        g.degree(s, ABSENT.outgoing())
+            .unwrap_or_else(|e| panic!("degree: {e}"))
+    })
+}
+
 /// Visits each satellite's in bucket: one edge, held inline in its list entry.
 #[bench(raw)]
 fn visit_inline_1024() -> BenchResult {
@@ -150,6 +163,21 @@ fn visit_run_1024_batch_context() -> BenchResult {
             &satellites,
             Direction::Outgoing,
         ))
+    })
+}
+
+/// [`degree_absent_label_1024`] through one `ReadBatch`.
+#[bench(raw)]
+fn degree_absent_label_1024_batched() -> BenchResult {
+    let mut g = graph();
+    let hub = two_hop::build(&mut g, Layout::Ordered);
+    let satellites = two_hop::satellites(&g, hub);
+    let mut degrees = Vec::new();
+    bench_fn(|| {
+        g.read_batch()
+            .degree_each(&satellites, ABSENT.outgoing(), &mut degrees)
+            .unwrap_or_else(|e| panic!("degrees: {e}"));
+        black_box(degrees.len())
     })
 }
 
