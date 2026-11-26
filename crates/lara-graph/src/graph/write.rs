@@ -1,4 +1,4 @@
-//! Writes: adding nodes, inserting and removing edges, bulk load, edge values, detaching nodes and compaction.
+//! Writes: adding nodes, inserting and removing edges, bulk load, edge values, deleting nodes and compaction.
 //! Writes stand on the node and edge stores.
 
 mod bulk;
@@ -9,4 +9,4 @@ mod nodes;
 mod remove;
 mod values;
 
-pub use detach::DetachingSet;
+pub use detach::DeletingSet;

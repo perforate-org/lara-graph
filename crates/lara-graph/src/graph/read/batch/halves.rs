@@ -4,11 +4,11 @@ use super::{Mode, ReadBatch, check_all};
 use crate::bucket::LabelBucketKey;
 use crate::bucket::descriptor::Descriptor;
 use crate::error::Error;
+use crate::graph::GraphMemories;
 use crate::id::{EdgeRef, NodeId};
-use crate::store::memory::Memory;
 use alloc::vec::Vec;
 
-impl<M: Memory> ReadBatch<'_, M> {
+impl<S: GraphMemories> ReadBatch<'_, S> {
     /// Replaces `out` with the value of each live half's edge, as that half's bucket holds it;
     /// `None` for a hole, a position past the end or a missing bucket. Consecutive halves in the
     /// same bucket reuse one lookup.
@@ -62,7 +62,7 @@ impl<M: Memory> ReadBatch<'_, M> {
     /// [`Error::UnknownNode`] for any node at or past [`Graph::node_count`].
     ///
     /// [`Graph::node_count`]: crate::Graph::node_count
-    pub fn edge_targets_each(
+    pub fn other_ends_each(
         &mut self,
         halves: &[EdgeRef],
         out: &mut Vec<Option<NodeId>>,

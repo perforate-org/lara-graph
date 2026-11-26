@@ -12,7 +12,7 @@ fn key(i: u32) -> LabelBucketKey {
         _ => Direction::Undirected,
     };
     LabelBucketKey {
-        label: Label::new(u16::try_from(i / 3).unwrap()),
+        label: EdgeLabel::new(u16::try_from(i / 3).unwrap()),
         direction,
     }
 }
@@ -140,7 +140,7 @@ fn encoded_keys_rank_in_key_order() {
         .into_iter()
         .flat_map(|l| {
             directions.map(|direction| LabelBucketKey {
-                label: Label::new(l),
+                label: EdgeLabel::new(l),
                 direction,
             })
         })

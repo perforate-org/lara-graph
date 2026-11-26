@@ -8,24 +8,30 @@ use super::*;
 fn between_at_a(
     g: &Graph<VecMemory>,
     a: NodeId,
-    key: (Label, Direction),
+    key: Adjacency,
     b: NodeId,
     order: Order,
 ) -> Vec<Position> {
     let mut out = Vec::new();
-    g.visit_edges_between(a, (key.0, key.1), b, order, |half| {
-        let at_a = if half.node() == a && half.direction() == key.1 {
-            half
-        } else {
-            g.counterpart(half).unwrap().unwrap()
-        };
-        assert_eq!(
-            (at_a.node(), at_a.label(), at_a.direction()),
-            (a, key.0, key.1)
-        );
-        out.push(at_a.position());
-        ControlFlow::<()>::Continue(())
-    })
+    g.visit_edges_between(
+        a,
+        Adjacency::new(key.label(), key.direction()),
+        b,
+        order,
+        |half| {
+            let at_a = if half.node() == a && half.direction() == key.direction() {
+                half
+            } else {
+                g.counterpart(half).unwrap().unwrap()
+            };
+            assert_eq!(
+                (at_a.node(), at_a.label(), at_a.direction()),
+                (a, key.label(), key.direction())
+            );
+            out.push(at_a.position());
+            ControlFlow::<()>::Continue(())
+        },
+    )
     .unwrap();
     out
 }
@@ -34,25 +40,30 @@ fn between_at_a(
 fn brute(
     g: &Graph<VecMemory>,
     a: NodeId,
-    key: (Label, Direction),
+    key: Adjacency,
     b: NodeId,
     order: Order,
 ) -> Vec<Position> {
     let mut out = Vec::new();
-    g.visit_neighbors(a, (key.0, key.1), order, |e| {
-        if e.target() == b {
-            out.push(e.position());
-        }
-        ControlFlow::<()>::Continue(())
-    })
+    g.visit_neighbors(
+        a,
+        Adjacency::new(key.label(), key.direction()),
+        order,
+        |e| {
+            if e.node() == b {
+                out.push(e.position());
+            }
+            ControlFlow::<()>::Continue(())
+        },
+    )
     .unwrap();
     out
 }
 
 #[test]
 fn edges_between_two_nodes_match_a_filter_of_either_end() {
-    let mut g = Graph::new(Memories::from_fn(|_| VecMemory::new()));
-    let nodes: Vec<NodeId> = (0..40).map(|_| g.add_node().unwrap()).collect();
+    let mut g = Graph::format(Memories::from_fn(|_| VecMemory::new()));
+    let nodes: Vec<NodeId> = (0..40).map(|_| g.add_node(&[]).unwrap()).collect();
     let (hub, rest) = nodes.split_first().unwrap();
     let hub = *hub;
     let mut halves = Vec::new();
@@ -61,13 +72,13 @@ fn edges_between_two_nodes_match_a_filter_of_either_end() {
     for i in 0..3000u32 {
         let t = rest[usize::try_from(i % 7).unwrap()];
         halves.push(
-            g.add_edge(NewEdge::directed(hub, l(0), t, Placement::Append, &[]))
+            g.add_edge_with(Edge::directed(hub, l(0), t), Placement::Append)
                 .unwrap(),
         );
     }
     for &t in &rest[7..] {
         halves.push(
-            g.add_edge(NewEdge::directed(hub, l(0), t, Placement::Append, &[]))
+            g.add_edge_with(Edge::directed(hub, l(0), t), Placement::Append)
                 .unwrap(),
         );
     }
@@ -76,30 +87,30 @@ fn edges_between_two_nodes_match_a_filter_of_either_end() {
         let (a, b) = (w[0], w[1]);
         for _ in 0..=i % 3 {
             halves.push(
-                g.add_edge(NewEdge::directed(a, l(0), b, Placement::Append, &[]))
+                g.add_edge_with(Edge::directed(a, l(0), b), Placement::Append)
                     .unwrap(),
             );
             halves.push(
-                g.add_edge(NewEdge::undirected(a, l(1), b, Placement::Append, &[]))
+                g.add_edge_with(Edge::undirected(a, l(1), b), Placement::Append)
                     .unwrap(),
             );
         }
         halves.push(
-            g.add_edge(NewEdge::directed(b, l(0), a, Placement::Append, &[]))
+            g.add_edge_with(Edge::directed(b, l(0), a), Placement::Append)
                 .unwrap(),
         );
     }
     for &a in rest.iter().step_by(5) {
         halves.push(
-            g.add_edge(NewEdge::directed(a, l(0), a, Placement::Append, &[]))
+            g.add_edge_with(Edge::directed(a, l(0), a), Placement::Append)
                 .unwrap(),
         );
         halves.push(
-            g.add_edge(NewEdge::undirected(a, l(1), a, Placement::Append, &[]))
+            g.add_edge_with(Edge::undirected(a, l(1), a), Placement::Append)
                 .unwrap(),
         );
         halves.push(
-            g.add_edge(NewEdge::directed(hub, l(0), a, Placement::Append, &[]))
+            g.add_edge_with(Edge::directed(hub, l(0), a), Placement::Append)
                 .unwrap(),
         );
     }
@@ -113,7 +124,7 @@ fn edges_between_two_nodes_match_a_filter_of_either_end() {
             rest[usize::try_from(i % 30).unwrap()]
         };
         halves.push(
-            g.add_edge(NewEdge::directed(from, l(0), hub2, Placement::Append, &[]))
+            g.add_edge_with(Edge::directed(from, l(0), hub2), Placement::Append)
                 .unwrap(),
         );
     }
@@ -122,10 +133,10 @@ fn edges_between_two_nodes_match_a_filter_of_either_end() {
         g.remove_edge(h.canonical()).unwrap();
     }
     let keys = [
-        (l(0), Direction::Outgoing),
-        (l(0), Direction::Incoming),
-        (l(1), Direction::Undirected),
-        (l(2), Direction::Outgoing),
+        l(0).outgoing(),
+        l(0).incoming(),
+        l(1).undirected(),
+        l(2).outgoing(),
     ];
     for &a in &nodes {
         for &b in &nodes {
@@ -137,19 +148,16 @@ fn edges_between_two_nodes_match_a_filter_of_either_end() {
                         want,
                         "{a:?} {key:?} {b:?} {order:?}"
                     );
-                    assert_eq!(
-                        g.contains_edge(a, (key.0, key.1), b).unwrap(),
-                        !want.is_empty()
-                    );
+                    assert_eq!(g.contains_edge(a, key, b).unwrap(), !want.is_empty());
                 }
             }
         }
     }
     // An unknown other end fails whether `a`'s bucket is a hub's, small or absent.
-    for key in [(l(0), Direction::Outgoing), (l(2), Direction::Outgoing)] {
+    for key in [l(0).outgoing(), l(2).outgoing()] {
         for a in [hub, rest[0]] {
             assert_eq!(
-                g.contains_edge(a, (key.0, key.1), v(1000)),
+                g.contains_edge(a, key, v(1000)),
                 Err(Error::UnknownNode(v(1000)))
             );
         }

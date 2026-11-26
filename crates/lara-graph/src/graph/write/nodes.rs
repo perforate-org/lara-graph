@@ -2,30 +2,31 @@
 
 use crate::error::Error;
 use crate::graph::Graph;
-use crate::id::NodeId;
-use crate::store::memory::Memory;
+use crate::graph::GraphMemories;
+use crate::id::{NodeId, NodeIds, NodeLabel};
 use core::num::NonZeroU32;
+use core::ops::Range;
 
-impl<M: Memory> Graph<M> {
-    /// Adds a node with no edges and returns its id.
+impl<S: GraphMemories> Graph<S> {
+    /// Adds a node with `labels` (in any order; repeats count once) and no edges, and returns its
+    /// id: [`Self::add_nodes`] for one.
     ///
     /// # Errors
     ///
     /// [`Error::OutOfMemory`], or [`Error::AddressSpaceExhausted`] past 2^31 nodes (the ids above
-    /// are proxies').
-    pub fn add_node(&mut self) -> Result<NodeId, Error> {
-        self.add_nodes(NonZeroU32::MIN)
+    /// are proxies'). On error no node is added.
+    pub fn add_node(&mut self, labels: &[NodeLabel]) -> Result<NodeId, Error> {
+        Ok(self.add_nodes(NonZeroU32::MIN, labels)?.first())
     }
 
-    /// Adds `count` nodes and returns the first new id. Ids are consecutive: the new nodes are
-    /// `first.index()..first.index() + count`.
+    /// Adds `count` nodes, each with `labels` and no edges. Their ids are consecutive.
     ///
     /// # Errors
     ///
     /// [`Error::AddressSpaceExhausted`] when the ids would not fit, or [`Error::OutOfMemory`]
-    /// when the records cannot be grown. On error no node is visible.
+    /// when the records or labels cannot be grown. On error no node is added.
     #[inline]
-    pub fn add_nodes(&mut self, count: NonZeroU32) -> Result<NodeId, Error> {
+    pub fn add_nodes(&mut self, count: NonZeroU32, labels: &[NodeLabel]) -> Result<NodeIds, Error> {
         let first = self.node_count();
         let next = first
             .checked_add(count.get())
@@ -33,13 +34,44 @@ impl<M: Memory> Graph<M> {
             .ok_or(Error::AddressSpaceExhausted)?;
         // Labels first: a new node's cell is zeros (no labels), so growing the memory makes it.
         self.labels.reserve(next)?;
-        self.nodes.extend(next)?;
-        Ok(NodeId::new(first))
+        if !labels.is_empty() {
+            self.label_new_nodes(first..next, labels)?;
+        }
+        if let Err(error) = self.nodes.extend(next) {
+            self.clear_new_labels(first..next);
+            return Err(error.into());
+        }
+        Ok(NodeIds::new(NodeId::new(first), count))
+    }
+
+    /// Gives each of the nodes `range`, not yet visible, the set `labels`; on error none keeps
+    /// any.
+    #[inline(never)]
+    fn label_new_nodes(&mut self, range: Range<u32>, labels: &[NodeLabel]) -> Result<(), Error> {
+        let mut set = labels.to_vec();
+        set.sort_unstable();
+        set.dedup();
+        for index in range.clone() {
+            let v = NodeId::new(index);
+            if let Err(error) = self.labels.set(&mut self.label_bucket_lists, v, &set) {
+                self.clear_new_labels(range.start..index);
+                return Err(error.into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Drops the labels of the nodes `range`, not yet visible. Cannot fail.
+    fn clear_new_labels(&mut self, range: Range<u32>) {
+        for index in range {
+            self.labels
+                .clear(&mut self.label_bucket_lists, NodeId::new(index));
+        }
     }
 
     /// Adds a proxy: a node standing for one another graph holds, so that an edge to it keeps
     /// both halves here and a remote node's deletion reaches every local edge to it through the
-    /// proxy's buckets ([`Self::detach`]). A proxy has edges and a state like any node, but no
+    /// proxy's buckets ([`Self::begin_delete`]). A proxy has edges and a state like any node, but no
     /// labels; it is outside [`Self::node_count`] and [`Self::visit_nodes_with_label`]; and no edge
     /// joins two proxies. Its id has the top bit set ([`NodeId::is_proxy`]), so a read tells a
     /// proxy neighbour apart without reading anything.
@@ -48,25 +80,28 @@ impl<M: Memory> Graph<M> {
     ///
     /// # Errors
     ///
-    /// [`Error::OutOfMemory`], or [`Error::AddressSpaceExhausted`] past `2^31 - 1` proxies.
+    /// [`Error::NoProxiesMemory`], [`Error::OutOfMemory`], or [`Error::AddressSpaceExhausted`]
+    /// past `2^31 - 1` proxies.
     pub fn add_proxy(&mut self) -> Result<NodeId, Error> {
-        self.add_proxies(NonZeroU32::MIN)
+        Ok(self.add_proxies(NonZeroU32::MIN)?.first())
     }
 
-    /// Adds `count` proxies and returns the first new id. Ids are consecutive: the new proxies
-    /// are `NodeId::proxy(first..first + count)` for `first` the returned id's ordinal.
+    /// Adds `count` proxies. Their ids are consecutive.
     ///
     /// # Errors
     ///
-    /// [`Error::AddressSpaceExhausted`] when the ids would not fit, or [`Error::OutOfMemory`]
-    /// when the records cannot be grown. On error no proxy is visible.
-    pub fn add_proxies(&mut self, count: NonZeroU32) -> Result<NodeId, Error> {
+    /// [`Error::NoProxiesMemory`], [`Error::AddressSpaceExhausted`] when the ids would not fit,
+    /// or [`Error::OutOfMemory`] when the records cannot be grown. On error no proxy is visible.
+    pub fn add_proxies(&mut self, count: NonZeroU32) -> Result<NodeIds, Error> {
+        if !self.nodes.has_proxies_memory() {
+            return Err(Error::NoProxiesMemory);
+        }
         let first = self.nodes.proxy_count();
         let next = first
             .checked_add(count.get())
             .filter(|&n| n <= NodeId::PROXIES)
             .ok_or(Error::AddressSpaceExhausted)?;
         self.nodes.extend_proxies(next)?;
-        Ok(NodeId::proxy(first))
+        Ok(NodeIds::new(NodeId::proxy(first), count))
     }
 }

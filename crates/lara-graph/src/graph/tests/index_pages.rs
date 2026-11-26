@@ -15,26 +15,19 @@ use crate::store::scale::Scale;
 use std::println;
 
 const EDGES: u32 = 65536;
-const LABEL: Label = Label::new(2);
+const LABEL: EdgeLabel = EdgeLabel::new(2);
 const PAGE: f64 = 4096.0;
 
 /// A hub with an edge to each of `targets` (by index into a pool of `pool` nodes), in order, with
 /// each edge's halves.
 fn hub(pool: u32, targets: impl Iterator<Item = u32>) -> (Graph<VecMemory>, NodeId, Vec<Halves>) {
-    let mut g = Graph::new(Memories::from_fn(|_| VecMemory::new()));
-    let hub = g.add_node().unwrap();
-    let leaves: Vec<NodeId> = (0..pool).map(|_| g.add_node().unwrap()).collect();
+    let mut g = Graph::format(Memories::from_fn(|_| VecMemory::new()));
+    let hub = g.add_node(&[]).unwrap();
+    let leaves: Vec<NodeId> = (0..pool).map(|_| g.add_node(&[]).unwrap()).collect();
     let edges = targets
         .map(|t| {
             let leaf = leaves[usize::try_from(t).unwrap()];
-            g.add_edge(NewEdge::directed(
-                hub,
-                LABEL,
-                leaf,
-                Placement::ReuseHoles,
-                &[],
-            ))
-            .unwrap()
+            g.add_edge(Edge::directed(hub, LABEL, leaf)).unwrap()
         })
         .collect();
     (g, hub, edges)
@@ -71,12 +64,7 @@ fn thin(shape: &str, (mut g, hub, edges): (Graph<VecMemory>, NodeId, Vec<Halves>
         }
     }
     let removed = pages(&g, hub);
-    while g
-        .compact(hub, (LABEL, Direction::Outgoing))
-        .unwrap()
-        .progress()
-        == Progress::Remaining
-    {}
+    while g.compact(hub, LABEL.outgoing()).unwrap().progress() == Progress::Remaining {}
     println!(
         "{shape:<40} {removed:>4} pages after removing, {:>4} after compacting",
         pages(&g, hub)

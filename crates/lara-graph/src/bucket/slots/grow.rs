@@ -15,10 +15,10 @@ use crate::store::units::Overflow;
 // --- runs --------------------------------------------------------------------------------------
 
 #[inline]
-pub(super) fn tiny_to_run<M: Memory>(
+pub(super) fn tiny_to_run<M: Memory, D: Memory>(
     tiny: Tiny,
     edge: Slot,
-    store: &mut PageStore<M>,
+    store: &mut PageStore<M, D>,
 ) -> Result<(Descriptor, Position), WriteError> {
     let stored = TINY_SLOTS + 1;
     let extent = store.allocate(run_class(stored_u32(stored), None))?;
@@ -43,10 +43,10 @@ pub(super) fn tiny_to_run<M: Memory>(
 }
 
 #[inline]
-pub(super) fn run_append<M: Memory>(
+pub(super) fn run_append<M: Memory, D: Memory>(
     run: Run,
     target: NodeId,
-    store: &mut PageStore<M>,
+    store: &mut PageStore<M, D>,
 ) -> Result<(Descriptor, Position), WriteError> {
     let edge = Slot::Live(target);
     let stored = u32::from(run.stored);
@@ -105,10 +105,10 @@ pub(super) fn cells_len(cells: u32, width: Width) -> usize {
 
 // --- pages -------------------------------------------------------------------------------------
 
-pub(super) fn paged_append<M: Memory>(
+pub(super) fn paged_append<M: Memory, D: Memory>(
     paged: Paged,
     target: NodeId,
-    store: &mut PageStore<M>,
+    store: &mut PageStore<M, D>,
 ) -> Result<(Descriptor, Position), WriteError> {
     let edge = Slot::Live(target);
     let live = paged

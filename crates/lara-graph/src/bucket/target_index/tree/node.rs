@@ -122,7 +122,11 @@ pub(super) fn children<M: Memory>(view: &Pages<'_, M>, page: PageId) -> Vec<Chil
 }
 
 /// Writes an internal node listing `children`.
-pub(super) fn write_node<M: Memory>(store: &PageStore<M>, page: PageId, children: &[Child]) {
+pub(super) fn write_node<M: Memory, D: Memory>(
+    store: &PageStore<M, D>,
+    page: PageId,
+    children: &[Child],
+) {
     let n = u16::try_from(children.len()).unwrap_or_else(|_| corrupt("index node size"));
     let [n0, n1] = n.to_le_bytes();
     store.write(page.offset(), &[n0, n1, 0, 0]);
@@ -150,6 +154,11 @@ pub(super) fn write_node<M: Memory>(store: &PageStore<M>, page: PageId, children
 }
 
 /// Writes child `i`'s count.
-pub(super) fn write_child<M: Memory>(store: &PageStore<M>, page: PageId, i: usize, count: u32) {
+pub(super) fn write_child<M: Memory, D: Memory>(
+    store: &PageStore<M, D>,
+    page: PageId,
+    i: usize,
+    count: u32,
+) {
     store.write(at(page, COUNTS + 4 * i), &count.to_le_bytes());
 }

@@ -6,9 +6,9 @@ use crate::{Bench, LABEL, directed, graph, node, nodes};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use core::ops::ControlFlow;
-use lara_graph::{Direction, NodeId, Order};
+use lara_graph::{NodeId, Order};
 
-const OUT: (lara_graph::Label, Direction) = (LABEL, Direction::Outgoing);
+const OUT: lara_graph::Adjacency = LABEL.outgoing();
 
 /// 1024 nodes with 8 edges each to the next 8: every bucket small.
 fn ring() -> (Bench, Vec<NodeId>) {
@@ -24,7 +24,7 @@ fn ring() -> (Bench, Vec<NodeId>) {
 }
 
 fn contains(g: &Bench, u: NodeId, v: NodeId) -> bool {
-    g.contains_edge(u, (OUT.0, OUT.1), v)
+    g.contains_edge(u, OUT, v)
         .unwrap_or_else(|e| panic!("contains: {e}"))
 }
 
@@ -99,7 +99,7 @@ fn edges_between_hubs_4096() -> BenchResult {
 
 fn visit_all(g: &Bench, u: NodeId, v: NodeId) -> u32 {
     let mut n = 0;
-    g.visit_edges_between(u, (OUT.0, OUT.1), v, Order::Ascending, |_| {
+    g.visit_edges_between(u, OUT, v, Order::Ascending, |_| {
         n += 1;
         ControlFlow::<()>::Continue(())
     })

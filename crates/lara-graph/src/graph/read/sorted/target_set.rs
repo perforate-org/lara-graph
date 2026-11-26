@@ -53,10 +53,10 @@ impl Targets for [u32] {
 }
 
 /// The targets one bucket holds, each once, ready to intersect with others
-/// ([`crate::Graph::common_with`]). Built by [`crate::Graph::target_set`], or refilled by
-/// [`crate::Graph::target_set_into`] in the memory it already took; it borrows nothing, so it may
+/// ([`crate::Graph::common_with`]). Built by [`crate::Graph::neighbor_set`], or refilled by
+/// [`crate::Graph::neighbor_set_into`] in the memory it already took; it borrows nothing, so it may
 /// outlive writes to the graph, and then describes the bucket as it was.
-pub struct TargetSet {
+pub struct NeighborSet {
     len: usize,
     lookup: Lookup,
     /// The current query's matches.
@@ -73,14 +73,14 @@ enum Lookup {
     Hash(Table),
 }
 
-impl Default for TargetSet {
+impl Default for NeighborSet {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl TargetSet {
-    /// An empty set, to fill with [`crate::Graph::target_set_into`].
+impl NeighborSet {
+    /// An empty set, to fill with [`crate::Graph::neighbor_set_into`].
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -307,7 +307,7 @@ mod tests {
     use super::*;
     use alloc::vec;
 
-    fn query(set: &mut TargetSet, targets: &[u32]) -> Vec<u32> {
+    fn query(set: &mut NeighborSet, targets: &[u32]) -> Vec<u32> {
         set.begin();
         for &t in targets {
             set.hit(t);
@@ -317,7 +317,7 @@ mod tests {
         out
     }
 
-    fn narrowed(set: &mut TargetSet, targets: &[u32]) {
+    fn narrowed(set: &mut NeighborSet, targets: &[u32]) {
         set.begin();
         for &t in targets {
             set.hit(t);
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn narrowing_keeps_only_a_query_s_matches() {
         for keys in [vec![10, 12, 70, 11, 40], vec![5, 1 << 20, 77, 9, 1 << 30]] {
-            let mut set = TargetSet::of(&keys);
+            let mut set = NeighborSet::of(&keys);
             let (a, b, c) = (keys[0], keys[1], keys[4]);
             // A reused query between rounds changes nothing.
             assert_eq!(query(&mut set, &[a]), [a]);
@@ -350,7 +350,7 @@ mod tests {
 
     #[test]
     fn a_refill_replaces_the_set_whatever_its_kind() {
-        let mut set = TargetSet::of(&[10, 12, 70]);
+        let mut set = NeighborSet::of(&[10, 12, 70]);
         assert_eq!(query(&mut set, &[12, 70]), [12, 70]);
         for keys in [
             vec![5, 1 << 20, 9],
@@ -372,22 +372,22 @@ mod tests {
 
     #[test]
     fn dense_targets_make_a_bitmap_and_sparse_ones_a_hash_table() {
-        let dense = TargetSet::of(&[10, 12, 10, 70, 11]);
+        let dense = NeighborSet::of(&[10, 12, 10, 70, 11]);
         assert!(matches!(dense.lookup, Lookup::Bits(_)));
         assert_eq!(dense.keys(), [10, 11, 12, 70]);
-        let sparse = TargetSet::of(&[5, 1 << 20, 5, NodeId::FIRST_PROXY]);
+        let sparse = NeighborSet::of(&[5, 1 << 20, 5, NodeId::FIRST_PROXY]);
         assert!(matches!(sparse.lookup, Lookup::Hash(_)));
         let mut keys = sparse.keys();
         keys.sort_unstable();
         assert_eq!(keys, [5, 1 << 20, NodeId::FIRST_PROXY]);
-        assert!(TargetSet::of(&[]).is_empty());
+        assert!(NeighborSet::of(&[]).is_empty());
     }
 
     #[test]
     fn a_query_finds_each_held_target_once_in_order_and_leaves_no_mark() {
         let wide: Vec<u32> = (0..2000).map(|i| i * 3).collect();
         for keys in [vec![10, 12, 70, 11], vec![5, 1 << 20, 77, 9], wide] {
-            let mut set = TargetSet::of(&keys);
+            let mut set = NeighborSet::of(&keys);
             let mut want: Vec<u32> = keys.iter().copied().filter(|k| k % 2 == 1).collect();
             want.sort_unstable();
             // Few matches (sorted), then many (scanned, for a bitmap), each asked twice.
@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn a_hash_table_survives_its_query_count_wrapping() {
-        let mut set = TargetSet::of(&[3, 1 << 20, 1 << 25]);
+        let mut set = NeighborSet::of(&[3, 1 << 20, 1 << 25]);
         if let Lookup::Hash(table) = &mut set.lookup {
             table.set_query(u32::MAX - 2);
         }

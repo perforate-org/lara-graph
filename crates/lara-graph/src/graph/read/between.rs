@@ -11,14 +11,14 @@ use crate::bucket::LabelBucketKey;
 use crate::bucket::slots::{self, Span, Window};
 use crate::error::Error;
 use crate::graph::Graph;
-use crate::id::{Direction, EdgeRef, Label, NodeId, Position};
+use crate::graph::GraphMemories;
+use crate::id::{Adjacency, Direction, EdgeRef, NodeId, Position};
 use crate::input::Order;
-use crate::store::memory::Memory;
 use core::ops::ControlFlow;
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// Calls `f` with each live edge between `u` and `v` that `u` holds in its
-    /// `(label, direction)` bucket, in `order`, until it breaks; returns the break value. Each
+    /// `adjacency` bucket, in `order`, until it breaks; returns the break value. Each
     /// edge comes as the half at whichever end is cheaper to read, `u`'s or `v`'s: both name the
     /// same edge, and [`Self::counterpart`] gives the other.
     ///
@@ -31,21 +31,22 @@ impl<M: Memory> Graph<M> {
     pub fn visit_edges_between<B>(
         &self,
         u: NodeId,
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
         v: NodeId,
         order: Order,
         mut f: impl FnMut(EdgeRef) -> ControlFlow<B>,
     ) -> Result<Option<B>, Error> {
+        let label = adjacency.label();
         let Some(End {
             node,
             direction,
             other,
             bucket,
-        }) = self.smaller_end(u, (label, direction), v)?
+        }) = self.smaller_end(u, adjacency, v)?
         else {
             return Ok(None);
         };
-        let half = |at: Position| EdgeRef::new(node, label, direction, at);
+        let half = |at: Position| EdgeRef::of(node, label, direction, at);
         let slots = &bucket.slots;
         let view = self.edge_view().pages();
         let mut visit_span = |&(low, high): &(u32, u32)| {
@@ -55,7 +56,7 @@ impl<M: Memory> Graph<M> {
                 Span::new(low, high, order),
                 Window::Page,
                 |e| {
-                    if e.target() == other {
+                    if e.node() == other {
                         f(half(e.position()))
                     } else {
                         ControlFlow::Continue(())
@@ -73,35 +74,35 @@ impl<M: Memory> Graph<M> {
         })
     }
 
-    /// Whether `u` has an edge to `v` in its `(label, direction)` bucket. Reads as
+    /// Whether `u` has an edge to `v` in its `adjacency` bucket. Reads as
     /// [`Self::visit_edges_between`] does, and stops at the first edge.
     ///
     /// # Errors
     ///
     /// [`Error::UnknownNode`] for `u` or `v`.
-    pub fn contains_edge(
-        &self,
-        u: NodeId,
-        (label, direction): (Label, Direction),
-        v: NodeId,
-    ) -> Result<bool, Error> {
+    pub fn contains_edge(&self, u: NodeId, adjacency: Adjacency, v: NodeId) -> Result<bool, Error> {
         Ok(self
-            .visit_edges_between(u, (label, direction), v, Order::Ascending, |_| {
-                ControlFlow::Break(())
-            })?
+            .visit_edges_between(
+                u,
+                adjacency,
+                v,
+                Order::Ascending,
+                |_| ControlFlow::Break(()),
+            )?
             .is_some())
     }
 
-    /// The smaller of `u`'s `(label, direction)` bucket and `v`'s opposite one, as the end that
+    /// The smaller of `u`'s `adjacency` bucket and `v`'s opposite one, as the end that
     /// holds it, the node its entries point to, and the bucket; `None` when either is absent, as
     /// then no edge joins them. A bucket at `u` of at most [`READ_AS_IS`] positions is taken as it
     /// is, without looking up `v`'s.
     fn smaller_end(
         &self,
         u: NodeId,
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
         v: NodeId,
     ) -> Result<Option<End>, Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         let own_end = |bucket| End {
             node: u,
             direction,

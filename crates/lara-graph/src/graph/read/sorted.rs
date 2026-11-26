@@ -8,7 +8,7 @@
 //! decodes every posting and cost half again as much as reading and sorting (30.4M against
 //! 19.8M instructions for 65536 edges), so it is not used here.
 //!
-//! Buckets are intersected without sorting them: one bucket's targets make a [`TargetSet`] (a
+//! Buckets are intersected without sorting them: one bucket's targets make a [`NeighborSet`] (a
 //! bitmap over a narrow range, else a hash table), and each other bucket keeps those it holds,
 //! read once or, for a paged bucket many times larger than the set, through its target index
 //! ([`PROBE_RATIO`]). A set is built once and serves any number of buckets, so listing triangles
@@ -21,12 +21,13 @@ use crate::bucket::{LabelBucket, LabelBucketKey};
 use crate::edge::EdgeView;
 use crate::error::Error;
 use crate::graph::Graph;
-use crate::id::{Direction, Label, NodeId};
+use crate::graph::GraphMemories;
+use crate::id::{Adjacency, NodeId};
 use crate::input::Order;
 use crate::store::memory::Memory;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
-pub use target_set::TargetSet;
+pub use target_set::NeighborSet;
 use target_set::Targets;
 
 /// How many times more live edges a paged bucket must hold than the candidates left for an
@@ -35,9 +36,9 @@ use target_set::Targets;
 /// (`common_65536_*` in canbench: 7.4M read against 13.9M looked up for 1024 candidates).
 const PROBE_RATIO: u32 = 128;
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// Replaces the contents of `out` with the targets of the live edges of `v`'s
-    /// `(label, direction)` bucket in ascending node order, once per edge: parallel edges repeat.
+    /// `adjacency` bucket in ascending node order, once per edge: parallel edges repeat.
     ///
     /// Nothing is stored for it: the bucket is read and sorted in the heap, at about 3 to 6 times
     /// the instructions of reading it in position order.
@@ -45,12 +46,13 @@ impl<M: Memory> Graph<M> {
     /// # Errors
     ///
     /// [`Error::UnknownNode`].
-    pub fn sorted_targets(
+    pub fn sorted_neighbors(
         &self,
         v: NodeId,
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
         out: &mut Vec<NodeId>,
     ) -> Result<(), Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         out.clear();
         if let Some(bucket) = self.read_label_bucket(v, LabelBucketKey { label, direction })? {
             self.sorted_into(&bucket, out);
@@ -58,38 +60,22 @@ impl<M: Memory> Graph<M> {
         Ok(())
     }
 
-    /// Replaces the contents of `out` with the nodes that both `u`'s and `w`'s
-    /// `(label, direction)` buckets hold a live edge to, ascending, each once:
-    /// [`Self::common_targets_of`] for two nodes.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnknownNode`] for `u` or `w`.
-    pub fn common_targets(
-        &self,
-        u: NodeId,
-        w: NodeId,
-        (label, direction): (Label, Direction),
-        out: &mut Vec<NodeId>,
-    ) -> Result<(), Error> {
-        self.common_targets_of(&[u, w], (label, direction), out)
-    }
-
     /// Replaces the contents of `out` with the nodes that every one of `nodes`' `(label,
     /// direction)` buckets holds a live edge to, ascending, each once; empty for no nodes.
     ///
-    /// The smallest bucket's targets make a [`TargetSet`]; each larger bucket, smallest first,
+    /// The smallest bucket's targets make a [`NeighborSet`]; each larger bucket, smallest first,
     /// keeps in it those it holds (see [`Self::common_with`]), the set narrowed in place.
     ///
     /// # Errors
     ///
     /// [`Error::UnknownNode`] for any of `nodes`.
-    pub fn common_targets_of(
+    pub fn common_neighbors(
         &self,
         nodes: &[NodeId],
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
         out: &mut Vec<NodeId>,
     ) -> Result<(), Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         out.clear();
         let Some(mut buckets) = self.buckets_of(nodes, LabelBucketKey { label, direction })? else {
             return Ok(());
@@ -99,7 +85,7 @@ impl<M: Memory> Graph<M> {
         let Some(smallest) = buckets.next() else {
             return Ok(());
         };
-        let mut set = TargetSet::new();
+        let mut set = NeighborSet::new();
         set.refill(&self.targets_of(smallest));
         let mut found = Vec::new();
         set.narrow_to_common(buckets.map(|b| self.targets_of(b)), &mut found);
@@ -107,7 +93,7 @@ impl<M: Memory> Graph<M> {
         Ok(())
     }
 
-    /// The targets of `v`'s `(label, direction)` bucket, each once, as a set to intersect with
+    /// The targets of `v`'s `adjacency` bucket, each once, as a set to intersect with
     /// other buckets through [`Self::common_with`]: built once, it serves any number of them, as
     /// listing triangles or common neighbours wants. Empty when `v` has no such bucket.
     ///
@@ -117,28 +103,25 @@ impl<M: Memory> Graph<M> {
     /// # Errors
     ///
     /// [`Error::UnknownNode`].
-    pub fn target_set(
-        &self,
-        v: NodeId,
-        (label, direction): (Label, Direction),
-    ) -> Result<TargetSet, Error> {
-        let mut set = TargetSet::new();
-        self.target_set_into(&mut set, v, (label, direction))?;
+    pub fn neighbor_set(&self, v: NodeId, adjacency: Adjacency) -> Result<NeighborSet, Error> {
+        let mut set = NeighborSet::new();
+        self.neighbor_set_into(&mut set, v, adjacency)?;
         Ok(set)
     }
 
-    /// [`Self::target_set`] into `set`, replacing what it held and reusing the memory it took:
+    /// [`Self::neighbor_set`] into `set`, replacing what it held and reusing the memory it took:
     /// building a set for each of many nodes then allocates only as the largest grows.
     ///
     /// # Errors
     ///
     /// [`Error::UnknownNode`]; `set` is then left as it was.
-    pub fn target_set_into(
+    pub fn neighbor_set_into(
         &self,
-        set: &mut TargetSet,
+        set: &mut NeighborSet,
         v: NodeId,
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
     ) -> Result<(), Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         match self.read_label_bucket(v, LabelBucketKey { label, direction })? {
             Some(bucket) => set.refill(&self.targets_of(&bucket)),
             None => set.refill::<[u32]>(&[]),
@@ -146,7 +129,7 @@ impl<M: Memory> Graph<M> {
         Ok(())
     }
 
-    /// Replaces the contents of `out` with the nodes both `set` and `w`'s `(label, direction)`
+    /// Replaces the contents of `out` with the nodes both `set` and `w`'s `adjacency`
     /// bucket hold, ascending, each once, and only those past `above` when it is given: listing
     /// each triangle once, as `u < w < x`, wants those past `w`. `set` is left as it was, ready
     /// for the next bucket; [`ReadBatch::common_with_each`](crate::ReadBatch::common_with_each)
@@ -161,11 +144,13 @@ impl<M: Memory> Graph<M> {
     /// [`Error::UnknownNode`] for `w`.
     pub fn common_with(
         &self,
-        set: &mut TargetSet,
-        (w, above): (NodeId, Option<NodeId>),
-        (label, direction): (Label, Direction),
+        set: &mut NeighborSet,
+        w: NodeId,
+        above: Option<NodeId>,
+        adjacency: Adjacency,
         out: &mut Vec<NodeId>,
     ) -> Result<(), Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         out.clear();
         let bucket = self.read_label_bucket(w, LabelBucketKey { label, direction })?;
         let Some(bucket) = bucket.filter(|_| !set.is_empty()) else {
@@ -198,7 +183,7 @@ impl<M: Memory> Graph<M> {
     /// `out`.
     pub(in crate::graph) fn intersect_from(
         &self,
-        set: &mut TargetSet,
+        set: &mut NeighborSet,
         bucket: &LabelBucket,
         from: u32,
         out: &mut Vec<u32>,
@@ -206,8 +191,11 @@ impl<M: Memory> Graph<M> {
         set.common_from(&self.targets_of(bucket), from, out);
     }
 
-    /// `bucket`'s targets, to fill or intersect a [`TargetSet`] with.
-    fn targets_of<'a>(&'a self, bucket: &'a LabelBucket) -> BucketTargets<'a, M> {
+    /// `bucket`'s targets, to fill or intersect a [`NeighborSet`] with.
+    fn targets_of<'a>(
+        &'a self,
+        bucket: &'a LabelBucket,
+    ) -> BucketTargets<'a, S::EdgePages, S::EdgeDirectory> {
         BucketTargets {
             view: self.edge_view(),
             bucket,
@@ -224,7 +212,7 @@ impl<M: Memory> Graph<M> {
             Span::all(&bucket.slots, Order::Ascending),
             Window::Page,
             |e| {
-                keys.push(e.target().index());
+                keys.push(e.node().index());
                 ControlFlow::<()>::Continue(())
             },
         );
@@ -235,12 +223,12 @@ impl<M: Memory> Graph<M> {
 
 /// The live targets of a bucket: read whole, or, for a paged bucket [`PROBE_RATIO`] times larger
 /// than the candidates, each candidate looked up in its target index.
-struct BucketTargets<'a, M: Memory> {
-    view: EdgeView<'a, M>,
+struct BucketTargets<'a, M: Memory, D: Memory> {
+    view: EdgeView<'a, M, D>,
     bucket: &'a LabelBucket,
 }
 
-impl<M: Memory> Targets for BucketTargets<'_, M> {
+impl<M: Memory, D: Memory> Targets for BucketTargets<'_, M, D> {
     fn count(&self) -> usize {
         usize::try_from(self.bucket.slots.live()).unwrap_or(0)
     }
@@ -259,7 +247,7 @@ impl<M: Memory> Targets for BucketTargets<'_, M> {
             Span::all(&self.bucket.slots, Order::Ascending),
             Window::Page,
             |e| {
-                f(e.target().index());
+                f(e.node().index());
                 ControlFlow::<()>::Continue(())
             },
         );
@@ -282,7 +270,7 @@ impl<M: Memory> Targets for BucketTargets<'_, M> {
                 Span::new(low, high, Order::Ascending),
                 Window::Page,
                 |e| {
-                    if e.target() == t {
+                    if e.node() == t {
                         ControlFlow::Break(())
                     } else {
                         ControlFlow::Continue(())

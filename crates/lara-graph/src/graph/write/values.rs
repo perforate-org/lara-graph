@@ -5,15 +5,15 @@ use crate::bucket::slots;
 use crate::bucket::{LabelBucket, Migration, Schema};
 use crate::edge::Writes;
 use crate::error::{BatchError, Error};
+use crate::graph::GraphMemories;
 use crate::graph::locate::Found;
 use crate::graph::locate::LastBucket;
 use crate::graph::locate::Pair;
 use crate::graph::{Graph, corrupt};
-use crate::id::{Direction, EdgeRef, Halves, NodeId};
-use crate::id::{Label, Position, ValueVersion, Width};
+use crate::id::{Adjacency, EdgeRef, Halves, NodeId};
+use crate::id::{EdgeLabel, Position, ValueVersion, Width};
 use crate::input::EdgeValue;
 use crate::outcome::Progress;
-use crate::store::memory::Memory;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -33,39 +33,27 @@ struct LastPair {
     theirs: LastBucket<Found>,
 }
 
-impl<M: Memory> Graph<M> {
-    /// Replaces the value of the edge `half` belongs to, in both halves, and returns the value
-    /// the canonical half held; `None` when `half` is not live. A bucket created before its
-    /// label's width was declared gets its value plane here.
+impl<S: GraphMemories> Graph<S> {
+    /// Replaces the value of the edge `half` belongs to, in both halves; whether `half` is live,
+    /// and so had a value to replace. A bucket created before its label's width was declared gets
+    /// its value plane here.
     ///
     /// # Errors
     ///
     /// [`Error::UnknownNode`], [`Error::WrongValueLength`], [`Error::OutOfMemory`]. On error
     /// nothing changes.
-    pub fn set_edge_value(
-        &mut self,
-        half: EdgeRef,
-        value: &[u8],
-    ) -> Result<Option<Vec<u8>>, Error> {
+    pub fn set_edge_value(&mut self, half: EdgeRef, value: &[u8]) -> Result<bool, Error> {
         let width = self.value_schema(half.label(), value)?;
         let Some(pair) = self.pair(half)? else {
-            return Ok(None);
+            return Ok(false);
         };
-        let halves = Halves::of(half, pair.other);
+        let Some(width) = width else {
+            return Ok(true);
+        };
         let mut targets = vec![(half, pair.own)];
         if pair.other != half {
             targets.push((pair.other, pair.theirs));
         }
-        let old = targets
-            .iter()
-            .find(|(h, _)| *h == halves.canonical())
-            .map_or_else(Vec::new, |(h, found)| {
-                self.edge_view()
-                    .read_value(&found.bucket, h.label(), h.position())
-            });
-        let Some(width) = width else {
-            return Ok(Some(old));
-        };
         for (h, found) in &targets {
             Self::ensure_current(*h, &found.bucket, width)?;
         }
@@ -83,21 +71,18 @@ impl<M: Memory> Graph<M> {
             };
             self.write_value(found, (width, h.position()), value);
         }
-        Ok(Some(old))
+        Ok(true)
     }
 
-    /// Writes each edge value in `values`, in order, and returns the old canonical value of
-    /// each edge (`None` for a hole). All nodes and value lengths are checked before the first
+    /// Writes each edge value in `values`, in order, and returns for each whether its edge was
+    /// live ([`Self::set_edge_value`]). All nodes and value lengths are checked before the first
     /// write, and a failure after that restores every value written so far, so the batch is
     /// all-or-none.
     ///
     /// # Errors
     ///
     /// As [`Self::set_edge_value`], for the value that fails.
-    pub fn set_edge_values(
-        &mut self,
-        values: &[EdgeValue<'_>],
-    ) -> Result<Vec<Option<Vec<u8>>>, BatchError> {
+    pub fn set_edge_values(&mut self, values: &[EdgeValue<'_>]) -> Result<Vec<bool>, BatchError> {
         for (index, edge) in values.iter().enumerate() {
             self.check(edge.half().node())
                 .and_then(|()| self.value_schema(edge.half().label(), edge.value()))
@@ -120,7 +105,7 @@ impl<M: Memory> Graph<M> {
                 }
             }
         }
-        Ok(out)
+        Ok(out.iter().map(Option::is_some).collect())
     }
 
     /// Writes one edge value of a batch, reusing the buckets `last` holds from the edge before.
@@ -211,7 +196,7 @@ impl<M: Memory> Graph<M> {
     }
 }
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// [`Self::ensure_current`] for both buckets of `half`'s edge, or its one bucket for a loop.
     /// Kept out of line and called only for a changed label: checked over the array of targets
     /// instead, the value write built that array early, 340 bytes of copies per write (batched
@@ -254,7 +239,7 @@ impl<M: Memory> Graph<M> {
     /// `label`'s width and value version, checking that `value` matches the width.
     pub(in crate::graph) fn value_schema(
         &self,
-        label: Label,
+        label: EdgeLabel,
         value: &[u8],
     ) -> Result<Option<Schema>, Error> {
         self.widths.check(label, value)
@@ -279,7 +264,7 @@ impl<M: Memory> Graph<M> {
     }
 }
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// Declares that `label`'s edges carry a value of `width` bytes, on every side. Constant
     /// time: existing edges read as zeros until a value is written to them. Declaring the same
     /// width again changes nothing.
@@ -288,7 +273,7 @@ impl<M: Memory> Graph<M> {
     ///
     /// [`Error::WidthConflict`] if `label` already has another width, [`Error::OutOfMemory`]. On
     /// error nothing changes.
-    pub fn declare_width(&mut self, label: Label, width: Width) -> Result<(), Error> {
+    pub fn declare_width(&mut self, label: EdgeLabel, width: Width) -> Result<(), Error> {
         self.declare(label, width)
     }
 
@@ -306,7 +291,7 @@ impl<M: Memory> Graph<M> {
     ///
     /// [`Error::AddressSpaceExhausted`] past 255 changes, or [`Error::OutOfMemory`]. On error
     /// nothing changes.
-    pub fn change_width(&mut self, label: Label, width: Width) -> Result<ValueVersion, Error> {
+    pub fn change_width(&mut self, label: EdgeLabel, width: Width) -> Result<ValueVersion, Error> {
         let (version, root) = self
             .widths
             .change(&mut self.label_bucket_lists, label, width)?;
@@ -314,7 +299,7 @@ impl<M: Memory> Graph<M> {
         Ok(version)
     }
 
-    /// One bounded step of rewriting the values of `v`'s `(label, direction)` bucket in `label`'s
+    /// One bounded step of rewriting the values of `v`'s `adjacency` bucket in `label`'s
     /// current layout ([`Self::change_width`]): `transform` turns each old value (in the bucket's
     /// version, [`Self::bucket_value_version`]) into a new one, given zeroed and of the new width.
     /// A step rewrites at most one value page (small buckets first move their values beside the
@@ -332,9 +317,10 @@ impl<M: Memory> Graph<M> {
     pub fn migrate_values(
         &mut self,
         v: NodeId,
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
         mut transform: impl FnMut(&[u8], &mut [u8]),
     ) -> Result<Progress, Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         let Some(schema) = self.widths.schema(label) else {
             self.check(v)?;
             return Ok(Progress::Done);
@@ -349,7 +335,7 @@ impl<M: Memory> Graph<M> {
         Ok(progress)
     }
 
-    fn declare(&mut self, label: Label, width: Width) -> Result<(), Error> {
+    fn declare(&mut self, label: EdgeLabel, width: Width) -> Result<(), Error> {
         if let Some(root) = self
             .widths
             .declare(&mut self.label_bucket_lists, label, width)?

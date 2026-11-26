@@ -7,13 +7,13 @@ use crate::bucket::LabelBucketKey;
 use crate::bucket::slots;
 use crate::error::Error;
 use crate::graph::Graph;
+use crate::graph::GraphMemories;
 use crate::id::EdgeRef;
 use crate::id::NodeId;
 use crate::node::label_bucket_list::{self, EntryAt, Lookup};
 use crate::store::corrupt::corrupt;
-use crate::store::memory::Memory;
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// Publishes a bucket's new state: its header, and its list entry when it is plain or just
     /// changed form. Returns the bucket as published. Within reserved memory.
     pub(in crate::graph) fn publish(&mut self, entry: EntryAt, bucket: LabelBucket) -> LabelBucket {
@@ -142,7 +142,7 @@ impl<T: Copy> LastBucket<T> {
     }
 }
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// Both halves of the edge `half` belongs to, with their buckets; `None` when `half` is not
     /// live.
     pub(in crate::graph) fn pair(&self, half: EdgeRef) -> Result<Option<Pair>, Error> {
@@ -176,7 +176,7 @@ pub(in crate::graph) struct Pair {
     pub(in crate::graph) theirs: Found,
 }
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// [`Self::pair_from`] with the target and its bucket already found.
     pub(in crate::graph) fn pair_with_theirs(
         &self,

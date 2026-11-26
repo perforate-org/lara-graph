@@ -4,7 +4,7 @@
 
 use core::fmt::Write as _;
 
-use lara_graph::{Graph, Label, Memories, Memory, NewEdge, NodeId, Placement, VecMemory, Width};
+use lara_graph::{Edge, EdgeLabel, Graph, Memories, Memory, NodeId, VecMemory, Width};
 
 /// Bytes per page memories grow by.
 const WASM_PAGE: u64 = 65536;
@@ -86,14 +86,14 @@ const SHAPES: [Shape; 7] = [
 type Failed = Box<dyn core::error::Error>;
 
 fn build(shape: &Shape) -> Result<Graph<VecMemory>, Failed> {
-    let mut g = Graph::new(Memories::from_fn(|_| VecMemory::new()));
+    let mut g = Graph::format(Memories::from_fn(|_| VecMemory::new()));
     let nodes = (0..shape.nodes)
-        .map(|_| g.add_node())
+        .map(|_| g.add_node(&[]))
         .collect::<Result<Vec<NodeId>, _>>()?;
     let value = vec![0xAB; usize::from(shape.width)];
     if let Some(width) = Width::new(shape.width) {
         for label in 0..shape.labels {
-            g.declare_width(Label::new(label), width)?;
+            g.declare_width(EdgeLabel::new(label), width)?;
         }
     }
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
@@ -105,14 +105,8 @@ fn build(shape: &Shape) -> Result<Graph<VecMemory>, Failed> {
     };
     for i in 0..shape.edges {
         let (from, to) = (node()?, node()?);
-        let label = Label::new(u16::try_from(i % u64::from(shape.labels))?);
-        g.add_edge(NewEdge::directed(
-            from,
-            label,
-            to,
-            Placement::ReuseHoles,
-            &value,
-        ))?;
+        let label = EdgeLabel::new(u16::try_from(i % u64::from(shape.labels))?);
+        g.add_edge(Edge::directed(from, label, to).value(&value))?;
     }
     Ok(g)
 }

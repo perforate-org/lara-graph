@@ -4,15 +4,17 @@ use crate::bucket::LabelBucketKey;
 use crate::bucket::slots;
 use crate::error::{BatchError, Error};
 use crate::graph::Graph;
+use crate::graph::GraphMemories;
 use crate::graph::locate::Found;
 use crate::graph::locate::LastBucket;
 use crate::graph::locate::Pair;
-use crate::id::{EdgeRef, NodeId};
+use crate::id::{Adjacency, EdgeRef, NodeId};
+use crate::input::Order;
 use crate::outcome::Removal;
-use crate::store::memory::Memory;
 use alloc::vec::Vec;
+use core::ops::ControlFlow;
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// Removes the edge `half` belongs to: both its halves. Other edges keep their positions.
     ///
     /// # Errors
@@ -28,6 +30,34 @@ impl<M: Memory> Graph<M> {
             self.publish(theirs.entry, theirs.bucket);
         }
         Ok(removal)
+    }
+
+    /// Removes every edge between `u` and `v` in `u`'s `adjacency` bucket, parallel edges
+    /// included, and returns how many it removed. The edges are found as
+    /// [`Self::visit_edges_between`] finds them, then removed one by one.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownNode`] for `u` or `v`, before anything is removed. A removal takes no
+    /// memory.
+    pub fn remove_edges_between(
+        &mut self,
+        u: NodeId,
+        adjacency: Adjacency,
+        v: NodeId,
+    ) -> Result<u32, Error> {
+        let mut between = Vec::new();
+        self.visit_edges_between(u, adjacency, v, Order::Ascending, |half| {
+            between.push(half);
+            ControlFlow::<()>::Continue(())
+        })?;
+        let mut removed = 0;
+        for half in between {
+            if let Removal::Removed(_) = self.remove_edge(half)? {
+                removed += 1;
+            }
+        }
+        Ok(removed)
     }
 
     /// Removes every edge identified by `halves`, in order. All halves are checked before the

@@ -1,4 +1,4 @@
-//! Sorted views and shared targets (`sorted_targets`, `common_targets`, `target_set` with
+//! Sorted views and shared targets (`sorted_neighbors`, `common_neighbors`, `neighbor_set` with
 //! `common_with`) by bucket size: a bucket is read and sorted in the heap. Each sorted read has an
 //! unsorted one beside it, collecting the same targets in position order, so the difference is
 //! the cost of the order; intersections with many nodes are measured a pair at a time and with
@@ -8,9 +8,9 @@ use crate::{Bench, BenchMemory, LABEL, directed, graph, node, nodes};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use core::ops::ControlFlow;
-use lara_graph::{Direction, NodeId, Order, ReadBatch, TargetSet};
+use lara_graph::{NeighborSet, NodeId, Order, ReadBatch};
 
-const OUT: (lara_graph::Label, Direction) = (LABEL, Direction::Outgoing);
+const OUT: lara_graph::Adjacency = LABEL.outgoing();
 
 /// A xorshift generator, so every build is the same.
 struct Rng(u64);
@@ -53,7 +53,7 @@ fn unsorted(degree: u32) -> BenchResult {
     bench_fn(|| {
         out.clear();
         g.visit_neighbors(v, OUT, Order::Ascending, |e| {
-            out.push(e.target());
+            out.push(e.node());
             ControlFlow::<()>::Continue(())
         })
         .unwrap_or_else(|e| panic!("visit: {e}"));
@@ -65,7 +65,7 @@ fn sorted(degree: u32) -> BenchResult {
     let (g, v) = one(degree);
     let mut out = Vec::new();
     bench_fn(|| {
-        g.sorted_targets(v, OUT, &mut out)
+        g.sorted_neighbors(v, OUT, &mut out)
             .unwrap_or_else(|e| panic!("sorted: {e}"));
         black_box(out.len());
     })
@@ -81,7 +81,7 @@ fn common(first: u32, second: u32) -> BenchResult {
     let other_end = spread(&mut g, second, &pool, &mut rng);
     let mut out = Vec::new();
     bench_fn(|| {
-        g.common_targets(one_end, other_end, OUT, &mut out)
+        g.common_neighbors(&[one_end, other_end], OUT, &mut out)
             .unwrap_or_else(|e| panic!("common: {e}"));
         black_box(out.len());
     })
@@ -99,7 +99,7 @@ fn common_of(degrees: &[u32]) -> BenchResult {
         .collect();
     let mut out = Vec::new();
     bench_fn(|| {
-        g.common_targets_of(&ends, OUT, &mut out)
+        g.common_neighbors(&ends, OUT, &mut out)
             .unwrap_or_else(|e| panic!("common: {e}"));
         black_box(out.len());
     })
@@ -249,11 +249,11 @@ fn random_graph(nodes_n: u32, degree: u32) -> (Bench, Vec<NodeId>) {
 /// How a node is intersected with many others.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pairing {
-    /// A `common_targets` per pair.
+    /// A `common_neighbors` per pair.
     Pairs,
-    /// One `target_set`, intersected with each through `common_with`.
+    /// One `neighbor_set`, intersected with each through `common_with`.
     Reused,
-    /// One `target_set`, intersected with all through `ReadBatch::common_with_each`.
+    /// One `neighbor_set`, intersected with all through `ReadBatch::common_with_each`.
     Batched,
     /// As `Batched`, each triangle listed once: `u < w < x`.
     Ordered,
@@ -265,11 +265,11 @@ fn triangles(nodes_n: u32, degree: u32, pairing: Pairing) -> BenchResult {
     let mut targets = Vec::new();
     let mut out = Vec::new();
     let mut batch = g.read_batch();
-    let mut set = TargetSet::new();
+    let mut set = NeighborSet::new();
     bench_fn(|| {
         let mut found = 0usize;
         for &u in &pool {
-            g.sorted_targets(u, OUT, &mut targets)
+            g.sorted_neighbors(u, OUT, &mut targets)
                 .unwrap_or_else(|e| panic!("targets: {e}"));
             found += match pairing {
                 Pairing::Pairs => pairs(&g, u, &targets, &mut out),
@@ -288,7 +288,7 @@ fn triangles(nodes_n: u32, degree: u32, pairing: Pairing) -> BenchResult {
 fn pairs(g: &Bench, u: NodeId, targets: &[NodeId], out: &mut Vec<NodeId>) -> usize {
     let mut found = 0;
     for &w in targets {
-        g.common_targets(u, w, OUT, out)
+        g.common_neighbors(&[u, w], OUT, out)
             .unwrap_or_else(|e| panic!("common: {e}"));
         found += out.len();
     }
@@ -298,16 +298,16 @@ fn pairs(g: &Bench, u: NodeId, targets: &[NodeId], out: &mut Vec<NodeId>) -> usi
 /// [`pairs`] through `u`'s set, built once.
 fn reused(
     g: &Bench,
-    set: &mut TargetSet,
+    set: &mut NeighborSet,
     u: NodeId,
     targets: &[NodeId],
     out: &mut Vec<NodeId>,
 ) -> usize {
-    g.target_set_into(set, u, OUT)
+    g.neighbor_set_into(set, u, OUT)
         .unwrap_or_else(|e| panic!("set: {e}"));
     let mut found = 0;
     for &w in targets {
-        g.common_with(set, (w, None), OUT, out)
+        g.common_with(set, w, None, OUT, out)
             .unwrap_or_else(|e| panic!("common: {e}"));
         found += out.len();
     }
@@ -318,11 +318,11 @@ fn reused(
 fn batched(
     g: &Bench,
     batch: &mut ReadBatch<'_, BenchMemory>,
-    set: &mut TargetSet,
+    set: &mut NeighborSet,
     (u, ordered): (NodeId, bool),
     targets: &[NodeId],
 ) -> usize {
-    g.target_set_into(set, u, OUT)
+    g.neighbor_set_into(set, u, OUT)
         .unwrap_or_else(|e| panic!("set: {e}"));
     let from = if ordered {
         targets.partition_point(|&w| w <= u)
@@ -379,7 +379,7 @@ fn triangles_256_64_reused() -> BenchResult {
 }
 
 /// One node of 1024 edges against 64 nodes of 64 edges, all among the same 2048 nodes:
-/// `common_targets` per pair, or one set intersected with each.
+/// `common_neighbors` per pair, or one set intersected with each.
 fn one_against_many(pairing: Pairing) -> BenchResult {
     let mut g = graph();
     let pool = nodes(&mut g, 2048);
@@ -393,16 +393,16 @@ fn one_against_many(pairing: Pairing) -> BenchResult {
         let mut found = 0usize;
         if pairing == Pairing::Reused {
             let mut set = g
-                .target_set(big, OUT)
+                .neighbor_set(big, OUT)
                 .unwrap_or_else(|e| panic!("set: {e}"));
             for &w in &small {
-                g.common_with(&mut set, (w, None), OUT, &mut out)
+                g.common_with(&mut set, w, None, OUT, &mut out)
                     .unwrap_or_else(|e| panic!("common: {e}"));
                 found += out.len();
             }
         } else {
             for &w in &small {
-                g.common_targets(big, w, OUT, &mut out)
+                g.common_neighbors(&[big, w], OUT, &mut out)
                     .unwrap_or_else(|e| panic!("common: {e}"));
                 found += out.len();
             }

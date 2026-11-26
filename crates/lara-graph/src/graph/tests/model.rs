@@ -23,7 +23,7 @@ impl Rng {
 }
 
 /// A bucket: `node`'s `(label, direction)`.
-type Key = (u32, Label, Direction);
+type Key = (u32, EdgeLabel, Direction);
 
 /// One live slot: the other end and the logical edge's id.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -42,7 +42,7 @@ struct Model {
     /// Nodes detached for good.
     deleted: Vec<u32>,
     /// Declared widths.
-    widths: BTreeMap<Label, u16>,
+    widths: BTreeMap<EdgeLabel, u16>,
     /// The value each logical edge was last given; edges without one read as zeros.
     values: BTreeMap<u64, Vec<u8>>,
 }
@@ -54,7 +54,7 @@ const WIDTHS_AT_START: [(u16, u16); 2] = [(0, 8), (2, 300)];
 const LATE_WIDTH: (u16, u16, u64) = (1, 3, 1500);
 
 /// Odd labels append; even ones (the hub's among them) reuse holes.
-fn placement_of(label: Label) -> Placement {
+fn placement_of(label: EdgeLabel) -> Placement {
     if label.get() % 2 == 1 {
         Placement::Append
     } else {
@@ -63,12 +63,16 @@ fn placement_of(label: Label) -> Placement {
 }
 
 /// The bucket the random test grows past one page.
-const HUB: Key = (0, Label::new(0), Direction::Outgoing);
+const HUB: Key = (0, EdgeLabel::new(0), Direction::Outgoing);
 
 impl Model {
     fn half(key: Key, at: usize) -> EdgeRef {
         let (x, label, direction) = key;
-        EdgeRef::new(v(x), label, direction, p(u32::try_from(at).unwrap()))
+        EdgeRef::new(
+            v(x),
+            Adjacency::new(label, direction),
+            p(u32::try_from(at).unwrap()),
+        )
     }
 
     /// Records a half the graph placed; it must fill a hole or append, after every live slot
@@ -185,7 +189,7 @@ impl Model {
     }
 
     /// The value edge `id` of `label` reads as.
-    fn expected(&self, id: u64, label: Label) -> Vec<u8> {
+    fn expected(&self, id: u64, label: EdgeLabel) -> Vec<u8> {
         let width = usize::from(self.widths.get(&label).copied().unwrap_or(0));
         self.values
             .get(&id)
@@ -194,7 +198,7 @@ impl Model {
     }
 
     /// A fresh value for `label`, empty without a width.
-    fn fresh_value(&self, label: Label, rng: &mut Rng) -> Vec<u8> {
+    fn fresh_value(&self, label: EdgeLabel, rng: &mut Rng) -> Vec<u8> {
         let width = self.widths.get(&label).copied().unwrap_or(0);
         (0..width)
             .map(|_| u8::try_from(rng.below(256)).unwrap())
@@ -204,7 +208,7 @@ impl Model {
     /// Why an insert touching `x` fails, if it does.
     fn blocked(&self, x: u32) -> Option<Error> {
         if self.detaching == Some(x) {
-            Some(Error::Detaching(v(x)))
+            Some(Error::Deleting(v(x)))
         } else if self.deleted.contains(&x) {
             Some(Error::Deleted(v(x)))
         } else {
@@ -280,7 +284,7 @@ fn random_step<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n:
         3 + rng.below(n - 3)
     };
     if model.detaching.is_none() && !model.deleted.contains(&x) && rng.below(400) == 0 {
-        g.detach(v(x)).unwrap();
+        g.begin_delete(v(x)).unwrap();
         model.detaching = Some(x);
         return;
     }
@@ -324,13 +328,10 @@ fn model_insert<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n
     let to = rng.below(3);
     if let Some(error) = [from, to].into_iter().find_map(|x| model.blocked(x)) {
         assert_eq!(
-            g.add_edge(NewEdge::directed(
-                v(from),
-                label,
-                v(to),
-                placement_of(label),
-                &model.fresh_value(label, &mut Rng(1))
-            )),
+            g.add_edge_with(
+                Edge::directed(v(from), label, v(to)).value(&model.fresh_value(label, &mut Rng(1))),
+                placement_of(label)
+            ),
             Err(error)
         );
         return;
@@ -343,13 +344,10 @@ fn model_insert<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n
     }
     let halves = if label == HUB.1 || rng.below(4) != 0 {
         let halves = g
-            .add_edge(NewEdge::directed(
-                v(from),
-                label,
-                v(to),
+            .add_edge_with(
+                Edge::directed(v(from), label, v(to)).value(&value),
                 placement_of(label),
-                &value,
-            ))
+            )
             .unwrap();
         // An edge from a proxy is keyed at its local target.
         let (canonical, other) = if v(from).is_proxy() {
@@ -368,13 +366,10 @@ fn model_insert<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n
         halves
     } else {
         let halves = g
-            .add_edge(NewEdge::undirected(
-                v(from),
-                label,
-                v(to),
+            .add_edge_with(
+                Edge::undirected(v(from), label, v(to)).value(&value),
                 placement_of(label),
-                &value,
-            ))
+            )
             .unwrap();
         // The local end when the other is a proxy, else the larger id.
         let (low, high) = if v(from).is_proxy() {
@@ -409,7 +404,7 @@ fn model_insert<M: Memory>(g: &mut Graph<M>, model: &mut Model, rng: &mut Rng, n
 /// One detach step: every reported edge must be one of the model's, with its true halves.
 fn model_detach_step<M: Memory>(g: &mut Graph<M>, model: &mut Model, x: u32, rng: &mut Rng) {
     let budget = NonZeroU32::new(1 + rng.below(40)).unwrap();
-    let step = g.detach_step(v(x), budget).unwrap();
+    let step = g.delete_step(v(x), budget).unwrap();
     assert!(step.changes().len() <= usize::try_from(budget.get()).unwrap());
     for r in step.changes() {
         let halves = r.halves();
@@ -465,16 +460,17 @@ fn model_remove<M: Memory>(g: &mut Graph<M>, model: &mut Model, half: EdgeRef) {
             fills
         )))
     );
-    assert_eq!(g.edge_target(half), Ok(None));
+    assert_eq!(g.other_end(half), Ok(None));
     assert_eq!(g.remove_edge(other), Ok(Removal::Absent));
 }
 
-/// Gives the edge `half` belongs to a new value and checks the old one came back.
+/// Gives the edge `half` belongs to a new value, after checking the old one.
 fn model_set_value<M: Memory>(g: &mut Graph<M>, model: &mut Model, half: EdgeRef, rng: &mut Rng) {
     let id = model.slot(half).unwrap().id;
     let value = model.fresh_value(half.label(), rng);
     let old = model.expected(id, half.label());
-    assert_eq!(g.set_edge_value(half, &value), Ok(Some(old)));
+    assert_eq!(g.edge_value(half), Ok(Some(old)));
+    assert_eq!(g.set_edge_value(half, &value), Ok(true));
     if !value.is_empty() {
         model.values.insert(id, value);
     }
@@ -485,9 +481,9 @@ fn model_compact<M: Memory>(g: &mut Graph<M>, model: &mut Model, key: Key) {
     let (x, label, direction) = key;
     let bucket = model.buckets.entry(key).or_default();
     let before: Vec<Slot> = bucket.iter().flatten().copied().collect();
-    let compaction = g.compact(v(x), (label, direction)).unwrap();
-    let stored =
-        g.degree(v(x), (label, direction)).unwrap() + g.holes(v(x), (label, direction)).unwrap();
+    let compaction = g.compact(v(x), Adjacency::new(label, direction)).unwrap();
+    let stored = g.degree(v(x), Adjacency::new(label, direction)).unwrap()
+        + g.holes(v(x), Adjacency::new(label, direction)).unwrap();
     let mut after = vec![None; usize::try_from(stored).unwrap()];
     let moved: BTreeMap<usize, (usize, u32)> = compaction
         .changes()
@@ -495,7 +491,7 @@ fn model_compact<M: Memory>(g: &mut Graph<M>, model: &mut Model, key: Key) {
         .map(|m| {
             (
                 usize::try_from(m.from().index()).unwrap(),
-                (usize::try_from(m.to().index()).unwrap(), m.target().index()),
+                (usize::try_from(m.to().index()).unwrap(), m.node().index()),
             )
         })
         .collect();
@@ -545,14 +541,19 @@ fn assert_matches_model<M: Memory>(g: &Graph<M>, model: &Model, n: u32) {
 /// ascending scan `expected`.
 fn assert_other_reads<M: Memory>(
     g: &Graph<M>,
-    (x, label, direction): (NodeId, Label, Direction),
+    (x, label, direction): (NodeId, EdgeLabel, Direction),
     expected: &[(u32, u32)],
 ) {
     let mut down = Vec::new();
-    g.visit_neighbors(x, (label, direction), Order::Descending, |e| {
-        down.push((e.position().index(), e.target().index()));
-        ControlFlow::<()>::Continue(())
-    })
+    g.visit_neighbors(
+        x,
+        Adjacency::new(label, direction),
+        Order::Descending,
+        |e| {
+            down.push((e.position().index(), e.node().index()));
+            ControlFlow::<()>::Continue(())
+        },
+    )
     .unwrap();
     let mut reversed = expected.to_vec();
     reversed.reverse();
@@ -566,25 +567,31 @@ fn assert_other_reads<M: Memory>(
         let mut cursor = Some(Cursor::first(order, span));
         while let Some(at) = cursor {
             cursor = g
-                .visit_window(x, (label, direction), at, |e| {
-                    seen.push((e.position().index(), e.target().index()));
+                .visit_window(x, Adjacency::new(label, direction), at, |e| {
+                    seen.push((e.position().index(), e.node().index()));
                 })
                 .unwrap();
         }
         assert_eq!(seen, want, "{order:?} windows");
     }
-    let stored = g.degree(x, (label, direction)).unwrap() + g.holes(x, (label, direction)).unwrap();
+    let stored = g.degree(x, Adjacency::new(label, direction)).unwrap()
+        + g.holes(x, Adjacency::new(label, direction)).unwrap();
     // Every position and two past the end, highest first, with a repeat.
     let positions: Vec<Position> = (0..stored + 2).rev().chain([0]).map(p).collect();
     let mut targets = Vec::new();
-    g.targets_at(x, (label, direction), &positions, &mut targets)
-        .unwrap();
+    g.neighbors_at(
+        x,
+        Adjacency::new(label, direction),
+        &positions,
+        &mut targets,
+    )
+    .unwrap();
     let live: BTreeMap<u32, u32> = expected.iter().copied().collect();
     let want: Vec<Option<NodeId>> = positions
         .iter()
         .map(|at| live.get(&at.index()).map(|&t| v(t)))
         .collect();
-    assert_eq!(targets, want, "targets_at");
+    assert_eq!(targets, want, "neighbors_at");
 }
 
 /// Every live edge reads its model value through the combined scan, positional reads and the
@@ -592,7 +599,7 @@ fn assert_other_reads<M: Memory>(
 fn assert_values<M: Memory>(
     g: &Graph<M>,
     model: &Model,
-    (x, label, direction): (NodeId, Label, Direction),
+    (x, label, direction): (NodeId, EdgeLabel, Direction),
 ) {
     let Some(slots) = model.buckets.get(&(x.index(), label, direction)) else {
         return;
@@ -602,10 +609,15 @@ fn assert_values<M: Memory>(
         .filter_map(|(at, s)| s.map(|s| (at, model.expected(s.id, label))))
         .collect();
     let mut combined = BTreeMap::new();
-    g.visit_neighbors_with_values(x, (label, direction), Order::Ascending, |e, value| {
-        combined.insert(e.position().index(), value.to_vec());
-        ControlFlow::<()>::Continue(())
-    })
+    g.visit_neighbors_with_values(
+        x,
+        Adjacency::new(label, direction),
+        Order::Ascending,
+        |e, value| {
+            combined.insert(e.position().index(), value.to_vec());
+            ControlFlow::<()>::Continue(())
+        },
+    )
     .unwrap();
     assert_eq!(
         combined, live,
@@ -613,17 +625,22 @@ fn assert_values<M: Memory>(
     );
     let positions: Vec<Position> = live.keys().rev().map(|&at| p(at)).collect();
     let mut bytes = Vec::new();
-    g.values_at(x, (label, direction), &positions, &mut bytes)
+    g.values_at(x, Adjacency::new(label, direction), &positions, &mut bytes)
         .unwrap();
     let want: Vec<u8> = live.values().rev().flatten().copied().collect();
     assert_eq!(bytes, want, "values_at of {x:?} {label:?} {direction:?}");
     let mut first_phase = BTreeMap::new();
-    g.visit_values(x, (label, direction), Order::Descending, |at, value| {
-        if live.contains_key(&at.index()) {
-            first_phase.insert(at.index(), value.to_vec());
-        }
-        ControlFlow::<()>::Continue(())
-    })
+    g.visit_values(
+        x,
+        Adjacency::new(label, direction),
+        Order::Descending,
+        |at, value| {
+            if live.contains_key(&at.index()) {
+                first_phase.insert(at.index(), value.to_vec());
+            }
+            ControlFlow::<()>::Continue(())
+        },
+    )
     .unwrap();
     if model.widths.contains_key(&label) {
         assert_eq!(
@@ -637,10 +654,13 @@ fn assert_values<M: Memory>(
 fn compact_fully<M: Memory>(g: &mut Graph<M>, model: &mut Model, key: Key) {
     let (x, label, direction) = key;
     for _ in 0..10_000 {
-        let before = g.holes(v(x), (label, direction)).unwrap();
+        let before = g.holes(v(x), Adjacency::new(label, direction)).unwrap();
         model_compact(g, model, key);
-        if g.compact(v(x), (label, direction)).unwrap().progress() == Progress::Done
-            && g.holes(v(x), (label, direction)).unwrap() <= before
+        if g.compact(v(x), Adjacency::new(label, direction))
+            .unwrap()
+            .progress()
+            == Progress::Done
+            && g.holes(v(x), Adjacency::new(label, direction)).unwrap() <= before
         {
             return;
         }

@@ -75,42 +75,42 @@ fn reopen_reads_the_same_graph() {
 fn init_new_and_load_follow_ic_stable_structures() {
     let backing = Backing::default();
     assert!(matches!(
-        Graph::try_load(backing.memories()),
+        Graph::<VecMemory>::try_load(backing.memories()),
         Err(InitError::NotAGraph)
     ));
-    let mut g = Graph::init(backing.memories());
+    let mut g = Graph::<VecMemory>::init(backing.memories());
     for _ in 0..3 {
-        g.add_node().unwrap();
+        g.add_node(&[]).unwrap();
     }
     insert(&mut g, v(0), l(1), v(2));
     let before = snapshot(&g);
     let memories = g.into_memories();
-    let reopened = Graph::init(memories);
+    let reopened = Graph::<VecMemory>::init(memories);
     assert_eq!(snapshot(&reopened), before);
     check(&reopened);
     // Formatting over a graph leaves an empty one.
-    let fresh = Graph::new(backing.memories());
+    let fresh = Graph::<VecMemory>::format(backing.memories());
     assert_eq!(fresh.node_count(), 0);
     check(&fresh);
     // A foreign magic in the nodes memory: init formats, as ic-stable-structures' BTreeMap does.
     let foreign = Backing::default();
     foreign.memories[0].grow(1).unwrap();
     foreign.memories[0].write(0, b"XYZ\x01");
-    assert_eq!(Graph::init(foreign.memories()).node_count(), 0);
+    assert_eq!(Graph::<VecMemory>::init(foreign.memories()).node_count(), 0);
     // Another layout version is refused by both.
     backing.memories[0].write(3, &[2]);
     for result in [
-        Graph::try_load(backing.memories()),
-        Graph::try_init(backing.memories()),
+        Graph::<VecMemory>::try_load(backing.memories()),
+        Graph::<VecMemory>::try_init(backing.memories()),
     ] {
         assert!(matches!(result, Err(InitError::UnsupportedVersion(2))));
     }
     // A graph's nodes memory without its stores is not a graph.
     let partial = Backing::default();
-    drop(Graph::new(partial.memories()));
+    drop(Graph::<VecMemory>::format(partial.memories()));
     partial.memories[1].write(0, b"XYZ");
     assert!(matches!(
-        Graph::try_init(partial.memories()),
+        Graph::<VecMemory>::try_init(partial.memories()),
         Err(InitError::NotAGraph)
     ));
 }
@@ -122,16 +122,16 @@ fn init_new_and_load_follow_ic_stable_structures() {
 fn ic_stable_structures_memories_hold_a_graph() {
     use crate::graph::memories::MemoryRole;
     use ic_stable_structures::DefaultMemoryImpl;
-    use ic_stable_structures::memory_manager::{MemoryId, MemoryManager};
+    use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
     let manager = MemoryManager::init(DefaultMemoryImpl::default());
     let memories = || Memories::from_fn(|role| manager.get(MemoryId::new(role.index())));
-    let mut g = Graph::init(memories());
-    let (a, b) = (g.add_node().unwrap(), g.add_node().unwrap());
+    let mut g: Graph<VirtualMemory<DefaultMemoryImpl>> = Graph::init(memories());
+    let (a, b) = (g.add_node(&[]).unwrap(), g.add_node(&[]).unwrap());
     let halves = g
-        .add_edge(NewEdge::directed(a, l(1), b, Placement::Append, &[]))
+        .add_edge_with(Edge::directed(a, l(1), b), Placement::Append)
         .unwrap();
     drop(g);
-    let g = Graph::init(memories());
+    let g: Graph<VirtualMemory<DefaultMemoryImpl>> = Graph::init(memories());
     assert_eq!(g.node_count(), 2);
     assert_eq!(g.counterpart(halves.canonical()), Ok(Some(halves.other())));
     let nodes = manager.get(MemoryId::new(MemoryRole::Nodes.index()));

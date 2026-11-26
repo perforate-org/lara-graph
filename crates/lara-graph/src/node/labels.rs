@@ -30,7 +30,7 @@ pub(crate) mod postings;
 pub(crate) mod set;
 
 use crate::bucket::values::Plane;
-use crate::id::{Label, NodeId};
+use crate::id::{NodeId, NodeLabel};
 use crate::store::corrupt::reservation_exceeded;
 use crate::store::memory::{Memory, PAGE_SIZE, Region, WriteError};
 use crate::store::page_store::{PageStore, Pages};
@@ -107,11 +107,11 @@ impl<M: Memory> LabelStore<M> {
 
     /// Replaces `v`'s labels with `set` (sorted, distinct) and updates each label's nodes for the
     /// labels gained and lost. On error the labels and postings are unchanged.
-    pub(crate) fn set(
+    pub(crate) fn set<P: Memory, D: Memory>(
         &mut self,
-        lists: &mut PageStore<M>,
+        lists: &mut PageStore<P, D>,
         v: NodeId,
-        set: &[Label],
+        set: &[NodeLabel],
     ) -> Result<(), WriteError> {
         let old_cell = self.cell(v);
         let mut old = Vec::new();
@@ -141,7 +141,7 @@ impl<M: Memory> LabelStore<M> {
     }
 
     /// Drops `v`'s labels and postings. Cannot fail: removals never allocate.
-    pub(crate) fn clear(&mut self, lists: &mut PageStore<M>, v: NodeId) {
+    pub(crate) fn clear<P: Memory, D: Memory>(&mut self, lists: &mut PageStore<P, D>, v: NodeId) {
         let old = self.cell(v);
         if old == LabelSet::None {
             return;
@@ -157,17 +157,17 @@ impl<M: Memory> LabelStore<M> {
 
     /// Calls `f` with each node below `end` that has `label`, from `from` on, ascending, until it
     /// breaks.
-    pub(crate) fn visit<B>(
+    pub(crate) fn visit<P: Memory, B>(
         &self,
-        lists: &Pages<'_, M>,
-        (label, from, end): (Label, u32, u32),
+        lists: &Pages<'_, P>,
+        (label, from, end): (NodeLabel, u32, u32),
         f: &mut impl FnMut(NodeId) -> ControlFlow<B>,
     ) -> Option<B> {
         postings::visit(lists, self.postings, (label, from, end), f)
     }
 
     /// How many nodes have `label`.
-    pub(crate) fn count(&self, lists: &Pages<'_, M>, label: Label) -> u32 {
+    pub(crate) fn count<P: Memory>(&self, lists: &Pages<'_, P>, label: NodeLabel) -> u32 {
         postings::count(lists, self.postings, label)
     }
 
@@ -242,7 +242,7 @@ fn cell_at(index: u32) -> ByteOffset {
 }
 
 /// The labels of `next` not in `old`, and of `old` not in `next`; both are sorted and distinct.
-fn diff(old: &[Label], next: &[Label]) -> (Vec<Label>, Vec<Label>) {
+fn diff(old: &[NodeLabel], next: &[NodeLabel]) -> (Vec<NodeLabel>, Vec<NodeLabel>) {
     let gained = next
         .iter()
         .filter(|l| old.binary_search(l).is_err())

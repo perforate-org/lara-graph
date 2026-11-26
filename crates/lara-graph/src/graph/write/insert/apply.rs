@@ -10,6 +10,7 @@ use crate::edge::Writes;
 use crate::edge::{Batch, Between, HoleCursor};
 use crate::error::Error;
 use crate::graph::Graph;
+use crate::graph::GraphMemories;
 use crate::id::{EdgeRef, NodeId, Position, ValueVersion, Width};
 use crate::node::label_bucket_list::{self, EntryAt};
 use crate::store::corrupt::corrupt;
@@ -18,7 +19,7 @@ use crate::store::memory::Memory;
 /// Each half's spot, and the block batch of an append that completes a block of a hub's bucket.
 type Spots<const N: usize> = [(Spot, Option<Batch>); N];
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// The one insert path: a cache supplies any half already admitted, then the batch plans
     /// spots, reserves once and applies each half.
     pub(super) fn insert_halves_with<const N: usize>(
@@ -93,7 +94,7 @@ impl<M: Memory> Graph<M> {
         for (half, place) in halves.iter().zip(places) {
             if let Target::Present(_, stored) = place.target {
                 let bucket = LabelBucket::resolve(&view, stored);
-                let at = EdgeRef::new(
+                let at = EdgeRef::of(
                     half.node,
                     half.key.label,
                     half.key.direction,
@@ -143,7 +144,7 @@ impl<M: Memory> Graph<M> {
         let (at, bucket) = self.edges.insert(stored, half.target, spot, value);
         let updated = self.finish_place(half, place, entry, bucket);
         (
-            EdgeRef::new(half.node, half.key.label, half.key.direction, at),
+            EdgeRef::of(half.node, half.key.label, half.key.direction, at),
             updated,
         )
     }
@@ -183,8 +184,8 @@ impl<M: Memory> Graph<M> {
 /// Half `i`'s spot and the block batch its append completes, if any; the cursor, when it is
 /// half `i`'s, finds holes for a run of fresh targets.
 #[inline]
-fn plan<M: Memory, const N: usize>(
-    edges: &EdgeView<'_, M>,
+fn plan<M: Memory, D: Memory, const N: usize>(
+    edges: &EdgeView<'_, M, D>,
     halves: &[Half; N],
     places: &[Place; N],
     i: usize,

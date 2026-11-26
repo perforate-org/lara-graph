@@ -9,13 +9,14 @@ use crate::bucket::{Index, LabelBucket};
 use crate::error::{BatchError, InitError};
 use crate::graph::memories::Memories;
 use crate::id::{
-    Direction, EdgeRef, Halves, Label, NodeId, NodeState, Position, ValueVersion, Width,
+    Adjacency, Direction, EdgeLabel, EdgeRef, Halves, NodeId, NodeLabel, NodeState, Position,
+    ValueVersion, Width,
 };
 use crate::input::{Cursor, Order, Placement};
-use crate::input::{EdgeValue, NewEdge};
+use crate::input::{Edge, EdgeValue};
 use crate::node::label_bucket_list;
 use crate::outcome::{BucketFill, Progress, Removal, RemovedEdge};
-use crate::store::memory::{PAGE_SIZE, VecMemory};
+use crate::store::memory::{Memory, PAGE_SIZE, VecMemory};
 use crate::store::page_store::{ByteClass, Extent, Pages};
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
@@ -35,9 +36,9 @@ impl Backing {
     }
 
     fn create(&self, n: u32) -> Graph<VecMemory> {
-        let mut g = Graph::new(self.memories());
+        let mut g = Graph::format(self.memories());
         for _ in 0..n {
-            g.add_node().unwrap();
+            g.add_node(&[]).unwrap();
         }
         g
     }
@@ -51,8 +52,12 @@ fn v(i: u32) -> NodeId {
     NodeId::new(i)
 }
 
-fn l(i: u16) -> Label {
-    Label::new(i)
+fn l(i: u16) -> EdgeLabel {
+    EdgeLabel::new(i)
+}
+
+fn nl(i: u16) -> NodeLabel {
+    NodeLabel::new(i)
 }
 
 fn p(i: u32) -> Position {
@@ -63,37 +68,32 @@ fn p(i: u32) -> Position {
 fn edges_on<M: Memory>(
     g: &Graph<M>,
     x: NodeId,
-    label: Label,
+    label: EdgeLabel,
     direction: Direction,
 ) -> Vec<(u32, u32)> {
     let mut out = Vec::new();
-    g.neighbors(x, (label, direction), &mut out).unwrap();
+    g.neighbors(x, Adjacency::new(label, direction), &mut out)
+        .unwrap();
     out.into_iter()
-        .map(|e| (e.position().index(), e.target().index()))
+        .map(|e| (e.position().index(), e.node().index()))
         .collect()
 }
 
 /// The live out-edges of `x` under `label`.
-fn edges<M: Memory>(g: &Graph<M>, x: NodeId, label: Label) -> Vec<(u32, u32)> {
+fn edges<M: Memory>(g: &Graph<M>, x: NodeId, label: EdgeLabel) -> Vec<(u32, u32)> {
     edges_on(g, x, label, Direction::Outgoing)
 }
 
-fn out_ref(x: NodeId, label: Label, at: Position) -> EdgeRef {
-    EdgeRef::new(x, label, Direction::Outgoing, at)
+fn out_ref(x: NodeId, label: EdgeLabel, at: Position) -> EdgeRef {
+    EdgeRef::new(x, label.outgoing(), at)
 }
 
 /// Inserts `from -[label]-> to` and returns the out half's position.
-fn insert<M: Memory>(g: &mut Graph<M>, from: NodeId, label: Label, to: NodeId) -> Position {
-    g.add_edge(NewEdge::directed(
-        from,
-        label,
-        to,
-        Placement::ReuseHoles,
-        &[],
-    ))
-    .unwrap()
-    .canonical()
-    .position()
+fn insert<M: Memory>(g: &mut Graph<M>, from: NodeId, label: EdgeLabel, to: NodeId) -> Position {
+    g.add_edge(Edge::directed(from, label, to))
+        .unwrap()
+        .canonical()
+        .position()
 }
 
 /// The halves a removal reports, if it removed an edge.
@@ -105,14 +105,19 @@ fn removed(removal: Result<Removal, Error>) -> Option<Halves> {
 }
 
 /// Removes the directed edge whose out half is at `at`; returns its target if it was live.
-fn remove<M: Memory>(g: &mut Graph<M>, from: NodeId, label: Label, at: Position) -> Option<u32> {
+fn remove<M: Memory>(
+    g: &mut Graph<M>,
+    from: NodeId,
+    label: EdgeLabel,
+    at: Position,
+) -> Option<u32> {
     match g.remove_edge(out_ref(from, label, at)).unwrap() {
         Removal::Removed(r) => Some(r.halves().other().node().index()),
         Removal::Absent => None,
     }
 }
 
-fn out_bucket<M: Memory>(g: &Graph<M>, x: NodeId, label: Label) -> Option<Descriptor> {
+fn out_bucket<M: Memory>(g: &Graph<M>, x: NodeId, label: EdgeLabel) -> Option<Descriptor> {
     g.bucket(
         x,
         LabelBucketKey {

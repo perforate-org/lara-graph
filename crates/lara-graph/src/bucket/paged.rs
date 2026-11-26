@@ -365,8 +365,8 @@ fn leaf_entry<M: Memory>(view: &Pages<'_, M>, paged: &Paged, number: u32) -> Byt
 
 /// Rewrites data page `number`'s entry with `make` applied to it, and keeps the counts above it
 /// in step when whether it has a fillable hole changes. Returns the old entry.
-fn rewrite_leaf<M: Memory>(
-    store: &PageStore<M>,
+fn rewrite_leaf<M: Memory, D: Memory>(
+    store: &PageStore<M, D>,
     paged: &Paged,
     number: u32,
     make: impl FnOnce(Leaf) -> Leaf,
@@ -433,7 +433,12 @@ pub(crate) fn data_page<M: Memory>(view: &Pages<'_, M>, paged: &Paged, number: u
 }
 
 /// Records that the edge at `slot` of data page `number` was removed.
-pub(crate) fn removed<M: Memory>(store: &PageStore<M>, paged: &Paged, number: u32, slot: u16) {
+pub(crate) fn removed<M: Memory, D: Memory>(
+    store: &PageStore<M, D>,
+    paged: &Paged,
+    number: u32,
+    slot: u16,
+) {
     rewrite_leaf(store, paged, number, |leaf| Leaf {
         tombstones: leaf
             .tombstones
@@ -446,8 +451,8 @@ pub(crate) fn removed<M: Memory>(store: &PageStore<M>, paged: &Paged, number: u3
 
 /// Records that the hole at `slot` of data page `number` was filled. When it was the page's
 /// first, `next_hole` finds the next one: the first after `slot`.
-pub(crate) fn filled<M: Memory>(
-    store: &PageStore<M>,
+pub(crate) fn filled<M: Memory, D: Memory>(
+    store: &PageStore<M, D>,
     paged: &Paged,
     number: u32,
     slot: u16,
@@ -473,7 +478,11 @@ pub(crate) fn filled<M: Memory>(
 
 /// Releases data page `number` (all of its positions are dead) and leaves a hollow entry, so
 /// no later position moves.
-pub(crate) fn hollow<M: Memory>(store: &mut PageStore<M>, paged: &Paged, number: u32) {
+pub(crate) fn hollow<M: Memory, D: Memory>(
+    store: &mut PageStore<M, D>,
+    paged: &Paged,
+    number: u32,
+) {
     let leaf = rewrite_leaf(store, paged, number, |_| Leaf {
         page: None,
         tombstones: narrow(PAGE_SLOTS),
@@ -483,8 +492,8 @@ pub(crate) fn hollow<M: Memory>(store: &mut PageStore<M>, paged: &Paged, number:
 }
 
 /// Overwrites data page `number`'s tombstone count and first hole.
-pub(crate) fn set_holes<M: Memory>(
-    store: &PageStore<M>,
+pub(crate) fn set_holes<M: Memory, D: Memory>(
+    store: &PageStore<M, D>,
     paged: &Paged,
     number: u32,
     (tombstones, first_hole): (u16, u16),
@@ -522,8 +531,8 @@ fn narrow(count: u32) -> u16 {
 
 /// The index of a new paged bucket: the full run's page first (with its tombstones), then a new
 /// empty page. Returns the index and the new page.
-pub(crate) fn start<M: Memory>(
-    store: &mut PageStore<M>,
+pub(crate) fn start<M: Memory, D: Memory>(
+    store: &mut PageStore<M, D>,
     first: Leaf,
 ) -> Result<(Extent, PageId), WriteError> {
     let mut txn = SpanTxn::begin(store);

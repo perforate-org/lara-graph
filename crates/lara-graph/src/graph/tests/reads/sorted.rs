@@ -4,7 +4,7 @@
 use super::*;
 
 const NODES: u32 = 400;
-const LABEL: Label = Label::new(3);
+const LABEL: EdgeLabel = EdgeLabel::new(3);
 
 /// Two paged hubs, nodes of every small size, parallel edges, then a fifth of the edges removed.
 fn graph(backing: &Backing) -> Graph<VecMemory> {
@@ -36,7 +36,7 @@ fn sorted_model(g: &Graph<VecMemory>, x: u32) -> Vec<u32> {
 
 fn sorted(g: &Graph<VecMemory>, x: u32) -> Vec<u32> {
     let mut out = Vec::new();
-    g.sorted_targets(v(x), (LABEL, Direction::Outgoing), &mut out)
+    g.sorted_neighbors(v(x), LABEL.outgoing(), &mut out)
         .unwrap();
     out.into_iter().map(NodeId::index).collect()
 }
@@ -55,8 +55,7 @@ fn sorted_targets_list_every_live_edge_in_node_order() {
         assert_eq!(sorted(&g, x), sorted_model(&g, x), "node {x}");
     }
     let mut out = vec![v(0)];
-    g.sorted_targets(v(5), (l(9), Direction::Outgoing), &mut out)
-        .unwrap();
+    g.sorted_neighbors(v(5), l(9).outgoing(), &mut out).unwrap();
     assert!(out.is_empty(), "a missing bucket lists nothing");
 }
 
@@ -81,14 +80,14 @@ fn common_targets_match_set_intersection_whichever_way_they_are_found() {
         let theirs: BTreeSet<u32> = sorted_model(&g, b).into_iter().collect();
         let model: Vec<u32> = ours.intersection(&theirs).copied().collect();
         let mut out = Vec::new();
-        g.common_targets(v(a), v(b), (LABEL, Direction::Outgoing), &mut out)
+        g.common_neighbors(&[v(a), v(b)], LABEL.outgoing(), &mut out)
             .unwrap();
         let got: Vec<u32> = out.into_iter().map(NodeId::index).collect();
         assert_eq!(got, model, "nodes {a} and {b}");
     }
     let mut out = Vec::new();
     assert!(
-        g.common_targets(v(0), v(NODES), (LABEL, Direction::Outgoing), &mut out)
+        g.common_neighbors(&[v(0), v(NODES)], LABEL.outgoing(), &mut out)
             .is_err()
     );
 }
@@ -114,7 +113,7 @@ fn common_targets_of_many_match_the_intersection_of_all() {
             .map_or_else(Vec::new, |set| set.into_iter().collect());
         let nodes: Vec<NodeId> = group.iter().map(|&x| v(x)).collect();
         let mut out = vec![v(0)];
-        g.common_targets_of(&nodes, (LABEL, Direction::Outgoing), &mut out)
+        g.common_neighbors(&nodes, LABEL.outgoing(), &mut out)
             .unwrap();
         let got: Vec<u32> = out.into_iter().map(NodeId::index).collect();
         assert_eq!(got, model, "nodes {group:?}");
@@ -128,7 +127,7 @@ fn a_target_set_intersects_with_every_bucket_and_stays_as_it_was() {
     // Hubs (bitmaps, and probed when the other side is small), small nodes whose few targets
     // spread wide (hash tables), and a node with no bucket.
     for a in [0, 1, 2, 3, 7, 40, 41, 81, 399] {
-        let mut set = g.target_set(v(a), (LABEL, Direction::Outgoing)).unwrap();
+        let mut set = g.neighbor_set(v(a), LABEL.outgoing()).unwrap();
         let ours: BTreeSet<u32> = sorted_model(&g, a).into_iter().collect();
         assert_eq!(set.len(), ours.len(), "node {a}");
         assert!(ours.iter().all(|&t| set.contains(v(t))), "node {a}");
@@ -136,25 +135,15 @@ fn a_target_set_intersects_with_every_bucket_and_stays_as_it_was() {
         for b in 0..NODES {
             let theirs: BTreeSet<u32> = sorted_model(&g, b).into_iter().collect();
             let model: Vec<u32> = ours.intersection(&theirs).copied().collect();
-            g.common_with(
-                &mut set,
-                (v(b), None),
-                (LABEL, Direction::Outgoing),
-                &mut out,
-            )
-            .unwrap();
+            g.common_with(&mut set, v(b), None, LABEL.outgoing(), &mut out)
+                .unwrap();
             let got: Vec<u32> = out.iter().map(|t| t.index()).collect();
             assert_eq!(got, model, "nodes {a} and {b}");
         }
         assert_eq!(set.len(), ours.len(), "node {a}: the set is unchanged");
         assert!(
-            g.common_with(
-                &mut set,
-                (v(NODES), None),
-                (LABEL, Direction::Outgoing),
-                &mut out
-            )
-            .is_err()
+            g.common_with(&mut set, v(NODES), None, LABEL.outgoing(), &mut out)
+                .is_err()
         );
     }
 }
@@ -170,27 +159,17 @@ fn target_sets_hold_proxies_with_local_nodes() {
         }
     }
     insert(&mut g, v(2), LABEL, proxy);
-    let mut set = g.target_set(v(0), (LABEL, Direction::Outgoing)).unwrap();
+    let mut set = g.neighbor_set(v(0), LABEL.outgoing()).unwrap();
     assert_eq!(set.len(), 3);
     assert!(set.contains(proxy) && !set.contains(v(1)));
     let mut out = Vec::new();
-    g.common_with(
-        &mut set,
-        (v(1), None),
-        (LABEL, Direction::Outgoing),
-        &mut out,
-    )
-    .unwrap();
+    g.common_with(&mut set, v(1), None, LABEL.outgoing(), &mut out)
+        .unwrap();
     assert_eq!(out, [v(2), v(3), proxy]);
-    g.common_with(
-        &mut set,
-        (v(2), Some(v(3))),
-        (LABEL, Direction::Outgoing),
-        &mut out,
-    )
-    .unwrap();
+    g.common_with(&mut set, v(2), Some(v(3)), LABEL.outgoing(), &mut out)
+        .unwrap();
     assert_eq!(out, [proxy]);
-    g.common_targets_of(&[v(0), v(1), v(2)], (LABEL, Direction::Outgoing), &mut out)
+    g.common_neighbors(&[v(0), v(1), v(2)], LABEL.outgoing(), &mut out)
         .unwrap();
     assert_eq!(out, [proxy]);
 }
@@ -200,7 +179,7 @@ fn a_bound_keeps_only_the_shared_targets_past_it() {
     let backing = Backing::default();
     let g = graph(&backing);
     for a in [0, 1, 3, 40, 81] {
-        let mut set = g.target_set(v(a), (LABEL, Direction::Outgoing)).unwrap();
+        let mut set = g.neighbor_set(v(a), LABEL.outgoing()).unwrap();
         let ours: BTreeSet<u32> = sorted_model(&g, a).into_iter().collect();
         let mut out = Vec::new();
         for b in [0, 1, 7, 40, 80, 120, 399] {
@@ -211,13 +190,8 @@ fn a_bound_keeps_only_the_shared_targets_past_it() {
                     .copied()
                     .filter(|&t| t > above)
                     .collect();
-                g.common_with(
-                    &mut set,
-                    (v(b), Some(v(above))),
-                    (LABEL, Direction::Outgoing),
-                    &mut out,
-                )
-                .unwrap();
+                g.common_with(&mut set, v(b), Some(v(above)), LABEL.outgoing(), &mut out)
+                    .unwrap();
                 let got: Vec<u32> = out.iter().map(|t| t.index()).collect();
                 assert_eq!(got, model, "nodes {a} and {b} past {above}");
             }
@@ -230,15 +204,14 @@ fn common_with_each_matches_one_node_at_a_time() {
     let backing = Backing::default();
     let g = graph(&backing);
     let nodes: Vec<NodeId> = (0..NODES).map(v).collect();
-    let key = (LABEL, Direction::Outgoing);
+    let key = LABEL.outgoing();
     let mut batch = g.read_batch();
     for a in [0, 1, 3, 40, 81, 399] {
-        let mut set = g.target_set(v(a), key).unwrap();
+        let mut set = g.neighbor_set(v(a), key).unwrap();
         let mut want = Vec::new();
         let mut out = Vec::new();
         for &w in &nodes {
-            g.common_with(&mut set, (w, Some(w)), key, &mut out)
-                .unwrap();
+            g.common_with(&mut set, w, Some(w), key, &mut out).unwrap();
             if !out.is_empty() {
                 want.push((w, out.clone()));
             }
@@ -252,7 +225,7 @@ fn common_with_each_matches_one_node_at_a_time() {
             .unwrap();
         assert_eq!((none, got), (None, want), "node {a}");
     }
-    let mut set = g.target_set(v(0), key).unwrap();
+    let mut set = g.neighbor_set(v(0), key).unwrap();
     let mut calls = 0;
     let first = batch
         .common_with_each(

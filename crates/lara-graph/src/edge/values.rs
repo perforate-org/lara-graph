@@ -8,7 +8,7 @@ use crate::bucket::slots::{self, Span, Window, stored_u32};
 use crate::bucket::values::{self, Plane};
 use crate::bucket::{LabelBucket, Migration, Schema, Values};
 use crate::edge::{EdgeStore, EdgeView};
-use crate::id::{Label, Neighbor, Position, Width};
+use crate::id::{EdgeLabel, Neighbor, Position, Width};
 use crate::input::Order;
 use crate::store::memory::Memory;
 use crate::store::page_store::Pages;
@@ -16,7 +16,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
-impl<M: Memory> EdgeStore<M> {
+impl<M: Memory, D: Memory> EdgeStore<M, D> {
     /// `bucket` with `value` at `position`, given a value plane if it has none. Within reserved
     /// memory.
     pub(crate) fn put_value(
@@ -76,13 +76,13 @@ impl<M: Memory> EdgeStore<M> {
     }
 }
 
-impl<M: Memory> EdgeView<'_, M> {
+impl<M: Memory, D: Memory> EdgeView<'_, M, D> {
     /// The value at `position` of `bucket` (a bucket of `label`), whether or not an edge is live
     /// there: its cell, zeros before any write, empty for a label without a width.
     pub(crate) fn read_value(
         &self,
         bucket: &LabelBucket,
-        label: Label,
+        label: EdgeLabel,
         position: Position,
     ) -> Vec<u8> {
         value_at(&self.pages(), self.widths.get(label), bucket, position)
@@ -92,7 +92,7 @@ impl<M: Memory> EdgeView<'_, M> {
     pub(crate) fn visit_values_in<B>(
         &self,
         bucket: &LabelBucket,
-        label: Label,
+        label: EdgeLabel,
         order: Order,
         f: &mut impl FnMut(Position, &[u8]) -> ControlFlow<B>,
     ) -> Option<B> {

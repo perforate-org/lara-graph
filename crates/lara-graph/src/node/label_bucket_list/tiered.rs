@@ -124,7 +124,7 @@ fn top_class(leaves: usize) -> ByteClass {
 }
 
 /// Rewrites the whole top. It must fit `top`'s class.
-fn write_top<M: Memory>(store: &PageStore<M>, top: Extent, leaves: &[Leaf]) {
+fn write_top<M: Memory, D: Memory>(store: &PageStore<M, D>, top: Extent, leaves: &[Leaf]) {
     let count = u16::try_from(leaves.len()).unwrap_or_else(|_| corrupt("bucket list leaves"));
     let bytes: Vec<u8> = count
         .to_le_bytes()
@@ -134,8 +134,8 @@ fn write_top<M: Memory>(store: &PageStore<M>, top: Extent, leaves: &[Leaf]) {
     store.write(top.offset(), &bytes);
 }
 
-fn write_entries<M: Memory>(
-    store: &PageStore<M>,
+fn write_entries<M: Memory, D: Memory>(
+    store: &PageStore<M, D>,
     page: PageId,
     entries: &[(LabelBucketKey, Stored)],
 ) {
@@ -219,8 +219,8 @@ pub(super) fn extents<M: Memory>(pages: &Pages<'_, M>, top: Extent) -> Vec<Exten
 }
 
 /// A tiered list of two half-full leaves holding `all`, sorted. On error nothing is allocated.
-pub(super) fn from_entries<M: Memory>(
-    store: &mut PageStore<M>,
+pub(super) fn from_entries<M: Memory, D: Memory>(
+    store: &mut PageStore<M, D>,
     all: &[(LabelBucketKey, Stored)],
 ) -> Result<LabelBucketList, WriteError> {
     let mut txn = SpanTxn::begin(store);
@@ -239,8 +239,8 @@ pub(super) fn from_entries<M: Memory>(
     Ok(tiered(top))
 }
 
-pub(super) fn add<M: Memory>(
-    store: &mut PageStore<M>,
+pub(super) fn add<M: Memory, D: Memory>(
+    store: &mut PageStore<M, D>,
     top: Extent,
     gap: EntryAt,
     key: LabelBucketKey,
@@ -295,8 +295,8 @@ pub(super) fn add<M: Memory>(
 }
 
 /// Removes `entry`. A leaf left empty is released; a list left with one leaf turns flat.
-pub(super) fn remove<M: Memory>(
-    store: &mut PageStore<M>,
+pub(super) fn remove<M: Memory, D: Memory>(
+    store: &mut PageStore<M, D>,
     top: Extent,
     entry: EntryAt,
 ) -> LabelBucketList {

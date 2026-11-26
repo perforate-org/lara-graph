@@ -9,7 +9,6 @@ use crate::node::labels::LabelStore;
 use crate::node::record::{RECORD_BYTES, Record};
 use crate::node::store::{NodeStore, RecordLines};
 use crate::store::corrupt::corrupt;
-use crate::store::memory::Memory;
 use crate::store::page_store::PageStore;
 
 /// The layout version of every memory's header.
@@ -30,21 +29,56 @@ const VERSION: u8 = 1;
 /// Reading one bucket costs a node read, a label bucket list read and one data read (a few more
 /// past 1024 edges). An insert or removal copies at most one run of under 1024 edges or one page of
 /// index.
-pub struct Graph<M: Memory> {
-    nodes: NodeStore<M>,
-    labels: LabelStore<M>,
-    edges: EdgeStore<M>,
-    label_bucket_lists: PageStore<M>,
+///
+/// `S` is the memories' type: one [`Memory`](crate::Memory) type for all seven, or a
+/// [`Memories`] naming one per role.
+///
+/// # The everyday operations
+///
+/// - Opening: [`Graph::init`], or [`Graph::format`] and [`Graph::load`] apart.
+/// - Nodes: [`Graph::add_node`], [`Graph::add_nodes`], [`Graph::node_state`],
+///   [`Graph::begin_delete`] then [`Graph::delete_step`].
+/// - Node labels: [`Graph::add_node_label`], [`Graph::remove_node_label`],
+///   [`Graph::set_node_labels`], [`Graph::node_labels`], [`Graph::has_node_label`],
+///   [`Graph::visit_nodes_with_label`].
+/// - Edges: [`Graph::add_edge`], [`Graph::add_edges`], [`Graph::remove_edge`],
+///   [`Graph::remove_edges_between`], [`Graph::set_edge_value`], [`Graph::edge_value`].
+/// - Traversal: [`Graph::neighbors`], [`Graph::visit_neighbors`],
+///   [`Graph::visit_neighbors_with_values`], [`Graph::visit_all_neighbors`], [`Graph::degree`],
+///   [`Graph::contains_edge`], [`Graph::visit_edges_between`], and [`Graph::read_batch`] for many
+///   nodes at once.
+/// - Shared neighbours: [`Graph::sorted_neighbors`], [`Graph::common_neighbors`],
+///   [`Graph::neighbor_set`] with [`Graph::common_with`].
+///
+/// # Positions, maintenance and value layouts
+///
+/// For callers that keep positions or spread work out themselves: [`Graph::add_edge_with`],
+/// [`Graph::bulk_load`], [`Graph::visit_window`], [`Graph::nth_position`],
+/// [`Graph::neighbors_at`], [`Graph::values_at`], [`Graph::visit_values`], [`Graph::counterpart`],
+/// [`Graph::holes`], [`Graph::compact`], [`Graph::deleting_set`] with [`Graph::sweep`], and the
+/// value width's evolution: [`Graph::declare_width`], [`Graph::change_width`],
+/// [`Graph::migrate_values`], [`Graph::needs_migration`].
+pub struct Graph<S: GraphMemories> {
+    nodes: NodeStore<S::Nodes, S::Proxies>,
+    labels: LabelStore<S::NodeLabels>,
+    edges: EdgeStore<S::EdgePages, S::EdgeDirectory>,
+    label_bucket_lists: Lists<S>,
     /// Mirrors the label width table, which the label bucket list store holds.
     widths: Widths,
 }
 
-impl<M: Memory> Graph<M> {
+/// The label bucket list store of a graph of memory types `S`.
+type Lists<S> = PageStore<
+    <S as GraphMemories>::LabelBucketListPages,
+    <S as GraphMemories>::LabelBucketListDirectory,
+>;
+
+impl<S: GraphMemories> Graph<S> {
     /// A graph over formatted memories, with its header mirrors loaded.
     fn assemble(
-        (nodes, labels): (NodeStore<M>, LabelStore<M>),
-        edges: PageStore<M>,
-        label_bucket_lists: PageStore<M>,
+        nodes: NodeStore<S::Nodes, S::Proxies>,
+        labels: LabelStore<S::NodeLabels>,
+        (edges, label_bucket_lists): (PageStore<S::EdgePages, S::EdgeDirectory>, Lists<S>),
     ) -> Self {
         let widths = Widths::load(nodes.widths_root(), &label_bucket_lists);
         Self {
@@ -57,7 +91,7 @@ impl<M: Memory> Graph<M> {
     }
 
     /// The edge store as reads see it.
-    fn edge_view(&self) -> EdgeView<'_, M> {
+    fn edge_view(&self) -> EdgeView<'_, S::EdgePages, S::EdgeDirectory> {
         EdgeView::new(&self.edges, &self.widths)
     }
 
@@ -69,12 +103,15 @@ impl<M: Memory> Graph<M> {
         }
     }
 
+    /// Inlined, as [`Self::state`] is: a node state read cost 7 % more as a call.
+    #[inline]
     fn record(&self, v: NodeId) -> Result<Record, Error> {
         self.check(v)?;
         Ok(Record::decode(self.nodes.record_bytes(v)))
     }
 
     /// `v`'s state alone, without decoding its record's list.
+    #[inline]
     fn state(&self, v: NodeId) -> Result<NodeState, Error> {
         self.check(v)?;
         Ok(Record::state_of(self.nodes.record_bytes(v)))
@@ -114,9 +151,9 @@ mod node_labels;
 mod read;
 mod write;
 
-pub use memories::{Memories, MemoryRole};
-pub use read::{ReadBatch, TargetSet};
-pub use write::DetachingSet;
+pub use memories::{GraphMemories, Memories, MemoriesOf, MemoryRole};
+pub use read::{NeighborSet, ReadBatch};
+pub use write::DeletingSet;
 
 #[cfg(test)]
 use crate::bucket::pages_per_half;

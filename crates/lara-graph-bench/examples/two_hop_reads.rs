@@ -77,7 +77,7 @@ fn main() {
                 .find(|(r, _)| *r == role)
                 .map_or_else(|| panic!("no probe for {role:?}"), |(_, p)| p.clone())
         });
-        let mut g = lara_graph::Graph::new(memories);
+        let mut g = lara_graph::Graph::<Probe>::format(memories);
         let hub = two_hop::build(&mut g, layout);
         for (_, p) in &probes {
             p.0.reset();

@@ -10,10 +10,10 @@ keeps two promises, in this order:
 2. **Bounded updates.** An insert or removal copies at most one run below a page or one page of
    index entries, however large the node.
 
-Edges are directed or undirected, carry a `u16` label and, if the label declares a width, a
+Edges are directed or undirected, carry an `EdgeLabel` and, if the label declares a width, a
 fixed-width value. Positions are stable: removing an edge leaves a hole that a later insert may
 fill, and only an explicit `compact` moves edges. Large nodes keep a target index, so pairing
-an edge's two halves and refilling holes never scan them. Nodes carry any set of `u16` labels,
+an edge's two halves and refilling holes never scan them. Nodes carry any set of `NodeLabel`s,
 and each label lists its nodes. The crate is `no_std` + `alloc`.
 
 ## Use in a canister
@@ -28,7 +28,7 @@ use std::cell::RefCell;
 
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::DefaultMemoryImpl;
-use lara_graph::{Direction, Graph, Label, Memories, NewEdge, Placement};
+use lara_graph::{Edge, EdgeLabel, Graph, Memories, NodeLabel};
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 
@@ -42,34 +42,53 @@ thread_local! {
     })));
 }
 
-const FOLLOWS: Label = Label::new(0);
+const PERSON: NodeLabel = NodeLabel::new(0);
+const FOLLOWS: EdgeLabel = EdgeLabel::new(0);
 
 GRAPH.with(|graph| {
     let mut graph = graph.borrow_mut();
-    let alice = graph.add_node().unwrap();
-    let bob = graph.add_node().unwrap();
-    graph
-        .add_edge(NewEdge::directed(alice, FOLLOWS, bob, Placement::Append, &[]))
-        .unwrap();
+    let alice = graph.add_node(&[PERSON]).unwrap();
+    let bob = graph.add_node(&[PERSON]).unwrap();
+    graph.add_edge(Edge::directed(alice, FOLLOWS, bob)).unwrap();
 
     let mut out = Vec::new();
-    graph.neighbors(alice, (FOLLOWS, Direction::Outgoing), &mut out).unwrap();
-    assert_eq!(out.iter().map(|e| e.target()).collect::<Vec<_>>(), [bob]);
+    graph.neighbors(alice, FOLLOWS.outgoing(), &mut out).unwrap();
+    assert_eq!(out.iter().map(|n| n.node()).collect::<Vec<_>>(), [bob]);
+    assert_eq!(graph.remove_edges_between(alice, FOLLOWS.outgoing(), bob), Ok(1));
 });
 ```
 
-`Graph::new` formats (overwriting what the memories held) and `Graph::load` reopens; `try_new`,
-`try_load` and `try_init` return an `InitError` instead of panicking. Off the IC, `VecMemory`
-keeps a graph on the heap.
+`Graph::format` formats (overwriting what the memories held) and `Graph::load` reopens;
+`try_format`, `try_load` and `try_init` return an `InitError` instead of panicking. Off the IC,
+`VecMemory` keeps a graph on the heap.
+
+Each memory may be of its own type: `Graph<Memories<N, EP, ED, ..>>` takes them by role, and a
+graph that never adds a proxy may leave `proxies` as `None`. Where nothing else names the graph's
+type, name it at the call: `Graph::<VecMemory>::format(..)`.
+
+## Edges
+
+An edge names its ends, its label and its kind: `Edge::directed(a, FOLLOWS, b)`, with
+`.value(&bytes)` for a label that declares a width. A read names one adjacency of a node, a label
+in one direction: `FOLLOWS.outgoing()`, `.incoming()` or `.undirected()`. `add_edge` puts each
+half in the first hole its bucket can reuse, else at the end; `add_edge_with(edge,
+Placement::Append)` always appends, so that position order is insertion order.
 
 ## Node labels
 
-A node's labels are a set of `Label`s, kept apart from its edges' labels. `set_node_labels`
-replaces the set and is the one writer of both directions; `node_labels` lists it and
-`has_node_label` checks one label, with one 5-byte read for a node with at most two labels, so
-filtering neighbours by a label during a traversal stays cheap. `visit_nodes_with_label` gives
-a label's nodes in ascending id order, resuming after any node and stopping when the callback
-breaks, and `node_label_count` their number. A deleted node loses its labels.
+A node's labels are a set of `NodeLabel`s, kept apart from its edges' `EdgeLabel`s. `add_node`
+and `add_nodes` give new nodes theirs; `add_node_label` and `remove_node_label` change one, and
+`set_node_labels` replaces the set. `node_labels` lists it and `has_node_label` checks one label,
+with one 5-byte read for a node with at most two labels, so filtering neighbours by a label
+during a traversal stays cheap. `visit_nodes_with_label` gives a label's nodes in ascending id
+order, resuming after any node and stopping when the callback breaks, and `node_label_count`
+their number. A deleted node loses its labels.
+
+## Deleting nodes
+
+`begin_delete` marks a node: it takes no new edges, and `delete_step` removes a bounded number of
+its edges per call until it is deleted. Deleting many nodes that share a neighbour is cheaper
+through `deleting_set` and `sweep`, which clear their edges from the shared bucket in one pass.
 
 ## Batch operations
 
@@ -82,12 +101,12 @@ was changed.
 | `add_edges` | Ordered bulk. The failing edge is all-or-none; earlier edges remain. |
 | `set_edge_values` | Checks every node and value first; a later reservation failure restores earlier values. |
 | `remove_edges` | Checks every node first, then removes all or nothing. |
-| `detach_many` | Checks every node first, then marks all or nothing. |
+| `begin_delete_many` | Checks every node first, then marks all or nothing. |
 
 For an empty graph with nodes and widths already declared, `bulk_load` builds every bucket and
-its target index in one pass. Within a bucket, positions follow input order; the `placement` of
-each `NewEdge` is ignored because there are no holes yet. It returns `Error::NotEmpty` if the
-graph already holds edges. It is much cheaper than `add_edges` for the same edges.
+its target index in one pass. Within a bucket, positions follow input order. It returns
+`Error::NotEmpty` if the graph already holds edges. It is much cheaper than `add_edges` for the
+same edges.
 
 `BatchError::Unchanged` means no element was applied. `BatchError::PartiallyApplied` means the
 elements before `index` were applied; only `add_edges` can return it. A canister can turn a partial batch into an all-or-none
@@ -118,6 +137,7 @@ Each memory starts, as ic-stable-structures' do, with a 3-byte magic and a versi
 | `EdgePages`, `EdgeDirectory` | label buckets: edges, their values and target indexes |
 | `LabelBucketListPages`, `LabelBucketListDirectory` | each node's label bucket list, the width table, larger node label sets and each label's nodes |
 | `NodeLabels` | one 5-byte label cell per node, and the root of the label postings |
+| `Proxies` | one 6-byte record per proxy; optional, and empty until the first proxy |
 
 ## Where things are written down
 

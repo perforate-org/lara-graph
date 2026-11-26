@@ -69,42 +69,37 @@ const RECORDS_PER_LINE: u32 = 8;
 const LINE_BYTES: usize = RECORD_BYTES * 8;
 
 /// The nodes and proxies memories, with both counts mirrored.
-pub(crate) struct NodeStore<M: Memory> {
+pub(crate) struct NodeStore<M: Memory, P: Memory = M> {
     memory: M,
     count: u32,
-    proxies: M,
+    /// `None` for a graph given no proxies memory: it holds no proxy.
+    proxies: Option<P>,
     proxy_count: u32,
     /// The layout version a first proxy's header is written with.
     version: u8,
 }
 
-impl<M: Memory> NodeStore<M> {
+impl<M: Memory, P: Memory> NodeStore<M, P> {
     /// Formats `memory` as a store with no nodes and no width table, and `proxies` as holding no
     /// proxy, overwriting whatever they held. An empty proxies memory stays empty.
-    pub(crate) fn format(memory: M, proxies: M, version: u8) -> Result<Self, WriteError> {
+    pub(crate) fn format(memory: M, proxies: Option<P>, version: u8) -> Result<Self, WriteError> {
         let region = Region::new(&memory);
         let [m0, m1, m2] = MAGIC;
         region.write(ByteOffset::new(0), &[m0, m1, m2, version])?;
         region.overwrite(ByteOffset::new(AT_COUNT), &0u32.to_le_bytes());
         region.overwrite(ByteOffset::new(AT_WIDTHS), &Plane::Empty.encode());
-        if proxies.size() > 0 {
-            write_proxies_header(&proxies, version)?;
+        if let Some(proxies) = proxies.as_ref().filter(|p| p.size() > 0) {
+            write_proxies_header(proxies, version)?;
         }
         Ok(Self::open(memory, proxies, version))
     }
 
     /// The store `memory` and `proxies` hold; their headers were checked (an empty proxies
     /// memory holds no proxy).
-    pub(crate) fn open(memory: M, proxies: M, version: u8) -> Self {
-        let count_in = |m: &M| {
-            if m.size() == 0 {
-                return 0;
-            }
-            u32::from_le_bytes(Region::new(m).read_array(ByteOffset::new(AT_COUNT)))
-        };
+    pub(crate) fn open(memory: M, proxies: Option<P>, version: u8) -> Self {
         Self {
             count: count_in(&memory),
-            proxy_count: count_in(&proxies),
+            proxy_count: proxies.as_ref().map_or(0, count_in),
             memory,
             proxies,
             version,
@@ -112,7 +107,7 @@ impl<M: Memory> NodeStore<M> {
     }
 
     /// The nodes memory and the proxies memory back.
-    pub(crate) fn into_memories(self) -> (M, M) {
+    pub(crate) fn into_memories(self) -> (M, Option<P>) {
         (self.memory, self.proxies)
     }
 
@@ -142,27 +137,52 @@ impl<M: Memory> NodeStore<M> {
             .then(|| Region::new(&self.memory).read_array(record_at(base)))
     }
 
-    /// The memory holding `v`'s record, and the record's place in it.
-    #[inline]
-    fn place(&self, v: NodeId) -> (&M, u32) {
+    /// The proxies memory, given since `v`, a known proxy, was added.
+    fn proxies(&self) -> &P {
+        self.proxies
+            .as_ref()
+            .unwrap_or_else(|| corrupt("a proxy without a proxies memory"))
+    }
+
+    /// A known node's record, undecoded. A proxy's is read out of line, so that a local node's
+    /// read stays small enough to inline: with both reads here, finding a bucket cost about 20
+    /// instructions more (`degree_1024`).
+    pub(crate) fn record_bytes(&self, v: NodeId) -> [u8; RECORD_BYTES] {
         let index = v.index();
         if index < NodeId::FIRST_PROXY {
-            (&self.memory, index)
+            Region::new(&self.memory).read_array(record_at(index))
         } else {
-            (&self.proxies, index - NodeId::FIRST_PROXY)
+            self.proxy_record_bytes(index - NodeId::FIRST_PROXY)
         }
     }
 
-    /// A known node's record, undecoded.
-    pub(crate) fn record_bytes(&self, v: NodeId) -> [u8; RECORD_BYTES] {
-        let (memory, at) = self.place(v);
-        Region::new(memory).read_array(record_at(at))
+    /// The record of the proxy `ordinal`; a zero record without a proxies memory, which has no
+    /// proxy to ask for.
+    #[cold]
+    #[inline(never)]
+    fn proxy_record_bytes(&self, ordinal: u32) -> [u8; RECORD_BYTES] {
+        self.proxies.as_ref().map_or([0; RECORD_BYTES], |proxies| {
+            Region::new(proxies).read_array(record_at(ordinal))
+        })
     }
 
     /// Rewrites an existing node's record. Cannot fail.
     pub(crate) fn write(&self, v: NodeId, record: Record) {
-        let (memory, at) = self.place(v);
-        Region::new(memory).overwrite(record_at(at), &record.encode());
+        let index = v.index();
+        match &self.proxies {
+            _ if index < NodeId::FIRST_PROXY => {
+                Region::new(&self.memory).overwrite(record_at(index), &record.encode());
+            }
+            Some(proxies) => Region::new(proxies)
+                .overwrite(record_at(index - NodeId::FIRST_PROXY), &record.encode()),
+            // No proxy is known without a proxies memory.
+            None => {}
+        }
+    }
+
+    /// Whether the store was given a proxies memory, so that proxies can be added.
+    pub(crate) const fn has_proxies_memory(&self) -> bool {
+        self.proxies.is_some()
     }
 
     /// Rewrites the records of nodes `0..records.len()`, all known, a line at a time: a bulk
@@ -191,12 +211,14 @@ impl<M: Memory> NodeStore<M> {
 
     /// Adds new proxies until there are `next`, each with [`Record::NEW`], writing the proxies
     /// memory's header first if this is the first. On error none is visible.
+    /// The store has a proxies memory ([`Self::has_proxies_memory`]).
     pub(crate) fn extend_proxies(&mut self, next: u32) -> Result<(), WriteError> {
-        if self.proxies.size() == 0 {
-            write_proxies_header(&self.proxies, self.version)?;
+        let proxies = self.proxies();
+        if proxies.size() == 0 {
+            write_proxies_header(proxies, self.version)?;
         }
-        extend_records(&self.proxies, self.proxy_count, next)?;
-        Region::new(&self.proxies).overwrite(ByteOffset::new(AT_COUNT), &next.to_le_bytes());
+        extend_records(proxies, self.proxy_count, next)?;
+        Region::new(proxies).overwrite(ByteOffset::new(AT_COUNT), &next.to_le_bytes());
         self.proxy_count = next;
         Ok(())
     }
@@ -215,6 +237,14 @@ impl<M: Memory> NodeStore<M> {
         Region::new(&self.memory).overwrite(ByteOffset::new(AT_COUNT), &count.to_le_bytes());
         self.count = count;
     }
+}
+
+/// The count a nodes or proxies memory holds; none in an empty one.
+fn count_in<M: Memory>(memory: &M) -> u32 {
+    if memory.size() == 0 {
+        return 0;
+    }
+    u32::from_le_bytes(Region::new(memory).read_array(ByteOffset::new(AT_COUNT)))
 }
 
 /// Writes an empty proxies memory's header: no proxy yet.
@@ -276,9 +306,9 @@ impl RecordLines {
     /// little more than this, and left a call it cost those loops 8-13 %.
     #[expect(clippy::inline_always, reason = "measured: see the doc")]
     #[inline(always)]
-    pub(crate) fn bytes_of<M: Memory>(
+    pub(crate) fn bytes_of<M: Memory, P: Memory>(
         &mut self,
-        nodes: &NodeStore<M>,
+        nodes: &NodeStore<M, P>,
         v: NodeId,
     ) -> [u8; RECORD_BYTES] {
         let base = v.index() / RECORDS_PER_LINE * RECORDS_PER_LINE;

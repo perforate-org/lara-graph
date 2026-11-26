@@ -14,7 +14,7 @@ use crate::store::corrupt::corrupt;
 use crate::store::memory::Memory;
 use crate::store::page_store::Pages;
 
-impl<M: Memory> EdgeStore<M> {
+impl<M: Memory, D: Memory> EdgeStore<M, D> {
     /// Takes both halves of an edge out of their buckets, `half` from `own` and `other` from
     /// `theirs`, and reports the edge with its value as the canonical half held it (empty for a
     /// label without a width). The buckets are left as they are after, not yet published; an
@@ -77,7 +77,7 @@ fn fill(bucket: &LabelBucket) -> BucketFill {
     BucketFill::new(live, bucket.slots.stored() - live)
 }
 
-impl<M: Memory> EdgeView<'_, M> {
+impl<M: Memory, D: Memory> EdgeView<'_, M, D> {
     /// The other half of `half`, an edge to `other`, whose own bucket is `own`; `theirs` is
     /// `other`'s bucket `key`, which holds it.
     pub(crate) fn other_half(
@@ -99,7 +99,7 @@ impl<M: Memory> EdgeView<'_, M> {
                 .select_to(theirs, owner, rank)
                 .unwrap_or_else(|| corrupt("an edge half without its counterpart"))
         });
-        EdgeRef::new(other, key.label, key.direction, at)
+        EdgeRef::of(other, key.label, key.direction, at)
     }
 }
 
@@ -113,7 +113,7 @@ fn only_entry_to<M: Memory>(
     let mut first = None;
     let mut seen = 0u32;
     slots::find(d, view, Position::new(0), |e| {
-        if e.target() != owner {
+        if e.node() != owner {
             return false;
         }
         seen += 1;
@@ -123,7 +123,7 @@ fn only_entry_to<M: Memory>(
     first.filter(|_| seen == 1)
 }
 
-impl<M: Memory> EdgeView<'_, M> {
+impl<M: Memory, D: Memory> EdgeView<'_, M, D> {
     /// The other half of `half`, `v`'s first live edge in its bucket, in `theirs`, `other`'s
     /// opposite bucket: its first live entry to `v`, scanned from `from` when the bucket has no
     /// index.
@@ -139,10 +139,9 @@ impl<M: Memory> EdgeView<'_, M> {
         let at = if theirs.indexed().is_some() {
             self.edges.select_to(theirs, v, 0)
         } else {
-            slots::find(&theirs.slots, &self.pages(), from, |e| e.target() == v)
-                .map(|e| e.position())
+            slots::find(&theirs.slots, &self.pages(), from, |e| e.node() == v).map(|e| e.position())
         }
         .unwrap_or_else(|| corrupt("an edge half without its counterpart"));
-        EdgeRef::new(other, key.label, key.direction, at)
+        EdgeRef::of(other, key.label, key.direction, at)
     }
 }

@@ -9,7 +9,7 @@
 use crate::bucket::values::{self, PAGES_PER_WRITE, Plane};
 use crate::bucket::{Schema, reserved};
 use crate::error::Error;
-use crate::id::{Label, ValueVersion, Width};
+use crate::id::{EdgeLabel, ValueVersion, Width};
 use crate::store::corrupt::corrupt;
 use crate::store::memory::Memory;
 use crate::store::page_store::PageStore;
@@ -30,7 +30,7 @@ fn encode(schema: Schema) -> [u8; 4] {
 
 /// The labels with a width, in label order, and the plane that stores them.
 pub(crate) struct Widths {
-    sorted: Vec<(Label, Schema)>,
+    sorted: Vec<(EdgeLabel, Schema)>,
     plane: Plane,
 }
 
@@ -51,7 +51,7 @@ impl Widths {
     }
 
     /// `label`'s width and version, checking that `value` matches the width.
-    pub(crate) fn check(&self, label: Label, value: &[u8]) -> Result<Option<Schema>, Error> {
+    pub(crate) fn check(&self, label: EdgeLabel, value: &[u8]) -> Result<Option<Schema>, Error> {
         let schema = self.schema(label);
         let expected = schema.map_or(0, |s| s.width.get());
         if usize::from(expected) == value.len() {
@@ -66,7 +66,10 @@ impl Widths {
     }
 
     /// Reads the table whose root the nodes header holds.
-    pub(crate) fn load<M: Memory>(plane: Plane, label_bucket_lists: &PageStore<M>) -> Self {
+    pub(crate) fn load<M: Memory, D: Memory>(
+        plane: Plane,
+        label_bucket_lists: &PageStore<M, D>,
+    ) -> Self {
         let mut sorted = Vec::new();
         values::visit(
             &label_bucket_lists.pages(),
@@ -78,7 +81,7 @@ impl Widths {
                     if let Some(width) = Width::new(u16::from_le_bytes([w0, w1])) {
                         let label = u16::try_from(label).unwrap_or_else(|_| corrupt("label"));
                         let version = ValueVersion::new(version);
-                        sorted.push((Label::new(label), Schema { width, version }));
+                        sorted.push((EdgeLabel::new(label), Schema { width, version }));
                     }
                 }
                 ControlFlow::<()>::Continue(())
@@ -87,22 +90,22 @@ impl Widths {
         Self { sorted, plane }
     }
 
-    pub(crate) fn get(&self, label: Label) -> Option<Width> {
+    pub(crate) fn get(&self, label: EdgeLabel) -> Option<Width> {
         self.schema(label).map(|schema| schema.width)
     }
 
     /// `label`'s width and value version, if it has a width.
-    pub(crate) fn schema(&self, label: Label) -> Option<Schema> {
+    pub(crate) fn schema(&self, label: EdgeLabel) -> Option<Schema> {
         let i = self.sorted.binary_search_by_key(&label, |&(l, _)| l).ok()?;
         self.sorted.get(i).map(|&(_, schema)| schema)
     }
 
     /// Gives `label` values of `width` bytes and returns the table's new root, for the nodes
     /// header; `None` when `label` already has `width`. On error nothing changes.
-    pub(crate) fn declare<M: Memory>(
+    pub(crate) fn declare<M: Memory, D: Memory>(
         &mut self,
-        lists: &mut PageStore<M>,
-        label: Label,
+        lists: &mut PageStore<M, D>,
+        label: EdgeLabel,
         width: Width,
     ) -> Result<Option<Plane>, Error> {
         let place = match self.sorted.binary_search_by_key(&label, |&(l, _)| l) {
@@ -130,10 +133,10 @@ impl Widths {
     /// Gives `label` values of `width` bytes in a new layout: its next value version, or the
     /// first when it had no width. Returns the version and the table's new root. On error
     /// nothing changes.
-    pub(crate) fn change<M: Memory>(
+    pub(crate) fn change<M: Memory, D: Memory>(
         &mut self,
-        lists: &mut PageStore<M>,
-        label: Label,
+        lists: &mut PageStore<M, D>,
+        label: EdgeLabel,
         width: Width,
     ) -> Result<(ValueVersion, Plane), Error> {
         let found = self.sorted.binary_search_by_key(&label, |&(l, _)| l);
@@ -155,10 +158,10 @@ impl Widths {
     }
 
     /// Writes `label`'s cell. On error nothing changes.
-    fn write<M: Memory>(
+    fn write<M: Memory, D: Memory>(
         &mut self,
-        lists: &mut PageStore<M>,
-        label: Label,
+        lists: &mut PageStore<M, D>,
+        label: EdgeLabel,
         schema: Schema,
     ) -> Result<(), Error> {
         lists.reserve(PAGES_PER_WRITE)?;

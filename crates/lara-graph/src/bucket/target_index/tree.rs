@@ -79,8 +79,8 @@ fn combine(changes: &[Change]) -> Vec<Change> {
 /// Applies `changes` to the tree (counts that reach zero drop their postings) within memory the
 /// caller reserved: [`super::PAGES_PER_CHANGE`] per edge changed, or the plan's pages. An
 /// allocation failure means the reservation was too small.
-pub(crate) fn apply_reserved<M: Memory>(
-    store: &mut PageStore<M>,
+pub(crate) fn apply_reserved<M: Memory, D: Memory>(
+    store: &mut PageStore<M, D>,
     root: Option<Root>,
     changes: &[Change],
 ) -> Result<Option<Root>, WriteError> {
@@ -90,7 +90,7 @@ pub(crate) fn apply_reserved<M: Memory>(
 /// Lowers the count of the posting at `key` by one, in place: no page moves and none is
 /// allocated. A posting whose count reaches zero leaves its segment, unless it is the segment's
 /// first or the leaf's last.
-pub(crate) fn lower<M: Memory>(store: &PageStore<M>, root: Root, key: (u32, u32)) {
+pub(crate) fn lower<M: Memory, D: Memory>(store: &PageStore<M, D>, root: Root, key: (u32, u32)) {
     let lowered = nudge(store, (root.page, root.depth), key, -1, leaf::lowered);
     if lowered == InPlace::Unfit {
         corrupt("an index decrement without its posting");
@@ -100,7 +100,11 @@ pub(crate) fn lower<M: Memory>(store: &PageStore<M>, root: Root, key: (u32, u32)
 /// Raises the count of the posting at `key` by one, adding it when missing, in place when its
 /// segment can take it in its own slot with its own coding parameters. Otherwise nothing is
 /// written: the change goes through a [`plan`].
-pub(crate) fn raise<M: Memory>(store: &PageStore<M>, root: Root, key: (u32, u32)) -> InPlace {
+pub(crate) fn raise<M: Memory, D: Memory>(
+    store: &PageStore<M, D>,
+    root: Root,
+    key: (u32, u32),
+) -> InPlace {
     nudge(store, (root.page, root.depth), key, 1, leaf::raised)
 }
 
@@ -114,8 +118,8 @@ pub(crate) enum InPlace {
 
 /// Changes the count at `key` under `page` by `delta` in place: the leaf's patch, then each
 /// parent's count on the way back up. Writes nothing when the leaf gives no patch.
-fn nudge<M: Memory>(
-    store: &PageStore<M>,
+fn nudge<M: Memory, D: Memory>(
+    store: &PageStore<M, D>,
     (page, level): (PageId, u8),
     key: (u32, u32),
     delta: i64,

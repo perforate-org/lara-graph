@@ -7,7 +7,7 @@
 //! 2. **Bounded update cost.** An insert or removal copies at most one run below a page or one
 //!    page of index entries; a full one-page run becomes the first data page without copying.
 //!    Every update finishes within its call: there is no deferred maintenance. Work a caller may
-//!    spread out (compaction, detaching a node) is offered as bounded steps it calls.
+//!    spread out (compaction, deleting a node) is offered as bounded steps it calls.
 //! 3. Supporting mechanisms: a few edges live inline in the descriptor, edges keep stable
 //!    positions (removal leaves a hole), and freed pages serve any use.
 //!
@@ -43,14 +43,15 @@ mod store;
 
 pub use error::{BatchError, Error, InitError};
 pub use graph::{
-    DetachingSet, Graph, Graph as StableGraph, Memories, MemoryRole, ReadBatch, TargetSet,
+    DeletingSet, Graph, GraphMemories, Memories, MemoriesOf, MemoryRole, NeighborSet, ReadBatch,
 };
 pub use id::{
-    Direction, EdgeRef, Halves, Label, Neighbor, NodeId, NodeState, Position, ValueVersion, Width,
+    Adjacency, Direction, EdgeLabel, EdgeRef, Halves, Neighbor, NodeId, NodeIds, NodeLabel,
+    NodeState, Position, ValueVersion, Width,
 };
-pub use input::{Cursor, EdgeKind, EdgeValue, NewEdge, Order, Placement};
+pub use input::{Cursor, Edge, EdgeKind, EdgeValue, Order, Placement};
 
 pub use outcome::{
-    BucketFill, Compaction, Detachment, Move, Progress, Removal, RemovedEdge, Step, Sweep,
+    BucketFill, Compaction, Deletion, Move, Progress, Removal, RemovedEdge, Step, Sweep,
 };
 pub use store::memory::{GrowFailed, Memory, PAGE_SIZE, VecMemory};

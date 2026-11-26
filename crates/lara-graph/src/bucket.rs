@@ -13,13 +13,13 @@ pub(crate) mod values;
 use crate::bucket::descriptor::Descriptor;
 use crate::bucket::target_index::Root;
 use crate::bucket::values::Plane;
-use crate::id::{Direction, EdgeRef, Label, ValueVersion, Width};
+use crate::id::{Direction, EdgeLabel, EdgeRef, ValueVersion, Width};
 use crate::store::page_store::Extent;
 
 /// Which label bucket of a node: a label in one direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct LabelBucketKey {
-    pub(crate) label: Label,
+    pub(crate) label: EdgeLabel,
     pub(crate) direction: Direction,
 }
 
@@ -96,7 +96,7 @@ pub(crate) enum Index {
     Empty,
     /// The tree of postings.
     Tree(Root),
-    /// Released while its node detaches, as all its edges are going: lookups scan the bucket.
+    /// Released while its node is being deleted, as all its edges are going: lookups scan the bucket.
     Dropped,
 }
 

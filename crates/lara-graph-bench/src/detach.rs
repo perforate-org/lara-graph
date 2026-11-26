@@ -1,11 +1,11 @@
-//! Detaching nodes: a hub whole or in steps, a satellite of a hub, and many of a hub's
+//! Deleting nodes: a hub whole or in steps, a satellite of a hub, and many of a hub's
 //! neighbours one by one or after a sweep of the bucket they share.
 
 use crate::{Bench, LABEL, directed, graph, node, nodes, seed_hub, seed_parallel};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use core::num::NonZeroU32;
-use lara_graph::{DetachingSet, Direction, Graph, Memory, NodeId, Position, Progress};
+use lara_graph::{DeletingSet, Graph, Memory, NodeId, Position, Progress};
 
 fn budget(n: u32) -> NonZeroU32 {
     NonZeroU32::new(n).unwrap_or(NonZeroU32::MIN)
@@ -14,7 +14,7 @@ fn budget(n: u32) -> NonZeroU32 {
 /// Detaches `v`'s remaining edges in steps of `step` until it is deleted.
 fn detach_rest<M: Memory>(g: &mut Graph<M>, v: NodeId, step: u32) {
     while g
-        .detach_step(v, budget(step))
+        .delete_step(v, budget(step))
         .unwrap_or_else(|e| panic!("step: {e}"))
         .progress()
         == Progress::Remaining
@@ -27,9 +27,10 @@ fn detach_parallel_1024() -> BenchResult {
     let mut g = graph();
     let (hub, _) = seed_parallel(&mut g, 1024);
     bench_fn(|| {
-        g.detach(hub).unwrap_or_else(|e| panic!("detach: {e}"));
+        g.begin_delete(hub)
+            .unwrap_or_else(|e| panic!("detach: {e}"));
         black_box(
-            g.detach_step(hub, budget(u32::MAX))
+            g.delete_step(hub, budget(u32::MAX))
                 .unwrap_or_else(|e| panic!("detach step: {e}")),
         )
     })
@@ -41,7 +42,8 @@ fn detach_hub(degree: u32, step: u32) -> BenchResult {
     let mut g = graph();
     let (hub, _) = seed_hub(&mut g, degree);
     bench_fn(|| {
-        g.detach(hub).unwrap_or_else(|e| panic!("detach: {e}"));
+        g.begin_delete(hub)
+            .unwrap_or_else(|e| panic!("detach: {e}"));
         detach_rest(&mut g, hub, step);
     })
 }
@@ -77,9 +79,9 @@ fn detach_satellite(degree: u32) -> BenchResult {
     let satellite = node(&mut g);
     directed(&mut g, satellite, hub);
     bench_fn(|| {
-        g.detach(satellite)
+        g.begin_delete(satellite)
             .unwrap_or_else(|e| panic!("detach: {e}"));
-        black_box(g.detach_step(satellite, budget(u32::MAX)))
+        black_box(g.delete_step(satellite, budget(u32::MAX)))
     })
 }
 
@@ -100,7 +102,7 @@ fn detach_satellite_65536() -> BenchResult {
 
 /// How a bench detaches many nodes.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Detaching {
+enum Deleting {
     /// Each with its own detach steps.
     OneByOne,
     /// A sweep of the bucket they share first.
@@ -108,7 +110,7 @@ enum Detaching {
 }
 
 /// Detaches `n` of a hub's 65536 in-neighbours, spread evenly.
-fn detach_many(n: u32, how: Detaching) -> BenchResult {
+fn delete_many(n: u32, how: Deleting) -> BenchResult {
     let mut g = graph();
     let hub = node(&mut g);
     let sources = nodes(&mut g, 65536);
@@ -119,11 +121,11 @@ fn detach_many(n: u32, how: Detaching) -> BenchResult {
     let gone: Vec<NodeId> = sources.iter().step_by(step).copied().collect();
     bench_fn(|| {
         for &d in &gone {
-            g.detach(d).unwrap_or_else(|e| panic!("detach: {e}"));
+            g.begin_delete(d).unwrap_or_else(|e| panic!("detach: {e}"));
         }
-        if how == Detaching::Swept {
+        if how == Deleting::Swept {
             let detaching = g
-                .detaching_set(gone.iter().copied())
+                .deleting_set(gone.iter().copied())
                 .unwrap_or_else(|e| panic!("detaching set: {e}"));
             sweep_all(&mut g, hub, &detaching);
         }
@@ -134,16 +136,11 @@ fn detach_many(n: u32, how: Detaching) -> BenchResult {
 }
 
 /// Sweeps the hub's in-bucket of edges from `detaching`, to its end.
-fn sweep_all(g: &mut Bench, hub: NodeId, detaching: &DetachingSet) {
+fn sweep_all(g: &mut Bench, hub: NodeId, detaching: &DeletingSet) {
     let mut from = Some(Position::new(0));
     while let Some(at) = from {
         let sweep = g
-            .sweep(
-                hub,
-                (LABEL, Direction::Incoming),
-                (at, budget(4096)),
-                detaching,
-            )
+            .sweep(hub, LABEL.incoming(), at, budget(4096), detaching)
             .unwrap_or_else(|e| panic!("sweep: {e}"));
         from = sweep.next();
     }
@@ -151,20 +148,20 @@ fn sweep_all(g: &mut Bench, hub: NodeId, detaching: &DetachingSet) {
 
 #[bench(raw)]
 fn detach_1024_of_hub_65536() -> BenchResult {
-    detach_many(1024, Detaching::OneByOne)
+    delete_many(1024, Deleting::OneByOne)
 }
 
 #[bench(raw)]
 fn detach_1024_of_hub_65536_swept() -> BenchResult {
-    detach_many(1024, Detaching::Swept)
+    delete_many(1024, Deleting::Swept)
 }
 
 #[bench(raw)]
 fn detach_4096_of_hub_65536() -> BenchResult {
-    detach_many(4096, Detaching::OneByOne)
+    delete_many(4096, Deleting::OneByOne)
 }
 
 #[bench(raw)]
 fn detach_4096_of_hub_65536_swept() -> BenchResult {
-    detach_many(4096, Detaching::Swept)
+    delete_many(4096, Deleting::Swept)
 }

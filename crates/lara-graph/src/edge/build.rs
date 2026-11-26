@@ -22,7 +22,7 @@ pub(crate) trait BuiltHalf {
     fn target(&self) -> NodeId;
 }
 
-impl<M: Memory> EdgeStore<M> {
+impl<M: Memory, D: Memory> EdgeStore<M, D> {
     /// Writes a bucket of `halves`, with `value` of each when the label has a `width`, and
     /// returns its list entry.
     pub(crate) fn build_bucket<'e, H: BuiltHalf>(
@@ -205,7 +205,11 @@ fn tiny_bucket<H: BuiltHalf>(halves: &[H]) -> Stored {
     clippy::indexing_slicing,
     reason = "one page of slots bounds the slice"
 )]
-fn write_halves<M: Memory, H: BuiltHalf>(store: &PageStore<M>, at: ByteOffset, halves: &[H]) {
+fn write_halves<M: Memory, D: Memory, H: BuiltHalf>(
+    store: &PageStore<M, D>,
+    at: ByteOffset,
+    halves: &[H],
+) {
     let mut bytes = [0u8; 4096];
     let len = halves.len() * 4;
     for (dst, half) in bytes[..len].as_chunks_mut::<4>().0.iter_mut().zip(halves) {

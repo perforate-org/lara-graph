@@ -3,7 +3,7 @@
 //!
 //! The index covers a paged bucket's complete blocks (`Descriptor::indexed_end`); its last, partial block
 //! is scanned instead. Appends then reach the index once per block, as a batch of the block's
-//! live entries, and a lookup scans at most one block beside the index. A detaching node's
+//! live entries, and a lookup scans at most one block beside the index. A deleting node's
 //! buckets drop their indexes, as all their edges are going: their lookups scan.
 
 use crate::bucket::descriptor::{Descriptor, Slot};
@@ -59,7 +59,7 @@ impl Batch {
     }
 }
 
-impl<M: Memory> EdgeStore<M> {
+impl<M: Memory, D: Memory> EdgeStore<M, D> {
     /// The bucket's index after an edge to `target` went in at `at`, the slots having been
     /// `was` before: a bucket that just became paged gets one built from its slots; an append
     /// that completes a block brings the block's live entries in. Within reserved memory.
@@ -152,7 +152,7 @@ impl<M: Memory> EdgeStore<M> {
         let last_in = |span: (u32, u32)| {
             let mut last = None;
             slots::find_in(&b.slots, &view, span, |e| {
-                if e.target() == t {
+                if e.node() == t {
                     last = Some(e.position());
                 }
                 false
@@ -170,7 +170,7 @@ impl<M: Memory> EdgeStore<M> {
     fn block_changes(&self, slots: &Descriptor, range: core::ops::Range<u32>) -> Vec<Change> {
         let mut changes = Vec::new();
         slots::find_in(slots, &self.store.pages(), (range.start, range.end), |e| {
-            changes.push(Change::at(e.target(), e.position(), 1));
+            changes.push(Change::at(e.node(), e.position(), 1));
             false
         });
         changes
@@ -216,7 +216,7 @@ impl<M: Memory> EdgeStore<M> {
         };
         let mut rank = before;
         slots::find_in(&b.slots, &view, (low, p.index()), |e| {
-            rank += u32::from(e.target() == t);
+            rank += u32::from(e.node() == t);
             false
         });
         rank
@@ -239,7 +239,7 @@ impl<M: Memory> EdgeStore<M> {
             (None, _) => ((0, stored), k),
         };
         slots::find_in(&b.slots, &view, span, |e| {
-            if e.target() != t {
+            if e.node() != t {
                 return false;
             }
             skip.checked_sub(1).map(|left| skip = left).is_none()
@@ -260,7 +260,7 @@ impl<M: Memory> EdgeStore<M> {
     }
 }
 
-impl<M: Memory> EdgeView<'_, M> {
+impl<M: Memory, D: Memory> EdgeView<'_, M, D> {
     /// The position ranges of an indexed bucket that can hold entries to `t`, ascending: the
     /// blocks its index lists for `t`, adjacent ones merged so that each range is read in one
     /// pass, and the unindexed last block; `None` for a bucket without an index.

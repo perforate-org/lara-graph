@@ -5,6 +5,7 @@ use super::view::BatchView;
 use crate::bucket::LabelBucketKey;
 use crate::bucket::stored::Stored;
 use crate::graph::Graph;
+use crate::graph::GraphMemories;
 use crate::id::{NodeId, NodeState};
 use crate::node::label_bucket_list::{self, LabelBucketList, Listed};
 use crate::node::labels::CellLines;
@@ -12,7 +13,6 @@ use crate::node::labels::set::LabelSet;
 use crate::node::record::{RECORD_BYTES, Record};
 use crate::node::store::RecordLines;
 use crate::store::corrupt::corrupt;
-use crate::store::memory::Memory;
 use crate::store::page_store::{Extent, PAGE_BYTES};
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
@@ -44,9 +44,9 @@ impl ListPageCache {
     /// inlined: left a call, it cost a batch of label reads 6 %.
     #[expect(clippy::inline_always, reason = "measured: see the doc")]
     #[inline(always)]
-    fn page<'a, M: Memory>(
+    fn page<'a, S: GraphMemories>(
         &'a mut self,
-        view: &BatchView<'_, M>,
+        view: &BatchView<'_, S>,
         extent: Extent,
     ) -> Option<&'a [u8]> {
         let page = extent.page().get();
@@ -70,9 +70,9 @@ impl ListPageCache {
     }
 
     #[inline]
-    fn stored<M: Memory>(
+    fn stored<S: GraphMemories>(
         &mut self,
-        view: &BatchView<'_, M>,
+        view: &BatchView<'_, S>,
         list: LabelBucketList,
         key: LabelBucketKey,
         extent: Extent,
@@ -99,9 +99,9 @@ impl ListPageCache {
     }
 
     #[inline]
-    fn for_each<M: Memory, B>(
+    fn for_each<S: GraphMemories, B>(
         &mut self,
-        view: &BatchView<'_, M>,
+        view: &BatchView<'_, S>,
         list: LabelBucketList,
         f: &mut impl FnMut(LabelBucketKey, Listed) -> ControlFlow<B>,
     ) -> Option<B> {
@@ -143,8 +143,8 @@ pub(super) fn mode(nodes: &[NodeId]) -> Mode {
 /// a batch of node states 15 %.
 #[expect(clippy::inline_always, reason = "measured: see the doc")]
 #[inline(always)]
-pub(super) fn record<M: Memory>(
-    graph: &Graph<M>,
+pub(super) fn record<S: GraphMemories>(
+    graph: &Graph<S>,
     records: &mut RecordLines,
     v: NodeId,
     mode: Mode,
@@ -155,8 +155,8 @@ pub(super) fn record<M: Memory>(
 /// `v`'s state alone, as [`record`] reads the record: no extent decoded.
 #[expect(clippy::inline_always, reason = "as record")]
 #[inline(always)]
-pub(super) fn state<M: Memory>(
-    graph: &Graph<M>,
+pub(super) fn state<S: GraphMemories>(
+    graph: &Graph<S>,
     records: &mut RecordLines,
     v: NodeId,
     mode: Mode,
@@ -166,8 +166,8 @@ pub(super) fn state<M: Memory>(
 
 #[expect(clippy::inline_always, reason = "as record")]
 #[inline(always)]
-fn record_bytes<M: Memory>(
-    graph: &Graph<M>,
+fn record_bytes<S: GraphMemories>(
+    graph: &Graph<S>,
     records: &mut RecordLines,
     v: NodeId,
     mode: Mode,
@@ -179,8 +179,8 @@ fn record_bytes<M: Memory>(
 }
 
 #[inline]
-pub(super) fn stored<M: Memory>(
-    view: &BatchView<'_, M>,
+pub(super) fn stored<S: GraphMemories>(
+    view: &BatchView<'_, S>,
     list_page: &mut ListPageCache,
     list: LabelBucketList,
     key: LabelBucketKey,
@@ -196,8 +196,8 @@ pub(super) fn stored<M: Memory>(
 }
 
 #[inline]
-pub(super) fn for_each_list<M: Memory, B>(
-    view: &BatchView<'_, M>,
+pub(super) fn for_each_list<S: GraphMemories, B>(
+    view: &BatchView<'_, S>,
     list_page: &mut ListPageCache,
     list: LabelBucketList,
     mode: Mode,
@@ -211,8 +211,8 @@ pub(super) fn for_each_list<M: Memory, B>(
 
 /// `v`'s label cell, through the batch's line in `Dense` mode.
 #[inline]
-pub(super) fn label_cell<M: Memory>(
-    graph: &Graph<M>,
+pub(super) fn label_cell<S: GraphMemories>(
+    graph: &Graph<S>,
     lines: &mut CellLines,
     v: NodeId,
     mode: Mode,

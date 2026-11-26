@@ -1,36 +1,36 @@
-//! Detaching a node: removing its edges a bounded step at a time.
+//! Deleting a node: removing its edges a bounded step at a time.
 
-mod detaching_set;
+mod deleting_set;
 
-pub use detaching_set::DetachingSet;
+pub use deleting_set::DeletingSet;
 
 use crate::bucket::LabelBucketKey;
 use crate::bucket::slots::{self, Span, Window};
 use crate::bucket::{Index, LabelBucket};
 use crate::error::{BatchError, Error};
 use crate::graph::Graph;
+use crate::graph::GraphMemories;
 use crate::graph::locate::Found;
-use crate::id::{Direction, EdgeRef, Label, NodeId, NodeState, Position};
+use crate::id::{Adjacency, EdgeRef, NodeId, NodeState, Position};
 use crate::input::Order;
 use crate::node::label_bucket_list;
 use crate::node::record::Record;
-use crate::outcome::{Detachment, Step, Sweep};
+use crate::outcome::{Deletion, Step, Sweep};
 use crate::outcome::{Progress, RemovedEdge};
 use crate::store::corrupt::corrupt;
-use crate::store::memory::Memory;
 use alloc::vec::Vec;
 use core::num::NonZeroU32;
 use core::ops::ControlFlow;
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// Starts deleting `v` (DETACH DELETE): from now on it takes no new edges, and
-    /// [`Self::detach_step`] removes its edges, then marks it deleted. Constant time; calling it
-    /// again while it is detaching changes nothing.
+    /// [`Self::delete_step`] removes its edges, then marks it deleted. Constant time; calling it
+    /// again while it is deleting changes nothing.
     ///
     /// # Errors
     ///
     /// [`Error::UnknownNode`], or [`Error::Deleted`] if it is already deleted.
-    pub fn detach(&mut self, v: NodeId) -> Result<(), Error> {
+    pub fn begin_delete(&mut self, v: NodeId) -> Result<(), Error> {
         let record = self.record(v)?;
         if record.state == NodeState::Deleted {
             return Err(Error::Deleted(v));
@@ -38,7 +38,7 @@ impl<M: Memory> Graph<M> {
         self.write_record(
             v,
             Record {
-                state: NodeState::Detaching,
+                state: NodeState::Deleting,
                 ..record
             },
         );
@@ -47,13 +47,13 @@ impl<M: Memory> Graph<M> {
 
     /// Starts deleting every node in `nodes` (DETACH DELETE). All nodes are checked before the
     /// first state change, so an unknown or already deleted node leaves the graph unchanged.
-    /// A node already detaching is left as it is.
+    /// A node already deleting is left as it is.
     ///
     /// # Errors
     ///
     /// [`Error::UnknownNode`] or [`Error::Deleted`] at the first failing position, as
     /// [`BatchError::Unchanged`].
-    pub fn detach_many(&mut self, nodes: &[NodeId]) -> Result<(), BatchError> {
+    pub fn begin_delete_many(&mut self, nodes: &[NodeId]) -> Result<(), BatchError> {
         for (index, &v) in nodes.iter().enumerate() {
             let record = self
                 .record(v)
@@ -68,7 +68,7 @@ impl<M: Memory> Graph<M> {
                 self.write_record(
                     v,
                     Record {
-                        state: NodeState::Detaching,
+                        state: NodeState::Deleting,
                         ..record
                     },
                 );
@@ -77,7 +77,7 @@ impl<M: Memory> Graph<M> {
         Ok(())
     }
 
-    /// Removes up to `budget` of a detaching node's edges, both halves of each, and reports
+    /// Removes up to `budget` of a deleting node's edges, both halves of each, and reports
     /// them. Between steps the graph is whole: every edge is either present at both ends or gone.
     /// When `v` has no edges left it is [`NodeState::Deleted`] and the step is
     /// [`Progress::Done`].
@@ -87,10 +87,10 @@ impl<M: Memory> Graph<M> {
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownNode`], or [`Error::NotDetaching`] unless [`Self::detach`] was called.
-    pub fn detach_step(&mut self, v: NodeId, budget: NonZeroU32) -> Result<Detachment, Error> {
-        if self.record(v)?.state != NodeState::Detaching {
-            return Err(Error::NotDetaching(v));
+    /// [`Error::UnknownNode`], or [`Error::NotDeleting`] unless [`Self::begin_delete`] was called.
+    pub fn delete_step(&mut self, v: NodeId, budget: NonZeroU32) -> Result<Deletion, Error> {
+        if self.record(v)?.state != NodeState::Deleting {
+            return Err(Error::NotDeleting(v));
         }
         let mut removed = Vec::new();
         // In `v`'s bucket being drained (always its first, until it goes): positions before
@@ -104,7 +104,7 @@ impl<M: Memory> Graph<M> {
         let mut theirs_cache: Option<((NodeId, LabelBucketKey), Found)> = None;
         // `v`'s bucket as the last removal published it: it stays `v`'s first, at the same list
         // entry, until compaction drops it, and the other half is never in it. Reading it again
-        // for each edge cost about 5 % of detaching a hub.
+        // for each edge cost about 5 % of deleting a hub.
         let mut drained: Option<(Found, LabelBucketKey)> = None;
         for _ in 0..budget.get() {
             let (found, key) = if let Some(carried) = drained.take() {
@@ -129,19 +129,19 @@ impl<M: Memory> Graph<M> {
             let Some(edge) = first else {
                 // All holes: publish the pending bucket, then compaction drops it.
                 self.publish(found.entry, found.bucket);
-                self.compact(v, (key.label, key.direction))?;
+                self.compact(v, Adjacency::new(key.label, key.direction))?;
                 (cursor, hint) = (None, None);
                 continue;
             };
             cursor = Some((key, edge.position()));
-            let half = EdgeRef::new(v, key.label, key.direction, edge.position());
-            let theirs_key = (edge.target(), LabelBucketKey::of(half).opposite());
+            let half = EdgeRef::of(v, key.label, key.direction, edge.position());
+            let theirs_key = (edge.node(), LabelBucketKey::of(half).opposite());
             let from = start_in(hint, &theirs_key);
             let (theirs, other) = theirs_cache
                 .filter(|(cached, _)| *cached == theirs_key)
                 .map_or_else(
-                    || self.first_half_from(v, half, (edge.target(), from)),
-                    |(_, theirs)| self.first_half_in(v, half, (edge.target(), from), theirs),
+                    || self.first_half_from(v, half, (edge.node(), from)),
+                    |(_, theirs)| self.first_half_in(v, half, (edge.node(), from), theirs),
                 );
             // Now a hole, so the next scan there starts at it.
             hint = Some((theirs_key, other.position()));
@@ -169,37 +169,37 @@ impl<M: Memory> Graph<M> {
         Ok(Step::new(removed, progress))
     }
 
-    /// The set of `nodes` for [`Self::sweep`], each checked once to be detaching or deleted. A
+    /// The set of `nodes` for [`Self::sweep`], each checked once to be deleting or deleted. A
     /// deleted one is fine: it has no edges left.
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownNode`], or [`Error::NotDetaching`] for a node that is live.
-    pub fn detaching_set(
+    /// [`Error::UnknownNode`], or [`Error::NotDeleting`] for a node that is live.
+    pub fn deleting_set(
         &self,
         nodes: impl IntoIterator<Item = NodeId>,
-    ) -> Result<DetachingSet, Error> {
-        let set = DetachingSet::new(nodes);
+    ) -> Result<DeletingSet, Error> {
+        let set = DeletingSet::new(nodes);
         for d in set.iter() {
             if self.record(d)?.state == NodeState::Live {
-                return Err(Error::NotDetaching(d));
+                return Err(Error::NotDeleting(d));
             }
         }
         Ok(set)
     }
 
-    /// Removes the edges of `v`'s `(label, direction)` bucket whose other ends are in `detaching`,
+    /// Removes the edges of `v`'s `adjacency` bucket whose other ends are in `deleting`,
     /// both halves of each, looking at up to `budget` positions from `from`. One pass over a
-    /// bucket that many detaching nodes share (a hub's, say) removes their edges to it for less
-    /// than [`Self::detach_step`] does one node at a time, which pairs each edge through the
+    /// bucket that many deleting nodes share (a hub's, say) removes their edges to it for less
+    /// than [`Self::delete_step`] does one node at a time, which pairs each edge through the
     /// shared bucket's target index. Their own buckets are left with holes, which their
-    /// [`Self::detach_step`]s then pass over.
+    /// [`Self::delete_step`]s then pass over.
     ///
     /// Call again from [`Sweep::next`] until it is `None`. A self-loop at `v` is left to `v`'s own
-    /// detach.
+    /// deletion.
     ///
-    /// The cost of a call follows `budget`, not the size of `detaching`: its members were checked
-    /// when [`Self::detaching_set`] built it.
+    /// The cost of a call follows `budget`, not the size of `deleting`: its members were checked
+    /// when [`Self::deleting_set`] built it.
     ///
     /// # Errors
     ///
@@ -207,10 +207,12 @@ impl<M: Memory> Graph<M> {
     pub fn sweep(
         &mut self,
         v: NodeId,
-        (label, direction): (Label, Direction),
-        (from, budget): (Position, NonZeroU32),
-        detaching: &DetachingSet,
+        adjacency: Adjacency,
+        from: Position,
+        budget: NonZeroU32,
+        deleting: &DeletingSet,
     ) -> Result<Sweep, Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         let key = LabelBucketKey { label, direction };
         let Some(found) = self.find_label_bucket(v, key)? else {
             return Ok(Sweep::new(Vec::new(), None));
@@ -226,7 +228,7 @@ impl<M: Memory> Graph<M> {
             span,
             Window::Page,
             |e| {
-                if e.target() != v && detaching.contains(e.target()) {
+                if e.node() != v && deleting.contains(e.node()) {
                     doomed.push(e);
                 }
                 ControlFlow::<()>::Continue(())
@@ -237,8 +239,8 @@ impl<M: Memory> Graph<M> {
         // looking the node and its list up again.
         let mut found = found;
         for edge in doomed {
-            let half = EdgeRef::new(v, label, direction, edge.position());
-            let (theirs, other) = self.first_half_from(v, half, (edge.target(), Position::new(0)));
+            let half = EdgeRef::of(v, label, direction, edge.position());
+            let (theirs, other) = self.first_half_from(v, half, (edge.node(), Position::new(0)));
             let (pair, next, _) = self.take_pair((found, half), (theirs, other));
             removed.push(pair);
             found = next;
@@ -268,7 +270,7 @@ impl<M: Memory> Graph<M> {
         (edge, own, theirs)
     }
 
-    /// A detaching node's bucket without its target index: all its edges are going, so
+    /// A deleting node's bucket without its target index: all its edges are going, so
     /// keeping the index in step would only cost. Lookups into it scan instead. Within reserved
     /// memory (releasing allocates nothing).
     fn draining(&mut self, found: Found) -> Found {

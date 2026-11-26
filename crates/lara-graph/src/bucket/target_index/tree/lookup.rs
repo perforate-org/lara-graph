@@ -239,7 +239,7 @@ fn walk_target<M: Memory>(
 }
 
 /// Releases every page of the tree.
-pub(crate) fn release<M: Memory>(store: &mut PageStore<M>, root: Root) {
+pub(crate) fn release<M: Memory, D: Memory>(store: &mut PageStore<M, D>, root: Root) {
     if root.depth > 0 {
         for child in children(&store.pages(), root.page) {
             release(

@@ -4,9 +4,7 @@
 use crate::{Bench, LABEL, directed, graph, nodes, seed_hub, seed_parallel};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
-use lara_graph::{
-    Direction, EdgeRef, Graph, Halves, Memory, NewEdge, NodeId, Placement, Progress, Removal,
-};
+use lara_graph::{Edge, EdgeRef, Graph, Halves, Memory, NodeId, Progress, Removal};
 
 fn remove_hub_edges<M: Memory>(mut g: Graph<M>, degree: u32) -> (Graph<M>, Vec<EdgeRef>) {
     let (_, edges) = seed_hub(&mut g, degree);
@@ -33,7 +31,7 @@ fn remove_all<M: Memory>(g: &mut Graph<M>, halves: &[EdgeRef]) -> Vec<Removal> {
 /// Compacts `hub`'s out bucket until done.
 fn compact_fully(g: &mut Bench, hub: NodeId) {
     while g
-        .compact(hub, (LABEL, Direction::Outgoing))
+        .compact(hub, LABEL.outgoing())
         .unwrap_or_else(|e| panic!("compact: {e}"))
         .progress()
         == Progress::Remaining
@@ -155,9 +153,9 @@ fn refill_hub(degree: u32, to: Refill) -> BenchResult {
 
 fn refill_hub_batched(degree: u32, to: Refill) -> BenchResult {
     let (mut g, hub, targets) = holed_hub(degree, to);
-    let refill: Vec<NewEdge<'_>> = targets
+    let refill: Vec<Edge<'_>> = targets
         .iter()
-        .map(|&leaf| NewEdge::directed(hub, LABEL, leaf, Placement::ReuseHoles, &[]))
+        .map(|&leaf| Edge::directed(hub, LABEL, leaf))
         .collect();
     bench_fn(|| {
         black_box(

@@ -47,11 +47,11 @@ pub(crate) enum Spot {
 
 /// Adds an edge to `target` at `spot`. Returns the bucket's next descriptor and the edge's
 /// position. Filling a hole never fails: it writes in place.
-pub(crate) fn insert<M: Memory>(
+pub(crate) fn insert<M: Memory, D: Memory>(
     d: Descriptor,
     target: NodeId,
     spot: Spot,
-    store: &mut PageStore<M>,
+    store: &mut PageStore<M, D>,
 ) -> Result<(Descriptor, Position), WriteError> {
     let edge = Slot::Live(target);
     if let Spot::Hole(at) = spot {
@@ -171,7 +171,12 @@ fn first_tombstone<M: Memory>(
 }
 
 /// Writes `edge` into the hole at `at`, which [`hole`] found. Never fails.
-fn fill<M: Memory>(d: Descriptor, at: Position, edge: Slot, store: &PageStore<M>) -> Descriptor {
+fn fill<M: Memory, D: Memory>(
+    d: Descriptor,
+    at: Position,
+    edge: Slot,
+    store: &PageStore<M, D>,
+) -> Descriptor {
     match d {
         Descriptor::Tiny(tiny) => {
             let i = usize::try_from(at.index()).unwrap_or_else(|_| corrupt("tiny slot"));
@@ -203,10 +208,10 @@ fn fill<M: Memory>(d: Descriptor, at: Position, edge: Slot, store: &PageStore<M>
 
 /// Removes the edge at `at`. Returns the next descriptor and the removed edge's target, or
 /// `None` when no live edge is there. Never fails: it writes in place.
-pub(crate) fn remove<M: Memory>(
+pub(crate) fn remove<M: Memory, D: Memory>(
     d: Descriptor,
     at: Position,
-    store: &PageStore<M>,
+    store: &PageStore<M, D>,
 ) -> Option<(Descriptor, NodeId)> {
     if at.index() >= d.stored() {
         return None;
@@ -281,9 +286,9 @@ pub(crate) fn target_at<M: Memory>(view: &Pages<'_, M>, at: ByteOffset) -> Optio
 
 /// The same slots, never tiny: a tiny bucket becomes a run of the smallest class (a bucket with
 /// values in a plane needs one); a run or paged bucket is unchanged.
-pub(crate) fn without_tiny<M: Memory>(
+pub(crate) fn without_tiny<M: Memory, D: Memory>(
     d: Descriptor,
-    store: &mut PageStore<M>,
+    store: &mut PageStore<M, D>,
 ) -> Result<Descriptor, WriteError> {
     let Descriptor::Tiny(tiny) = d else {
         return Ok(d);
@@ -301,10 +306,10 @@ pub(crate) fn without_tiny<M: Memory>(
 
 /// A tiny bucket or a run without values as a run with `beside` values next to its slots, all
 /// zero, in the smallest class that holds one more slot. Within one page of copying.
-pub(crate) fn with_values_beside<M: Memory>(
+pub(crate) fn with_values_beside<M: Memory, D: Memory>(
     d: Descriptor,
     beside: Beside,
-    store: &mut PageStore<M>,
+    store: &mut PageStore<M, D>,
 ) -> Result<Descriptor, WriteError> {
     let width = beside.width;
     let (slots, old) = match d {
@@ -345,9 +350,9 @@ pub(crate) fn full_beside(d: &Descriptor) -> bool {
 
 /// A run with values beside its slots as a run of its slots alone, with room for one more, and
 /// a value plane of its cells. Copies at most a page of each.
-pub(crate) fn values_out<M: Memory>(
+pub(crate) fn values_out<M: Memory, D: Memory>(
     run: Run,
-    store: &mut PageStore<M>,
+    store: &mut PageStore<M, D>,
 ) -> Result<(Descriptor, Plane), WriteError> {
     let width = run
         .width()
@@ -474,7 +479,7 @@ mod tests {
                 Span::new(low, high, order),
                 Window::Short,
                 |e| {
-                    assert_eq!(e.target().index(), e.position().index());
+                    assert_eq!(e.node().index(), e.position().index());
                     seen.push(e.position().index());
                     ControlFlow::<()>::Continue(())
                 },

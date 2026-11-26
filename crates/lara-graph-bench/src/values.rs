@@ -6,11 +6,10 @@ use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use core::ops::ControlFlow;
 use lara_graph::{
-    Direction, EdgeRef, EdgeValue, Error, NewEdge, NodeId, Order, Placement, Position, ReadBatch,
-    Width,
+    Edge, EdgeRef, EdgeValue, Error, NodeId, Order, Placement, Position, ReadBatch, Width,
 };
 
-const OUT: (lara_graph::Label, Direction) = (LABEL, Direction::Outgoing);
+const OUT: lara_graph::Adjacency = LABEL.outgoing();
 
 /// Declares `LABEL`'s values 8 bytes wide.
 fn declare_width(g: &mut Bench) {
@@ -20,8 +19,11 @@ fn declare_width(g: &mut Bench) {
 
 /// Inserts `from -[LABEL]-> to` carrying `value`.
 fn valued(g: &mut Bench, from: NodeId, to: NodeId, value: &[u8]) {
-    g.add_edge(NewEdge::directed(from, LABEL, to, Placement::Append, value))
-        .unwrap_or_else(|e| panic!("insert: {e}"));
+    g.add_edge_with(
+        Edge::directed(from, LABEL, to).value(value),
+        Placement::Append,
+    )
+    .unwrap_or_else(|e| panic!("insert: {e}"));
 }
 
 /// A hub whose label carries 8-byte values, each edge given one.
@@ -79,13 +81,10 @@ fn hub_insert_valued_4096() -> BenchResult {
         for &leaf in &leaves {
             let value = u64::from(leaf.index()).to_le_bytes();
             black_box(
-                g.add_edge(NewEdge::directed(
-                    hub,
-                    LABEL,
-                    leaf,
+                g.add_edge_with(
+                    Edge::directed(hub, LABEL, leaf).value(&value),
                     Placement::Append,
-                    &value,
-                ))
+                )
                 .unwrap_or_else(|e| panic!("insert: {e}")),
             );
         }
@@ -100,7 +99,7 @@ fn hub_visit_values_65536() -> BenchResult {
     bench_fn(|| {
         for _ in 0..51 {
             let mut sum = 0u64;
-            g.visit_values(hub, (OUT.0, OUT.1), Order::Ascending, |_, v| {
+            g.visit_values(hub, OUT, Order::Ascending, |_, v| {
                 sum = sum.wrapping_add(u64::from(v.first().copied().unwrap_or(0)));
                 ControlFlow::<()>::Continue(())
             })
@@ -118,10 +117,8 @@ fn hub_visit_with_values_1024() -> BenchResult {
     bench_fn(|| {
         for _ in 0..51 {
             let mut count = 0u32;
-            g.visit_neighbors_with_values(hub, (OUT.0, OUT.1), Order::Ascending, |_, _| {
-                tick(&mut count)
-            })
-            .unwrap_or_else(|e| panic!("visit: {e}"));
+            g.visit_neighbors_with_values(hub, OUT, Order::Ascending, |_, _| tick(&mut count))
+                .unwrap_or_else(|e| panic!("visit: {e}"));
             black_box(count);
         }
     })
@@ -133,9 +130,7 @@ fn visit_with_values_many_1024_loop() -> BenchResult {
     let (g, sources) = one_valued_edge_per_source();
     bench_fn(|| {
         black_box(count_each(&sources, |source, count| {
-            g.visit_neighbors_with_values(source, (OUT.0, OUT.1), Order::Ascending, |_, _| {
-                tick(count)
-            })
+            g.visit_neighbors_with_values(source, OUT, Order::Ascending, |_, _| tick(count))
         }))
     })
 }
@@ -148,12 +143,9 @@ fn visit_with_values_many_1024_batched() -> BenchResult {
         let mut batch = g.read_batch();
         let mut count = 0u32;
         batch
-            .visit_neighbors_with_values_each(
-                &sources,
-                (OUT.0, OUT.1),
-                Order::Ascending,
-                |_, _, _| tick(&mut count),
-            )
+            .visit_neighbors_with_values_each(&sources, OUT, Order::Ascending, |_, _, _| {
+                tick(&mut count)
+            })
             .unwrap_or_else(|e| panic!("batch: {e}"));
         black_box(count)
     })
@@ -164,7 +156,7 @@ fn visit_values_many_1024_loop() -> BenchResult {
     let (g, sources) = one_valued_edge_per_source();
     bench_fn(|| {
         black_box(count_each(&sources, |source, count| {
-            g.visit_values(source, (OUT.0, OUT.1), Order::Ascending, |_, _| tick(count))
+            g.visit_values(source, OUT, Order::Ascending, |_, _| tick(count))
         }))
     })
 }
@@ -176,9 +168,7 @@ fn visit_values_many_1024_batched() -> BenchResult {
         let mut batch = g.read_batch();
         let mut count = 0u32;
         batch
-            .visit_values_each(&sources, (OUT.0, OUT.1), Order::Ascending, |_, _, _| {
-                tick(&mut count)
-            })
+            .visit_values_each(&sources, OUT, Order::Ascending, |_, _, _| tick(&mut count))
             .unwrap_or_else(|e| panic!("batch: {e}"));
         black_box(count)
     })
@@ -189,7 +179,7 @@ fn visit_values_many_1024_batched() -> BenchResult {
 fn set_value_4096() -> BenchResult {
     let mut g = graph();
     let hub = seed_valued_hub(&mut g, 4096);
-    let half = EdgeRef::new(hub, LABEL, Direction::Outgoing, Position::new(4000));
+    let half = EdgeRef::new(hub, LABEL.outgoing(), Position::new(4000));
     bench_fn(|| black_box(g.set_edge_value(half, &[7; 8])))
 }
 

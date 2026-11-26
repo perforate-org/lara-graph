@@ -13,17 +13,14 @@ fn val(seed: u8, width: usize) -> Vec<u8> {
 }
 
 /// Inserts `0 → 1` edges under `label` with values `val(i)`; returns their canonical halves.
-fn valued_edges(g: &mut Graph<VecMemory>, label: Label, n: u32, width: usize) -> Vec<EdgeRef> {
+fn valued_edges(g: &mut Graph<VecMemory>, label: EdgeLabel, n: u32, width: usize) -> Vec<EdgeRef> {
     (0..n)
         .map(|i| {
             let value = val(u8::try_from(i % 251).unwrap(), width);
-            g.add_edge(NewEdge::directed(
-                v(0),
-                label,
-                v(1),
+            g.add_edge_with(
+                Edge::directed(v(0), label, v(1)).value(&value),
                 Placement::Append,
-                &value,
-            ))
+            )
             .unwrap()
             .canonical()
         })
@@ -44,23 +41,13 @@ fn compaction_moves_values_with_their_edges() {
                 g.remove_edge(*half).unwrap();
             }
         }
-        while g
-            .compact(v(0), (l(0), Direction::Outgoing))
-            .unwrap()
-            .progress()
-            == Progress::Remaining
-        {}
-        g.compact(v(1), (l(0), Direction::Incoming)).unwrap();
+        while g.compact(v(0), l(0).outgoing()).unwrap().progress() == Progress::Remaining {}
+        g.compact(v(1), l(0).incoming()).unwrap();
         let mut seen = Vec::new();
-        g.visit_neighbors_with_values(
-            v(0),
-            (l(0), Direction::Outgoing),
-            Order::Ascending,
-            |_, value| {
-                seen.push(value.to_vec());
-                ControlFlow::<()>::Continue(())
-            },
-        )
+        g.visit_neighbors_with_values(v(0), l(0).outgoing(), Order::Ascending, |_, value| {
+            seen.push(value.to_vec());
+            ControlFlow::<()>::Continue(())
+        })
         .unwrap();
         let want: Vec<Vec<u8>> = (0..n)
             .filter(|i| i % 5 == 0)
@@ -90,20 +77,15 @@ fn a_values_first_scan_skips_dead_pages_but_reads_past_them() {
     }
     let mut seen = 0u32;
     let mut last = None;
-    g.visit_values(
-        v(0),
-        (l(0), Direction::Outgoing),
-        Order::Ascending,
-        |at, _| {
-            assert!(
-                !(PAGE_SLOTS..2 * PAGE_SLOTS).contains(&at.index()),
-                "dead page read"
-            );
-            seen += 1;
-            last = Some(at);
-            ControlFlow::<()>::Continue(())
-        },
-    )
+    g.visit_values(v(0), l(0).outgoing(), Order::Ascending, |at, _| {
+        assert!(
+            !(PAGE_SLOTS..2 * PAGE_SLOTS).contains(&at.index()),
+            "dead page read"
+        );
+        seen += 1;
+        last = Some(at);
+        ControlFlow::<()>::Continue(())
+    })
     .unwrap();
     assert_eq!((seen, last), (2 * PAGE_SLOTS, Some(p(3 * PAGE_SLOTS - 1))));
 }
@@ -112,23 +94,9 @@ fn a_values_first_scan_skips_dead_pages_but_reads_past_them() {
 fn values_have_the_labels_width_and_edges_before_it_read_as_zeros() {
     let backing = Backing::default();
     let mut g = backing.create(2);
-    let early = g
-        .add_edge(NewEdge::directed(
-            v(0),
-            l(0),
-            v(1),
-            Placement::ReuseHoles,
-            &[],
-        ))
-        .unwrap();
+    let early = g.add_edge(Edge::directed(v(0), l(0), v(1))).unwrap();
     assert_eq!(
-        g.add_edge(NewEdge::directed(
-            v(0),
-            l(0),
-            v(1),
-            Placement::ReuseHoles,
-            &[1]
-        )),
+        g.add_edge(Edge::directed(v(0), l(0), v(1)).value(&[1])),
         Err(Error::WrongValueLength {
             label: l(0),
             expected: 0,
@@ -138,13 +106,7 @@ fn values_have_the_labels_width_and_edges_before_it_read_as_zeros() {
     g.declare_width(l(0), w(2)).unwrap();
     assert_eq!(g.edge_value(early.other()), Ok(Some(vec![0, 0])));
     assert_eq!(
-        g.add_edge(NewEdge::directed(
-            v(0),
-            l(0),
-            v(1),
-            Placement::ReuseHoles,
-            &[]
-        )),
+        g.add_edge(Edge::directed(v(0), l(0), v(1))),
         Err(Error::WrongValueLength {
             label: l(0),
             expected: 2,
@@ -152,19 +114,11 @@ fn values_have_the_labels_width_and_edges_before_it_read_as_zeros() {
         })
     );
     // The early edge's tiny buckets get value planes when it is first given a value.
-    assert_eq!(
-        g.set_edge_value(early.canonical(), &[7, 8]),
-        Ok(Some(vec![0, 0]))
-    );
+    assert_eq!(g.edge_value(early.canonical()), Ok(Some(vec![0, 0])));
+    assert_eq!(g.set_edge_value(early.canonical(), &[7, 8]), Ok(true));
     assert_eq!(g.edge_value(early.other()), Ok(Some(vec![7, 8])));
     let late = g
-        .add_edge(NewEdge::directed(
-            v(0),
-            l(0),
-            v(1),
-            Placement::ReuseHoles,
-            &[9, 9],
-        ))
+        .add_edge(Edge::directed(v(0), l(0), v(1)).value(&[9, 9]))
         .unwrap();
     let Ok(Removal::Removed(edge)) = g.remove_edge(late.other()) else {
         panic!("the edge is removed")
@@ -183,7 +137,7 @@ fn an_insert_with_a_value_that_runs_out_of_memory_changes_nothing() {
     valued_edges(&mut g, l(0), 3, 4096);
     let before = (
         edges(&g, v(0), l(0)),
-        g.edge_value(EdgeRef::new(v(0), l(0), Direction::Outgoing, p(2))),
+        g.edge_value(EdgeRef::new(v(0), l(0).outgoing(), p(2))),
     );
     let memory = &backing.memories[1];
     memory.cap(memory.size());
@@ -192,17 +146,14 @@ fn an_insert_with_a_value_that_runs_out_of_memory_changes_nothing() {
     while capacity - g.edges.store().minted() > 3 {
         held.push(g.edges.store_mut().allocate(ByteClass::PAGE).unwrap());
     }
-    let error = g.add_edge(NewEdge::directed(
-        v(0),
-        l(0),
-        v(1),
+    let error = g.add_edge_with(
+        Edge::directed(v(0), l(0), v(1)).value(&val(1, 4096)),
         Placement::Append,
-        &val(1, 4096),
-    ));
+    );
     assert!(matches!(error, Err(Error::OutOfMemory(_))), "{error:?}");
     let after = (
         edges(&g, v(0), l(0)),
-        g.edge_value(EdgeRef::new(v(0), l(0), Direction::Outgoing, p(2))),
+        g.edge_value(EdgeRef::new(v(0), l(0).outgoing(), p(2))),
     );
     assert_eq!(after, before);
     for extent in held {
@@ -226,7 +177,7 @@ fn compaction_releases_the_value_pages_it_empties() {
         g.remove_edge(*half).unwrap();
     }
     let before = pages(&g);
-    g.compact(v(0), (l(0), Direction::Outgoing)).unwrap();
+    g.compact(v(0), l(0).outgoing()).unwrap();
     assert!(
         before - pages(&g) >= 17,
         "slot page and value pages released"
@@ -237,12 +188,7 @@ fn compaction_releases_the_value_pages_it_empties() {
         g.remove_edge(*half).unwrap();
     }
     let before = pages(&g);
-    while g
-        .compact(v(0), (l(0), Direction::Outgoing))
-        .unwrap()
-        .progress()
-        == Progress::Remaining
-    {}
+    while g.compact(v(0), l(0).outgoing()).unwrap().progress() == Progress::Remaining {}
     assert!(before - pages(&g) >= 30, "{before} → {}", pages(&g));
     assert_eq!(g.edge_value(halves[0]), Ok(Some(val(0, 64))));
     check(&g);
@@ -276,15 +222,10 @@ fn batch_value_visits_match_the_single_visits() {
     let nodes = [v(0), v(0)];
     let mut single = Vec::new();
     for _ in &nodes {
-        g.visit_neighbors_with_values(
-            v(0),
-            (l(0), Direction::Outgoing),
-            Order::Descending,
-            |edge, value| {
-                single.push((edge.position(), value.to_vec()));
-                ControlFlow::<()>::Continue(())
-            },
-        )
+        g.visit_neighbors_with_values(v(0), l(0).outgoing(), Order::Descending, |edge, value| {
+            single.push((edge.position(), value.to_vec()));
+            ControlFlow::<()>::Continue(())
+        })
         .unwrap();
     }
     let mut batch = Vec::new();
@@ -292,7 +233,7 @@ fn batch_value_visits_match_the_single_visits() {
     reader
         .visit_neighbors_with_values_each(
             &nodes,
-            (l(0), Direction::Outgoing),
+            l(0).outgoing(),
             Order::Descending,
             |_, edge, value| {
                 batch.push((edge.position(), value.to_vec()));
@@ -347,7 +288,7 @@ fn set_edge_values_checks_all_nodes_before_writing() {
     let writes = [
         EdgeValue::new(half, &[8, 8]),
         EdgeValue::new(
-            EdgeRef::new(v(9), l(0), Direction::Outgoing, Position::new(0)),
+            EdgeRef::new(v(9), l(0).outgoing(), Position::new(0)),
             &[8, 8],
         ),
     ];
@@ -365,24 +306,18 @@ fn visit_values_each_matches_one_by_one() {
         .unwrap_or_else(|e| panic!("{e}"));
     for i in 0..4 {
         let value = val(i, 2);
-        g.add_edge(NewEdge::directed(
-            v(0),
-            l(0),
-            v(1),
+        g.add_edge_with(
+            Edge::directed(v(0), l(0), v(1)).value(&value),
             Placement::Append,
-            &value,
-        ))
+        )
         .unwrap();
     }
     for i in 4..6 {
         let value = val(i, 2);
-        g.add_edge(NewEdge::directed(
-            v(2),
-            l(0),
-            v(1),
+        g.add_edge_with(
+            Edge::directed(v(2), l(0), v(1)).value(&value),
             Placement::Append,
-            &value,
-        ))
+        )
         .unwrap();
     }
     let nodes = [v(0), v(2), v(1)];
@@ -391,7 +326,7 @@ fn visit_values_each_matches_one_by_one() {
     batch
         .visit_values_each(
             &nodes,
-            (l(0), Direction::Outgoing),
+            l(0).outgoing(),
             Order::Descending,
             |node, position, value| {
                 batched.push((node.index(), position.index(), value.to_vec()));
@@ -403,7 +338,7 @@ fn visit_values_each_matches_one_by_one() {
     for &node in &nodes {
         g.visit_values(
             node,
-            (l(0), Direction::Outgoing),
+            l(0).outgoing(),
             Order::Descending,
             |position, value| {
                 single.push((node.index(), position.index(), value.to_vec()));
@@ -459,7 +394,7 @@ fn widened(old: &[u8], new: &mut [u8]) {
 }
 
 /// Migrates `x`'s bucket to the end, counting steps; checks the graph every `check_every`.
-fn migrate_fully(g: &mut Graph<VecMemory>, x: NodeId, key: (Label, Direction)) -> u32 {
+fn migrate_fully(g: &mut Graph<VecMemory>, x: NodeId, key: Adjacency) -> u32 {
     let mut steps = 0;
     while g.migrate_values(x, key, widened).unwrap() == Progress::Remaining {
         steps += 1;
@@ -480,41 +415,38 @@ fn a_width_change_leaves_stored_values_in_their_version_until_migrated() {
     // Stored values read in the width and version they were written in.
     assert_eq!(g.edge_value(halves[2]), Ok(Some(val(2, 8))));
     assert_eq!(
-        g.bucket_value_version(v(0), (l(0), OUT)),
+        g.bucket_value_version(v(0), Adjacency::new(l(0), OUT)),
         Ok(Some(ValueVersion::FIRST))
     );
-    assert_eq!(g.needs_migration(v(0), (l(0), OUT)), Ok(true));
+    assert_eq!(g.needs_migration(v(0), Adjacency::new(l(0), OUT)), Ok(true));
     // A bucket with no values yet is in the new layout.
-    assert_eq!(g.bucket_value_version(v(2), (l(0), OUT)), Ok(None));
+    assert_eq!(
+        g.bucket_value_version(v(2), Adjacency::new(l(0), OUT)),
+        Ok(None)
+    );
     let stale = Error::StaleValues {
         node: v(0),
         label: l(0),
         direction: OUT,
     };
     assert_eq!(
-        g.add_edge(NewEdge::directed(
-            v(0),
-            l(0),
-            v(2),
-            Placement::Append,
-            &[1; 4]
-        )),
+        g.add_edge_with(
+            Edge::directed(v(0), l(0), v(2)).value(&[1; 4]),
+            Placement::Append
+        ),
         Err(stale)
     );
     assert_eq!(g.set_edge_value(halves[0], &[1; 4]), Err(stale));
     // New buckets (here both of a self-loop's) take the new layout at once.
     let fresh = g
-        .add_edge(NewEdge::directed(
-            v(2),
-            l(0),
-            v(2),
+        .add_edge_with(
+            Edge::directed(v(2), l(0), v(2)).value(&[7; 4]),
             Placement::Append,
-            &[7; 4],
-        ))
+        )
         .unwrap();
     assert_eq!(g.edge_value(fresh.canonical()), Ok(Some(vec![7; 4])));
     assert_eq!(
-        g.bucket_value_version(v(2), (l(0), OUT)),
+        g.bucket_value_version(v(2), Adjacency::new(l(0), OUT)),
         Ok(Some(ValueVersion::new(1)))
     );
     // Removing from a stale bucket reports the value's own version.
@@ -536,12 +468,15 @@ fn small_buckets_migrate_and_then_take_writes() {
     let halves = valued_edges(&mut g, l(0), 6, 8);
     // The same width in a new layout: only the version tells the values apart.
     g.change_width(l(0), w(8)).unwrap();
-    assert_eq!(g.needs_migration(v(1), (l(0), IN)), Ok(true));
+    assert_eq!(g.needs_migration(v(1), Adjacency::new(l(0), IN)), Ok(true));
     for (x, direction) in [(v(0), OUT), (v(1), IN)] {
-        migrate_fully(&mut g, x, (l(0), direction));
-        assert_eq!(g.needs_migration(x, (l(0), direction)), Ok(false));
+        migrate_fully(&mut g, x, Adjacency::new(l(0), direction));
         assert_eq!(
-            g.bucket_value_version(x, (l(0), direction)),
+            g.needs_migration(x, Adjacency::new(l(0), direction)),
+            Ok(false)
+        );
+        assert_eq!(
+            g.bucket_value_version(x, Adjacency::new(l(0), direction)),
             Ok(Some(ValueVersion::new(1)))
         );
         check(&g);
@@ -552,16 +487,13 @@ fn small_buckets_migrate_and_then_take_writes() {
         assert_eq!(g.edge_value(*half), Ok(Some(want)));
     }
     assert_eq!(
-        g.migrate_values(v(0), (l(0), OUT), widened),
+        g.migrate_values(v(0), Adjacency::new(l(0), OUT), widened),
         Ok(Progress::Done)
     );
-    g.add_edge(NewEdge::directed(
-        v(0),
-        l(0),
-        v(1),
+    g.add_edge_with(
+        Edge::directed(v(0), l(0), v(1)).value(&[3; 8]),
         Placement::Append,
-        &[3; 8],
-    ))
+    )
     .unwrap();
     g.set_edge_value(halves[0], &[9; 8]).unwrap();
     check(&g);
@@ -579,7 +511,7 @@ fn a_hub_migrates_a_page_at_a_time_and_reads_old_values_until_the_end() {
         g.remove_edge(*half).unwrap();
     }
     g.change_width(l(0), w(24)).unwrap();
-    let key = (l(0), OUT);
+    let key = Adjacency::new(l(0), OUT);
     // A few steps in: still the old values, and no writes.
     for _ in 0..3 {
         assert_eq!(
@@ -628,7 +560,7 @@ fn a_hub_migrates_a_page_at_a_time_and_reads_old_values_until_the_end() {
         g.bucket_value_version(v(0), key),
         Ok(Some(ValueVersion::new(1)))
     );
-    migrate_fully(&mut g, v(1), (l(0), IN));
+    migrate_fully(&mut g, v(1), Adjacency::new(l(0), IN));
     g.set_edge_value(halves[1], &[5; 24]).unwrap();
     assert_eq!(g.edge_value(halves[1]), Ok(Some(vec![5; 24])));
     check(&g);
@@ -641,7 +573,7 @@ fn a_second_change_restarts_a_migration_under_way() {
     g.declare_width(l(0), w(8)).unwrap();
     let halves = valued_edges(&mut g, l(0), 2 * PAGE_SLOTS, 8);
     g.change_width(l(0), w(16)).unwrap();
-    let key = (l(0), OUT);
+    let key = Adjacency::new(l(0), OUT);
     g.migrate_values(v(0), key, widened).unwrap();
     g.migrate_values(v(0), key, widened).unwrap();
     g.change_width(l(0), w(4)).unwrap();

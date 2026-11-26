@@ -7,7 +7,7 @@ use crate::{
 };
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
-use lara_graph::{Direction, EdgeRef, Halves, Position, ReadBatch};
+use lara_graph::{EdgeRef, Halves, Position, ReadBatch};
 
 /// Finds the out half of the hub's last edge from its in half at the leaf: a rank count over
 /// the leaf's bucket and a selection in the hub's.
@@ -73,22 +73,22 @@ fn hub_halves() -> (Bench, Vec<EdgeRef>) {
 fn edge_lookup_65536() -> BenchResult {
     let mut g = graph();
     let (hub, _) = seed_hub(&mut g, 65536);
-    let half = EdgeRef::new(hub, LABEL, Direction::Outgoing, Position::new(40_000));
-    bench_fn(|| black_box(g.edge_target(half)))
+    let half = EdgeRef::new(hub, LABEL.outgoing(), Position::new(40_000));
+    bench_fn(|| black_box(g.other_end(half)))
 }
 
 /// 1024 edge lookups in one hub bucket, one call each.
 #[bench(raw)]
 fn edge_lookup_1024_loop() -> BenchResult {
     let (g, halves) = hub_halves();
-    bench_fn(|| black_box(live_each(&halves, |half| g.edge_target(half))))
+    bench_fn(|| black_box(live_each(&halves, |half| g.other_end(half))))
 }
 
 /// The same 1024 lookups through one `ReadBatch`, reusing the bucket descriptor.
 #[bench(raw)]
 fn edge_lookup_1024_batched() -> BenchResult {
     let (g, halves) = hub_halves();
-    bench_fn(|| black_box(live_batched(&g, &halves, ReadBatch::edge_targets_each)))
+    bench_fn(|| black_box(live_batched(&g, &halves, ReadBatch::other_ends_each)))
 }
 
 /// 1024 counterparts in one hub bucket, one call each.

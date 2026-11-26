@@ -3,13 +3,13 @@
 use super::{Half, Place, Target};
 use crate::error::Error;
 use crate::graph::Graph;
+use crate::graph::GraphMemories;
 use crate::id::NodeId;
 use crate::node::label_bucket_list::{self, LabelBucketList, Lookup};
 use crate::node::record::Record;
 use crate::store::corrupt::corrupt;
-use crate::store::memory::Memory;
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// Fails as an insert of `halves` would, before anything changes; otherwise returns where
     /// each half goes. A cached half skips its node and list read.
     pub(super) fn admit_with<const N: usize>(
@@ -81,7 +81,7 @@ impl<M: Memory> Graph<M> {
         Place { record, target }
     }
 
-    /// `v`'s record, read once per insert; a detaching or deleted node fails the insert.
+    /// `v`'s record, read once per insert; a deleting or deleted node fails the insert.
     fn record_once(&self, records: &mut Records, v: NodeId) -> Result<Record, Error> {
         if let Some((_, record)) = records.iter().flatten().find(|(w, _)| *w == v) {
             return Ok(*record);

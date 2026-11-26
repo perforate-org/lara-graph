@@ -22,7 +22,7 @@ fn bucket_with_holes(
 fn compacting_a_run_packs_it_and_reports_every_move() {
     let backing = Backing::default();
     let mut g = bucket_with_holes(&backing, 100, (0..100).filter(|i| i % 4 != 0));
-    let c = g.compact(v(0), (l(0), Direction::Outgoing)).unwrap();
+    let c = g.compact(v(0), l(0).outgoing()).unwrap();
     assert_eq!(c.progress(), Progress::Done);
     assert_eq!(c.changes().len(), 24, "edges 4, 8, … 96 move; edge 0 stays");
     assert_eq!(
@@ -40,7 +40,7 @@ fn compacting_a_run_packs_it_and_reports_every_move() {
 fn a_compacted_run_becomes_tiny_and_an_empty_bucket_goes_away() {
     let backing = Backing::default();
     let mut g = bucket_with_holes(&backing, 10, [0, 1, 2, 3, 4, 5, 6, 7]);
-    g.compact(v(0), (l(0), Direction::Outgoing)).unwrap();
+    g.compact(v(0), l(0).outgoing()).unwrap();
     assert!(matches!(
         out_bucket(&g, v(0), l(0)),
         Some(Descriptor::Tiny(_))
@@ -49,7 +49,7 @@ fn a_compacted_run_becomes_tiny_and_an_empty_bucket_goes_away() {
         remove(&mut g, v(0), l(0), p(at));
     }
     insert(&mut g, v(0), l(5), v(1));
-    g.compact(v(0), (l(0), Direction::Outgoing)).unwrap();
+    g.compact(v(0), l(0).outgoing()).unwrap();
     let mut labels = Vec::new();
     g.edge_labels(v(0), Direction::Outgoing, &mut labels)
         .unwrap();
@@ -62,14 +62,12 @@ fn a_dead_middle_page_is_released_without_moving_anything() {
     let backing = Backing::default();
     let mut g = bucket_with_holes(&backing, 3 * PAGE_SLOTS, PAGE_SLOTS..2 * PAGE_SLOTS);
     let before = edges(&g, v(0), l(0));
-    let c = g.compact(v(0), (l(0), Direction::Outgoing)).unwrap();
+    let c = g.compact(v(0), l(0).outgoing()).unwrap();
     assert_eq!((c.changes().len(), c.progress()), (0, Progress::Remaining));
     assert_eq!(edges(&g, v(0), l(0)), before);
     check(&g);
     assert_eq!(
-        g.compact(v(0), (l(0), Direction::Outgoing))
-            .unwrap()
-            .progress(),
+        g.compact(v(0), l(0).outgoing()).unwrap().progress(),
         Progress::Done
     );
 }
@@ -83,7 +81,7 @@ fn two_half_pages_merge_into_one() {
         3 * PAGE_SLOTS,
         (0..2 * PAGE_SLOTS).filter(|i| i % 2 == 1),
     );
-    let c = g.compact(v(0), (l(0), Direction::Outgoing)).unwrap();
+    let c = g.compact(v(0), l(0).outgoing()).unwrap();
     assert_eq!(
         c.changes().len(),
         usize::try_from(PAGE_SLOTS - 1).unwrap(),
@@ -108,13 +106,13 @@ fn a_sparse_paged_bucket_is_demoted_to_a_run() {
         2 * PAGE_SLOTS + 1,
         (0..2 * PAGE_SLOTS).filter(|i| i % 8 != 0),
     );
-    let c = g.compact(v(0), (l(0), Direction::Outgoing)).unwrap();
+    let c = g.compact(v(0), l(0).outgoing()).unwrap();
     assert_eq!(c.progress(), Progress::Done);
     assert!(matches!(
         out_bucket(&g, v(0), l(0)),
         Some(Descriptor::Run(_))
     ));
-    assert_eq!(g.holes(v(0), (l(0), Direction::Outgoing)), Ok(0));
+    assert_eq!(g.holes(v(0), l(0).outgoing()), Ok(0));
     assert_eq!(edges(&g, v(0), l(0)).len(), 257);
     check(&g);
 }
@@ -124,7 +122,7 @@ fn a_dead_last_page_is_kept_for_inserts() {
     let backing = Backing::default();
     // Three full pages; the last one is all holes, and too much stays live to demote.
     let mut g = bucket_with_holes(&backing, 3 * PAGE_SLOTS, 2 * PAGE_SLOTS..3 * PAGE_SLOTS);
-    let c = g.compact(v(0), (l(0), Direction::Outgoing)).unwrap();
+    let c = g.compact(v(0), l(0).outgoing()).unwrap();
     assert_eq!(
         (c.changes().len(), c.progress()),
         (0, Progress::Done),
@@ -149,23 +147,13 @@ fn moves_name_their_halves_and_whether_they_are_canonical() {
         insert(&mut g, v(1), l(0), v(0));
         insert(&mut g, v(3), l(0), v(1));
         for other in [0, 3] {
-            g.add_edge(NewEdge::undirected(
-                v(1),
-                l(1),
-                v(other),
-                Placement::Append,
-                &[],
-            ))
-            .unwrap();
+            g.add_edge_with(Edge::undirected(v(1), l(1), v(other)), Placement::Append)
+                .unwrap();
         }
     }
-    for key in [
-        (l(0), Direction::Outgoing),
-        (l(0), Direction::Incoming),
-        (l(1), Direction::Undirected),
-    ] {
+    for key in [l(0).outgoing(), l(0).incoming(), l(1).undirected()] {
         for at in [0, 2, 4] {
-            let half = EdgeRef::new(v(1), key.0, key.1, p(at));
+            let half = EdgeRef::new(v(1), Adjacency::new(key.label(), key.direction()), p(at));
             g.remove_edge(half).unwrap();
         }
         let moves = g.compact(v(1), key).unwrap();
@@ -174,15 +162,15 @@ fn moves_name_their_halves_and_whether_they_are_canonical() {
             let (before, after) = m.edge_refs(v(1), key);
             assert_eq!((before.position(), after.position()), (m.from(), m.to()));
             let other = g.counterpart(after).unwrap().unwrap();
-            assert_eq!(other.node(), m.target());
+            assert_eq!(other.node(), m.node());
             // Out halves are canonical, in halves not; an undirected half is at node 1, canonical
             // against node 0 and not against node 3.
-            let expected = match key.1 {
+            let expected = match key.direction() {
                 Direction::Outgoing => true,
                 Direction::Incoming => false,
-                Direction::Undirected => m.target() == v(0),
+                Direction::Undirected => m.node() == v(0),
             };
-            assert_eq!(after.is_canonical(m.target()), expected);
+            assert_eq!(after.is_canonical(m.node()), expected);
         }
     }
     check(&g);

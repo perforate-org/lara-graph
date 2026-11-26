@@ -75,9 +75,9 @@ impl Chunk {
     }
 
     /// The container with `low` added, within [`super::PAGES_PER_ADD`] reserved pages.
-    pub(super) fn added<M: Memory>(
+    pub(super) fn added<M: Memory, D: Memory>(
         self,
-        store: &mut PageStore<M>,
+        store: &mut PageStore<M, D>,
         low: u16,
     ) -> Result<Self, WriteError> {
         Ok(match self {
@@ -98,7 +98,11 @@ impl Chunk {
     }
 
     /// The container with `low` removed, in place. Never allocates.
-    pub(super) fn removed<M: Memory>(self, store: &mut PageStore<M>, low: u16) -> Self {
+    pub(super) fn removed<M: Memory, D: Memory>(
+        self,
+        store: &mut PageStore<M, D>,
+        low: u16,
+    ) -> Self {
         match self {
             Self::Empty => corrupt("a posting removed from an empty chunk"),
             Self::Listed { extent, members } => listed_remove(store, extent, members, low),
@@ -178,7 +182,12 @@ fn bitmap_page<M: Memory, B>(
 }
 
 /// Sets `low`'s bit in a bitmap as it joins, clears it as it leaves.
-fn flip<M: Memory>(store: &PageStore<M>, pages: [PageId; 2], low: u16, change: Change) {
+fn flip<M: Memory, D: Memory>(
+    store: &PageStore<M, D>,
+    pages: [PageId; 2],
+    low: u16,
+    change: Change,
+) {
     let low = u32::from(low);
     let [first, second] = pages;
     let page = if low >> 15 == 0 { first } else { second };
@@ -208,8 +217,8 @@ fn position(members: &[u8], low: u16) -> Result<usize, usize> {
 /// A list container with `low` added: at the end in place when it is the largest and there is
 /// room (one 2-byte read and write), else into a larger extent or the middle, or a bitmap once
 /// it would pass [`MAX_LISTED`].
-fn listed_add<M: Memory>(
-    store: &mut PageStore<M>,
+fn listed_add<M: Memory, D: Memory>(
+    store: &mut PageStore<M, D>,
     extent: Extent,
     members: usize,
     low: u16,
@@ -254,8 +263,8 @@ fn listed_add<M: Memory>(
 }
 
 /// A list container with `low` removed: the members after it move down one.
-fn listed_remove<M: Memory>(
-    store: &mut PageStore<M>,
+fn listed_remove<M: Memory, D: Memory>(
+    store: &mut PageStore<M, D>,
     extent: Extent,
     members: usize,
     low: u16,
@@ -276,8 +285,8 @@ fn listed_remove<M: Memory>(
 }
 
 /// A full list container, with `low` added, as a bitmap of its chunk.
-fn to_bitmap<M: Memory>(
-    store: &mut PageStore<M>,
+fn to_bitmap<M: Memory, D: Memory>(
+    store: &mut PageStore<M, D>,
     extent: Extent,
     members: usize,
     low: u16,

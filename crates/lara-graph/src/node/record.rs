@@ -8,7 +8,7 @@
 //! ---------------------------------------- <- Offset 0
 //! Label bucket list extent        ↕ 5 bytes
 //!   (the extent's two spare bits, bits 6-7 of its last byte, carry the
-//!    state: 0 live, 1 detaching, 2 deleted)
+//!    state: 0 live, 1 deleting, 2 deleted)
 //! ----------------------------------------
 //! Entry count; 0xFF if tiered     ↕ 1 byte
 //! ----------------------------------------
@@ -48,7 +48,7 @@ impl Record {
         let mut bytes = label_bucket_list::encode_ref(self.list);
         let bits = match self.state {
             NodeState::Live => 0,
-            NodeState::Detaching => DETACHING,
+            NodeState::Deleting => DETACHING,
             NodeState::Deleted => DELETED,
         };
         if let Some(flags) = bytes.get_mut(FLAG_AT) {
@@ -72,7 +72,7 @@ impl Record {
     pub(crate) fn state_of(bytes: [u8; RECORD_BYTES]) -> NodeState {
         match bytes.get(FLAG_AT).map_or(0, |flags| flags & STATE_BITS) {
             0 => NodeState::Live,
-            DETACHING => NodeState::Detaching,
+            DETACHING => NodeState::Deleting,
             DELETED => NodeState::Deleted,
             _ => corrupt("node state"),
         }
@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn records_round_trip_with_their_state() {
-        for state in [NodeState::Live, NodeState::Detaching, NodeState::Deleted] {
+        for state in [NodeState::Live, NodeState::Deleting, NodeState::Deleted] {
             let record = Record { list: None, state };
             assert_eq!(Record::decode(record.encode()), record);
         }

@@ -6,8 +6,9 @@ use crate::bucket::LabelBucketKey;
 use crate::bucket::stored::Stored;
 use crate::error::Error;
 use crate::graph::Graph;
+use crate::graph::GraphMemories;
 use crate::id::{Halves, NodeId, NodeState};
-use crate::input::NewEdge;
+use crate::input::Edge;
 use crate::node::label_bucket_list::{self, LabelBucketList, Lookup};
 use crate::node::record::{RECORD_BYTES, Record};
 use crate::store::memory::Memory;
@@ -21,19 +22,18 @@ const SINGLES_PER_BATCH: usize = 1024;
 /// Nodes with one label bucket, waiting for their lists to be built in a batch.
 type Singles = Vec<(NodeId, LabelBucketKey, Stored)>;
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// Builds the graph from `edges` in one pass. The graph must have its nodes and width
     /// declarations already, and no edges; otherwise this returns [`Error::NotEmpty`].
     ///
-    /// Within a bucket, edges get positions in input order, like [`Placement::Append`](crate::input::Placement::Append). The
-    /// `placement` of each [`NewEdge`] is ignored because there are no holes to reuse.
+    /// Within a bucket, edges get positions in input order: there are no holes to reuse.
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownNode`], [`Error::Detaching`], [`Error::Deleted`],
+    /// [`Error::UnknownNode`], [`Error::Deleting`], [`Error::Deleted`],
     /// [`Error::WrongValueLength`], [`Error::TooManyLabelBuckets`], [`Error::AddressSpaceExhausted`],
     /// [`Error::OutOfMemory`], or [`Error::NotEmpty`].
-    pub fn bulk_load(&mut self, edges: &[NewEdge<'_>]) -> Result<Vec<Halves>, Error> {
+    pub fn bulk_load(&mut self, edges: &[Edge<'_>]) -> Result<Vec<Halves>, Error> {
         self.check_bulk_empty()?;
         for edge in edges {
             self.check_bulk_edge(edge)?;
@@ -61,7 +61,7 @@ impl<M: Memory> Graph<M> {
     }
 
     /// Checks that both ends of `edge` are live and its value fits its label.
-    fn check_bulk_edge(&self, edge: &NewEdge<'_>) -> Result<(), Error> {
+    fn check_bulk_edge(&self, edge: &Edge<'_>) -> Result<(), Error> {
         self.check(edge.from())?;
         self.check(edge.to())?;
         if let Some(proxy) = [edge.from(), edge.to()].into_iter().find(|v| v.is_proxy()) {
@@ -70,11 +70,11 @@ impl<M: Memory> Graph<M> {
         for v in [edge.from(), edge.to()] {
             match self.record(v)?.state {
                 NodeState::Live => {}
-                NodeState::Detaching => return Err(Error::Detaching(v)),
+                NodeState::Deleting => return Err(Error::Deleting(v)),
                 NodeState::Deleted => return Err(Error::Deleted(v)),
             }
         }
-        self.value_schema(edge.label(), edge.value())?;
+        self.value_schema(edge.label(), edge.bytes())?;
         Ok(())
     }
 
@@ -82,7 +82,7 @@ impl<M: Memory> Graph<M> {
     fn build_lists(
         &mut self,
         halves: &[Half],
-        edges: &[NewEdge<'_>],
+        edges: &[Edge<'_>],
     ) -> Result<Vec<[u8; RECORD_BYTES]>, Error> {
         let mut records =
             alloc::vec![[0u8; RECORD_BYTES]; usize::try_from(self.node_count()).unwrap_or(0)];
@@ -112,7 +112,7 @@ impl<M: Memory> Graph<M> {
         &mut self,
         node: NodeId,
         node_halves: &[Half],
-        edges: &[NewEdge<'_>],
+        edges: &[Edge<'_>],
     ) -> Result<Option<LabelBucketList>, Error> {
         let mut list: Option<LabelBucketList> = None;
         for bucket in node_halves.chunk_by(|a, b| a.key == b.key) {
@@ -139,8 +139,8 @@ impl<M: Memory> Graph<M> {
     }
 }
 
-fn flush_singles<M: Memory>(
-    store: &mut PageStore<M>,
+fn flush_singles<M: Memory, D: Memory>(
+    store: &mut PageStore<M, D>,
     singles: &mut Singles,
     records: &mut [[u8; RECORD_BYTES]],
 ) -> Result<(), Error> {
@@ -173,15 +173,15 @@ fn set_record(records: &mut [[u8; RECORD_BYTES]], node: NodeId, list: Option<Lab
     }
 }
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// Writes the bucket of `halves`, one label's halves at one node, with their edges' values.
     #[expect(clippy::indexing_slicing, reason = "a bucket's group is non-empty")]
-    fn build_bucket(&mut self, halves: &[Half], edges: &[NewEdge<'_>]) -> Result<Stored, Error> {
+    fn build_bucket(&mut self, halves: &[Half], edges: &[Edge<'_>]) -> Result<Stored, Error> {
         let schema = self.widths.schema(halves[0].key.label);
         self.edges.build_bucket(halves, schema, |half: &Half| {
             edges
                 .get(usize::try_from(half.edge).unwrap_or(usize::MAX))
-                .map_or(&[], NewEdge::value)
+                .map_or(&[], Edge::bytes)
         })
     }
 }

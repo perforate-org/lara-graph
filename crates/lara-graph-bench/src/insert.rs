@@ -5,7 +5,7 @@ use crate::{LABEL, directed, graph, node, nodes};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use core::num::NonZeroU32;
-use lara_graph::{EdgeKind, Graph, Memory, NewEdge, Placement};
+use lara_graph::{Edge, EdgeKind, Graph, Memory};
 
 /// 1024 nodes added one at a time.
 #[bench(raw)]
@@ -13,7 +13,7 @@ fn add_nodes_1024_loop() -> BenchResult {
     let mut g = graph();
     bench_fn(|| {
         for _ in 0..1024 {
-            black_box(g.add_node().unwrap_or_else(|e| panic!("node: {e}")));
+            black_box(g.add_node(&[]).unwrap_or_else(|e| panic!("node: {e}")));
         }
     })
 }
@@ -24,7 +24,7 @@ fn add_nodes_1024_batched() -> BenchResult {
     let mut g = graph();
     bench_fn(|| {
         black_box(
-            g.add_nodes(NonZeroU32::new(1024).unwrap_or(NonZeroU32::MIN))
+            g.add_nodes(NonZeroU32::new(1024).unwrap_or(NonZeroU32::MIN), &[])
                 .unwrap_or_else(|e| panic!("nodes: {e}")),
         )
     })
@@ -43,9 +43,9 @@ pub(crate) fn grow_hub<M: Memory>(mut g: Graph<M>, degree: u32) -> BenchResult {
 fn bulk_hub<M: Memory>(mut g: Graph<M>, degree: u32) -> BenchResult {
     let hub = node(&mut g);
     let leaves = nodes(&mut g, degree);
-    let edges: Vec<NewEdge<'_>> = leaves
+    let edges: Vec<Edge<'_>> = leaves
         .iter()
-        .map(|&leaf| NewEdge::directed(hub, LABEL, leaf, Placement::Append, &[]))
+        .map(|&leaf| Edge::directed(hub, LABEL, leaf))
         .collect();
     bench_fn(|| {
         black_box(g.bulk_load(&edges).unwrap_or_else(|e| panic!("bulk: {e}")));
@@ -80,9 +80,9 @@ fn hub_insert_65536() -> BenchResult {
 fn grow_hub_batched(mut g: Graph<impl Memory>, degree: u32) -> BenchResult {
     let hub = node(&mut g);
     let leaves = nodes(&mut g, degree);
-    let edges: Vec<NewEdge<'_>> = leaves
+    let edges: Vec<Edge<'_>> = leaves
         .iter()
-        .map(|&leaf| NewEdge::directed(hub, LABEL, leaf, Placement::ReuseHoles, &[]))
+        .map(|&leaf| Edge::directed(hub, LABEL, leaf))
         .collect();
     bench_fn(|| black_box(g.add_edges(&edges).unwrap_or_else(|e| panic!("batch: {e}"))))
 }
@@ -98,14 +98,8 @@ fn grow_hub_undirected(mut g: Graph<impl Memory>, degree: u32) -> BenchResult {
     bench_fn(|| {
         for &leaf in &leaves {
             black_box(
-                g.add_edge(NewEdge::undirected(
-                    hub,
-                    LABEL,
-                    black_box(leaf),
-                    Placement::ReuseHoles,
-                    &[],
-                ))
-                .unwrap_or_else(|e| panic!("insert: {e}")),
+                g.add_edge(Edge::undirected(hub, LABEL, black_box(leaf)))
+                    .unwrap_or_else(|e| panic!("insert: {e}")),
             );
         }
     })
@@ -119,9 +113,9 @@ fn hub_insert_undirected_4096() -> BenchResult {
 fn grow_hub_undirected_batched(mut g: Graph<impl Memory>, degree: u32) -> BenchResult {
     let hub = node(&mut g);
     let leaves = nodes(&mut g, degree);
-    let edges: Vec<NewEdge<'_>> = leaves
+    let edges: Vec<Edge<'_>> = leaves
         .iter()
-        .map(|&leaf| NewEdge::undirected(hub, LABEL, leaf, Placement::ReuseHoles, &[]))
+        .map(|&leaf| Edge::undirected(hub, LABEL, leaf))
         .collect();
     bench_fn(|| black_box(g.add_edges(&edges).unwrap_or_else(|e| panic!("batch: {e}"))))
 }
@@ -147,11 +141,11 @@ fn hub_insert_parallel_4096() -> BenchResult {
 fn grow_hub_parallel_batched(mut g: Graph<impl Memory>) -> BenchResult {
     let hub = node(&mut g);
     let targets = nodes(&mut g, 8);
-    let edges: Vec<NewEdge<'_>> = targets
+    let edges: Vec<Edge<'_>> = targets
         .iter()
         .cycle()
         .take(4096)
-        .map(|&target| NewEdge::directed(hub, LABEL, target, Placement::ReuseHoles, &[]))
+        .map(|&target| Edge::directed(hub, LABEL, target))
         .collect();
     bench_fn(|| black_box(g.add_edges(&edges).unwrap_or_else(|e| panic!("batch: {e}"))))
 }
@@ -179,14 +173,12 @@ fn grow_hub_mixed(mut g: Graph<impl Memory>, degree: u32, mode: Mixed) -> BenchR
             }
         })
         .collect();
-    let edges: Vec<NewEdge<'_>> = leaves
+    let edges: Vec<Edge<'_>> = leaves
         .iter()
         .zip(&kinds)
         .map(|(&leaf, &kind)| match kind {
-            EdgeKind::Directed => NewEdge::directed(hub, LABEL, leaf, Placement::ReuseHoles, &[]),
-            EdgeKind::Undirected => {
-                NewEdge::undirected(hub, LABEL, leaf, Placement::ReuseHoles, &[])
-            }
+            EdgeKind::Directed => Edge::directed(hub, LABEL, leaf),
+            EdgeKind::Undirected => Edge::undirected(hub, LABEL, leaf),
         })
         .collect();
     bench_fn(|| {

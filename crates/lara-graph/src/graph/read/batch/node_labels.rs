@@ -4,12 +4,12 @@
 use super::buffers::{label_cell, mode};
 use super::{ReadBatch, check_all};
 use crate::error::Error;
-use crate::id::{Label, NodeId};
-use crate::store::memory::Memory;
+use crate::graph::GraphMemories;
+use crate::id::{NodeId, NodeLabel};
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
-impl<M: Memory> ReadBatch<'_, M> {
+impl<S: GraphMemories> ReadBatch<'_, S> {
     /// Calls `f` with `(node, label)` for each label of each node, in `nodes` order and ascending
     /// within a node, until `f` breaks: [`Graph::node_labels`] over many nodes.
     ///
@@ -22,7 +22,7 @@ impl<M: Memory> ReadBatch<'_, M> {
     pub fn node_labels_each<B>(
         &mut self,
         nodes: &[NodeId],
-        mut f: impl FnMut(NodeId, Label) -> ControlFlow<B>,
+        mut f: impl FnMut(NodeId, NodeLabel) -> ControlFlow<B>,
     ) -> Result<Option<B>, Error> {
         let graph = self.graph;
         check_all(graph, nodes.iter().copied())?;
@@ -56,7 +56,7 @@ impl<M: Memory> ReadBatch<'_, M> {
     pub fn has_node_label_each(
         &mut self,
         nodes: &[NodeId],
-        label: Label,
+        label: NodeLabel,
         out: &mut Vec<bool>,
     ) -> Result<(), Error> {
         let graph = self.graph;

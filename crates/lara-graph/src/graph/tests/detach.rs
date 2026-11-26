@@ -1,4 +1,4 @@
-//! Detaching a node step by step.
+//! Deleting a node step by step.
 
 use super::*;
 
@@ -9,10 +9,10 @@ fn budget(n: u32) -> NonZeroU32 {
 /// Detaches `x` with steps of `n` edges, checking the graph after each; returns every edge the
 /// steps reported.
 fn detach_fully<M: Memory>(g: &mut Graph<M>, x: NodeId, n: u32) -> Vec<Halves> {
-    g.detach(x).unwrap();
+    g.begin_delete(x).unwrap();
     let mut removed = Vec::new();
     for _ in 0..100_000 {
-        let step = g.detach_step(x, budget(n)).unwrap();
+        let step = g.delete_step(x, budget(n)).unwrap();
         assert!(step.changes().len() <= usize::try_from(n).unwrap());
         removed.extend(step.changes().iter().map(RemovedEdge::halves));
         check(g);
@@ -46,72 +46,27 @@ fn detaching_removes_every_edge_and_reports_its_true_halves() {
     let mut incident = Vec::new();
     // Parallel edges x→1 interleaved with 4→1, so the in halves at 1 sit at other positions.
     for _ in 0..3 {
-        incident.push(
-            g.add_edge(NewEdge::directed(x, l(0), v(1), Placement::ReuseHoles, &[]))
-                .unwrap(),
-        );
-        g.add_edge(NewEdge::directed(
-            v(4),
-            l(0),
-            v(1),
-            Placement::ReuseHoles,
-            &[],
-        ))
-        .unwrap();
+        incident.push(g.add_edge(Edge::directed(x, l(0), v(1))).unwrap());
+        g.add_edge(Edge::directed(v(4), l(0), v(1))).unwrap();
     }
     let gone = incident.remove(0);
     g.remove_edge(gone.canonical()).unwrap();
-    incident.push(
-        g.add_edge(NewEdge::directed(v(3), l(0), x, Placement::ReuseHoles, &[]))
-            .unwrap(),
-    );
-    incident.push(
-        g.add_edge(NewEdge::directed(x, l(1), x, Placement::ReuseHoles, &[]))
-            .unwrap(),
-    );
-    incident.push(
-        g.add_edge(NewEdge::directed(x, l(1), x, Placement::ReuseHoles, &[]))
-            .unwrap(),
-    );
-    incident.push(
-        g.add_edge(NewEdge::undirected(
-            v(2),
-            l(1),
-            x,
-            Placement::ReuseHoles,
-            &[],
-        ))
-        .unwrap(),
-    );
-    incident.push(
-        g.add_edge(NewEdge::undirected(x, l(2), x, Placement::ReuseHoles, &[]))
-            .unwrap(),
-    );
-    let other = g
-        .add_edge(NewEdge::directed(
-            v(1),
-            l(0),
-            v(2),
-            Placement::ReuseHoles,
-            &[],
-        ))
-        .unwrap();
-    g.detach(x).unwrap();
+    incident.push(g.add_edge(Edge::directed(v(3), l(0), x)).unwrap());
+    incident.push(g.add_edge(Edge::directed(x, l(1), x)).unwrap());
+    incident.push(g.add_edge(Edge::directed(x, l(1), x)).unwrap());
+    incident.push(g.add_edge(Edge::undirected(v(2), l(1), x)).unwrap());
+    incident.push(g.add_edge(Edge::undirected(x, l(2), x)).unwrap());
+    let other = g.add_edge(Edge::directed(v(1), l(0), v(2))).unwrap();
+    g.begin_delete(x).unwrap();
     for (from, to) in [(x, v(1)), (v(1), x)] {
         assert_eq!(
-            g.add_edge(NewEdge::directed(
-                from,
-                l(0),
-                to,
-                Placement::ReuseHoles,
-                &[]
-            )),
-            Err(Error::Detaching(x))
+            g.add_edge(Edge::directed(from, l(0), to)),
+            Err(Error::Deleting(x))
         );
     }
     assert_eq!(
-        g.add_edge(NewEdge::undirected(x, l(9), x, Placement::ReuseHoles, &[])),
-        Err(Error::Detaching(x))
+        g.add_edge(Edge::undirected(x, l(9), x)),
+        Err(Error::Deleting(x))
     );
     let removed = detach_fully(&mut g, x, 1);
     assert_eq!(sorted(removed), sorted(incident));
@@ -122,7 +77,7 @@ fn detaching_removes_every_edge_and_reports_its_true_halves() {
     ] {
         let mut labels = Vec::new();
         g.edge_labels(x, direction, &mut labels).unwrap();
-        assert_eq!(labels, Vec::<Label>::new(), "{direction:?}");
+        assert_eq!(labels, Vec::<EdgeLabel>::new(), "{direction:?}");
     }
     assert_eq!(g.counterpart(other.canonical()), Ok(Some(other.other())));
     assert_eq!(
@@ -132,12 +87,12 @@ fn detaching_removes_every_edge_and_reports_its_true_halves() {
     // Deleted for good: no new edges, no second detach, and the id is not reused.
     assert_eq!(g.node_state(x), Ok(NodeState::Deleted));
     assert_eq!(
-        g.add_edge(NewEdge::directed(v(1), l(0), x, Placement::ReuseHoles, &[])),
+        g.add_edge(Edge::directed(v(1), l(0), x)),
         Err(Error::Deleted(x))
     );
-    assert_eq!(g.detach(x), Err(Error::Deleted(x)));
-    assert_eq!(g.detach_step(x, budget(1)), Err(Error::NotDetaching(x)));
-    assert_eq!(g.add_node(), Ok(v(5)));
+    assert_eq!(g.begin_delete(x), Err(Error::Deleted(x)));
+    assert_eq!(g.delete_step(x, budget(1)), Err(Error::NotDeleting(x)));
+    assert_eq!(g.add_node(&[]), Ok(v(5)));
     check(&g);
 }
 
@@ -146,20 +101,20 @@ fn a_step_needs_a_detaching_node_and_an_isolated_one_finishes_at_once() {
     let backing = Backing::default();
     let mut g = backing.create(2);
     assert_eq!(
-        g.detach_step(v(0), budget(1)),
-        Err(Error::NotDetaching(v(0)))
+        g.delete_step(v(0), budget(1)),
+        Err(Error::NotDeleting(v(0)))
     );
-    assert_eq!(g.detach(v(2)), Err(Error::UnknownNode(v(2))));
+    assert_eq!(g.begin_delete(v(2)), Err(Error::UnknownNode(v(2))));
     assert_eq!(g.node_state(v(0)), Ok(NodeState::Live));
-    g.detach(v(0)).unwrap();
-    g.detach(v(0)).unwrap();
-    assert_eq!(g.node_state(v(0)), Ok(NodeState::Detaching));
-    let step = g.detach_step(v(0), budget(1)).unwrap();
+    g.begin_delete(v(0)).unwrap();
+    g.begin_delete(v(0)).unwrap();
+    assert_eq!(g.node_state(v(0)), Ok(NodeState::Deleting));
+    let step = g.delete_step(v(0), budget(1)).unwrap();
     assert_eq!((step.changes().len(), step.progress()), (0, Progress::Done));
     assert_eq!(g.node_state(v(0)), Ok(NodeState::Deleted));
     assert_eq!(
-        g.detach_step(v(0), budget(1)),
-        Err(Error::NotDetaching(v(0)))
+        g.delete_step(v(0), budget(1)),
+        Err(Error::NotDeleting(v(0)))
     );
 }
 
@@ -175,10 +130,10 @@ fn a_hub_detaches_in_bounded_steps_across_reopens() {
         }
     }
     insert(&mut g, v(1), l(0), v(2));
-    g.detach(v(0)).unwrap();
+    g.begin_delete(v(0)).unwrap();
     let mut removed = 0;
     loop {
-        let step = g.detach_step(v(0), budget(500)).unwrap();
+        let step = g.delete_step(v(0), budget(500)).unwrap();
         assert!(step.changes().len() <= 500);
         removed += step.changes().len();
         check(&g);
@@ -188,14 +143,8 @@ fn a_hub_detaches_in_bounded_steps_across_reopens() {
         // The mark survives a reopen.
         g = backing.open();
         assert_eq!(
-            g.add_edge(NewEdge::directed(
-                v(1),
-                l(0),
-                v(0),
-                Placement::ReuseHoles,
-                &[]
-            )),
-            Err(Error::Detaching(v(0)))
+            g.add_edge(Edge::directed(v(1), l(0), v(0))),
+            Err(Error::Deleting(v(0)))
         );
     }
     let expected = total + total.div_ceil(7);
@@ -204,10 +153,7 @@ fn a_hub_detaches_in_bounded_steps_across_reopens() {
     let left: Vec<u32> = edges(&g, v(1), l(0)).into_iter().map(|(_, t)| t).collect();
     assert_eq!(left, [2]);
     for x in 1..5 {
-        assert_eq!(
-            g.degree(v(x), (l(0), Direction::Incoming)),
-            Ok(u32::from(x == 2))
-        );
+        assert_eq!(g.degree(v(x), l(0).incoming()), Ok(u32::from(x == 2)));
     }
 }
 
@@ -220,47 +166,42 @@ fn sweeping_a_shared_bucket_removes_the_detaching_nodes_edges() {
     let mut g = backing.create(1);
     g.declare_width(l(0), Width::new(2).unwrap()).unwrap();
     let hub = v(0);
-    let sources: Vec<NodeId> = (0..1500).map(|_| g.add_node().unwrap()).collect();
+    let sources: Vec<NodeId> = (0..1500).map(|_| g.add_node(&[]).unwrap()).collect();
     let mut edges = Vec::new();
     for (i, &s) in sources.iter().enumerate() {
         let value = u16::try_from(i).unwrap().to_le_bytes();
         for _ in 0..=i % 3 {
             edges.push((
                 s,
-                g.add_edge(NewEdge::directed(s, l(0), hub, Placement::Append, &value))
-                    .unwrap(),
+                g.add_edge_with(
+                    Edge::directed(s, l(0), hub).value(&value),
+                    Placement::Append,
+                )
+                .unwrap(),
             ));
         }
     }
     // An edge out of the hub to a detaching node stays for that node's own detach.
-    g.add_edge(NewEdge::directed(
-        hub,
-        l(0),
-        sources[3],
+    g.add_edge_with(
+        Edge::directed(hub, l(0), sources[3]).value(&[9, 9]),
         Placement::Append,
-        &[9, 9],
-    ))
+    )
     .unwrap();
     let gone: Vec<NodeId> = sources.iter().copied().step_by(4).collect();
     let live = *sources.get(1).unwrap();
     for &d in &gone {
-        g.detach(d).unwrap();
+        g.begin_delete(d).unwrap();
     }
     assert_eq!(
-        g.detaching_set(gone.iter().copied().chain([live])),
-        Err(Error::NotDetaching(live))
+        g.deleting_set(gone.iter().copied().chain([live])),
+        Err(Error::NotDeleting(live))
     );
-    let detaching = g.detaching_set(gone.iter().copied()).unwrap();
+    let detaching = g.deleting_set(gone.iter().copied()).unwrap();
     let mut removed = Vec::new();
     let mut from = Some(p(0));
     while let Some(at) = from {
         let sweep = g
-            .sweep(
-                hub,
-                (l(0), Direction::Incoming),
-                (at, budget(500)),
-                &detaching,
-            )
+            .sweep(hub, l(0).incoming(), at, budget(500), &detaching)
             .unwrap();
         removed.extend(sweep.changes().iter().cloned());
         from = sweep.next();
@@ -296,7 +237,7 @@ fn detach_many_checks_every_node_before_marking_any() {
     insert(&mut g, v(0), l(0), v(1));
     insert(&mut g, v(2), l(0), v(0));
     assert_eq!(
-        g.detach_many(&[v(0), v(9)]),
+        g.begin_delete_many(&[v(0), v(9)]),
         Err(BatchError::Unchanged {
             index: 1,
             error: Error::UnknownNode(v(9)),
@@ -304,22 +245,22 @@ fn detach_many_checks_every_node_before_marking_any() {
     );
     assert_eq!(g.node_state(v(0)).unwrap(), NodeState::Live);
     assert_eq!(g.node_state(v(2)).unwrap(), NodeState::Live);
-    g.detach_many(&[v(0), v(2)]).unwrap();
-    assert_eq!(g.node_state(v(0)).unwrap(), NodeState::Detaching);
-    assert_eq!(g.node_state(v(2)).unwrap(), NodeState::Detaching);
+    g.begin_delete_many(&[v(0), v(2)]).unwrap();
+    assert_eq!(g.node_state(v(0)).unwrap(), NodeState::Deleting);
+    assert_eq!(g.node_state(v(2)).unwrap(), NodeState::Deleting);
     // Already detaching is fine and changes nothing.
-    g.detach_many(&[v(0)]).unwrap();
+    g.begin_delete_many(&[v(0)]).unwrap();
 }
 
 #[test]
 fn detach_many_rejects_a_deleted_node_without_changes() {
     let backing = Backing::default();
     let mut g = backing.create(2);
-    g.detach(v(1)).unwrap();
-    g.detach_step(v(1), NonZeroU32::MAX).unwrap();
+    g.begin_delete(v(1)).unwrap();
+    g.delete_step(v(1), NonZeroU32::MAX).unwrap();
     assert_eq!(g.node_state(v(1)).unwrap(), NodeState::Deleted);
     assert!(matches!(
-        g.detach_many(&[v(0), v(1)]),
+        g.begin_delete_many(&[v(0), v(1)]),
         Err(BatchError::Unchanged { index: 1, .. })
     ));
     assert_eq!(g.node_state(v(0)).unwrap(), NodeState::Live);

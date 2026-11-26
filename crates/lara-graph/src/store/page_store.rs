@@ -257,19 +257,19 @@ pub(crate) enum OpenError {
 
 /// The store owns its memories exclusively, so it keeps two header values in the heap: how many
 /// pages were ever taken, and how many both memories can hold without growing.
-pub(crate) struct PageStore<M: Memory> {
+pub(crate) struct PageStore<M: Memory, D: Memory = M> {
     pages: M,
-    directory: M,
+    directory: D,
     /// Mirrors the directory's minted count.
     minted: u32,
     /// Pages both memories hold at their current size: taking pages below this never grows.
     room: u32,
 }
 
-impl<M: Memory> PageStore<M> {
+impl<M: Memory, D: Memory> PageStore<M, D> {
     /// Formats two memories as an empty store, whatever they held: every header field is
     /// written, and nothing past the headers is read before it is written. Constant time.
-    pub(crate) fn format(pages: M, directory: M) -> Result<Self, WriteError> {
+    pub(crate) fn format(pages: M, directory: D) -> Result<Self, WriteError> {
         let region = Region::new(&directory);
         let [d0, d1, d2] = DIRECTORY_MAGIC;
         region.write(ByteOffset::new(0), &[d0, d1, d2, VERSION])?;
@@ -284,7 +284,7 @@ impl<M: Memory> PageStore<M> {
     }
 
     /// Opens memories written by [`Self::format`]. Reads the headers only.
-    pub(crate) fn open(pages: M, directory: M) -> Result<Self, OpenError> {
+    pub(crate) fn open(pages: M, directory: D) -> Result<Self, OpenError> {
         let version = header(&directory, DIRECTORY_MAGIC).ok_or(OpenError::NotAPageStore)?;
         if header(&pages, PAGES_MAGIC) != Some(version) {
             return Err(OpenError::NotAPageStore);
@@ -298,11 +298,11 @@ impl<M: Memory> PageStore<M> {
     }
 
     /// The memories back, as they were given.
-    pub(crate) fn into_memories(self) -> (M, M) {
+    pub(crate) fn into_memories(self) -> (M, D) {
         (self.pages, self.directory)
     }
 
-    fn with_header(pages: M, directory: M, minted: u32) -> Self {
+    fn with_header(pages: M, directory: D, minted: u32) -> Self {
         let mut store = Self {
             pages,
             directory,
@@ -315,9 +315,9 @@ impl<M: Memory> PageStore<M> {
 
     /// Recomputes [`Self::room`] from the memories' sizes.
     fn measure_room(&mut self) {
-        let bytes = |m: &M| m.size().saturating_mul(crate::store::memory::PAGE_SIZE);
-        let pages = bytes(&self.pages).saturating_sub(PAGES_START) / u64::from(PAGE_BYTES);
-        let records = bytes(&self.directory).saturating_sub(RECORDS_START) / RECORD_BYTES;
+        let bytes = |pages: u64| pages.saturating_mul(crate::store::memory::PAGE_SIZE);
+        let pages = bytes(self.pages.size()).saturating_sub(PAGES_START) / u64::from(PAGE_BYTES);
+        let records = bytes(self.directory.size()).saturating_sub(RECORDS_START) / RECORD_BYTES;
         self.room = u32::try_from(pages.min(records)).unwrap_or(u32::MAX);
     }
 
@@ -656,7 +656,7 @@ impl<M: Memory> PageStore<M> {
 
     // --- directory ---------------------------------------------------------------------------
 
-    fn directory(&self) -> Region<'_, M> {
+    fn directory(&self) -> Region<'_, D> {
         Region::new(&self.directory)
     }
 
@@ -726,7 +726,7 @@ impl<M: Memory> Pages<'_, M> {
     }
 }
 
-impl<M: Memory> Allocator for PageStore<M> {
+impl<M: Memory, D: Memory> Allocator for PageStore<M, D> {
     type Request = ByteClass;
     type Extent = Extent;
     type Error = WriteError;
@@ -741,7 +741,7 @@ impl<M: Memory> Allocator for PageStore<M> {
 }
 
 #[cfg(test)]
-impl<M: Memory> PageStore<M> {
+impl<M: Memory, D: Memory> PageStore<M, D> {
     /// The allocated extents' indexes of chunk `page` of `class` (test invariant checks).
     pub(crate) fn allocated_in(&self, page: PageId, class: ByteClass, slots: Slots) -> Vec<u16> {
         match slots {

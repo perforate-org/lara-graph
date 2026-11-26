@@ -3,7 +3,7 @@
 
 #[cfg(doc)]
 use crate::graph::Graph;
-use crate::id::{Direction, EdgeRef, Halves, Label, NodeId, Position, ValueVersion};
+use crate::id::{Adjacency, EdgeRef, Halves, NodeId, Position, ValueVersion};
 use alloc::vec::Vec;
 
 /// An edge that compaction moved to a new position.
@@ -33,22 +33,19 @@ impl Move {
 
     /// The node the edge points to.
     #[must_use]
-    pub const fn target(&self) -> NodeId {
+    pub const fn node(&self) -> NodeId {
         self.target
     }
 
-    /// The moved half before and after the move, in `node`'s `(label, direction)` bucket: the
-    /// bucket [`Graph::compact`] was given. [`EdgeRef::is_canonical`] with [`Self::target`] tells
+    /// The moved half before and after the move, in `node`'s `adjacency` bucket: the
+    /// bucket [`Graph::compact`] was given. [`EdgeRef::is_canonical`] with [`Self::node`] tells
     /// whether keys held for the edge move with it.
     #[must_use]
-    pub const fn edge_refs(
-        &self,
-        node: NodeId,
-        (label, direction): (Label, Direction),
-    ) -> (EdgeRef, EdgeRef) {
+    pub const fn edge_refs(&self, node: NodeId, adjacency: Adjacency) -> (EdgeRef, EdgeRef) {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         (
-            EdgeRef::new(node, label, direction, self.from),
-            EdgeRef::new(node, label, direction, self.to),
+            EdgeRef::of(node, label, direction, self.from),
+            EdgeRef::of(node, label, direction, self.to),
         )
     }
 }
@@ -204,8 +201,8 @@ impl Sweep {
     }
 }
 
-/// One [`Graph::detach_step`]: the edges removed, both halves of each, with their values.
-pub type Detachment = Step<RemovedEdge>;
+/// One [`Graph::delete_step`]: the edges removed, both halves of each, with their values.
+pub type Deletion = Step<RemovedEdge>;
 
 /// What [`Graph::remove_edge`] did.
 #[derive(Clone, Debug, PartialEq, Eq)]

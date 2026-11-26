@@ -10,24 +10,24 @@ use crate::bucket::slots::{self, Span, Window};
 use crate::bucket::stored::Stored;
 use crate::edge::{Widths, visit_joined};
 use crate::graph::Graph;
-use crate::id::{Label, Neighbor, NodeId, Position};
+use crate::graph::GraphMemories;
+use crate::id::{EdgeLabel, Neighbor, NodeId, Position};
 use crate::input::Order;
 use crate::node::label_bucket_list::{self, LabelBucketList, Listed};
-use crate::store::memory::Memory;
 use crate::store::page_store::{PageId, Pages};
 use core::ops::ControlFlow;
 
 /// A batch read's view of the graph: its label bucket lists, its edge pages and its width table.
-pub(super) struct BatchView<'g, M: Memory> {
-    lists: Pages<'g, M>,
-    edges: Pages<'g, M>,
+pub(super) struct BatchView<'g, S: GraphMemories> {
+    lists: Pages<'g, S::LabelBucketListPages>,
+    edges: Pages<'g, S::EdgePages>,
     widths: &'g Widths,
 }
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// The view reads go through.
     #[inline]
-    pub(super) fn view(&self) -> BatchView<'_, M> {
+    pub(super) fn view(&self) -> BatchView<'_, S> {
         BatchView {
             lists: self.label_bucket_lists.pages(),
             edges: self.edge_view().pages(),
@@ -36,7 +36,7 @@ impl<M: Memory> Graph<M> {
     }
 }
 
-impl<M: Memory> BatchView<'_, M> {
+impl<S: GraphMemories> BatchView<'_, S> {
     /// The list entry of `list`'s bucket `key`, if it has one.
     #[inline]
     pub(super) fn lookup(
@@ -98,7 +98,7 @@ impl<M: Memory> BatchView<'_, M> {
     pub(super) fn visit_with_values<B>(
         &self,
         bucket: &LabelBucket,
-        label: Label,
+        label: EdgeLabel,
         order: Order,
         f: &mut impl FnMut(Neighbor, &[u8]) -> ControlFlow<B>,
     ) -> Option<B> {

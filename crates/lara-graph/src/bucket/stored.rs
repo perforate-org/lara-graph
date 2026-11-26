@@ -7,7 +7,7 @@
 //! or one of a label with wide values; never tiny: two inline slots leave no room for them), holds
 //! `Extended`: the extent of a 32-byte header in the edge store with the full slot descriptor, the
 //! value plane's root and width, and the target index's root (or a mark that it was dropped while
-//! the node detaches). Plain buckets pay nothing; an extended one costs one more 32-byte read,
+//! the node is deleted). Plain buckets pay nothing; an extended one costs one more 32-byte read,
 //! which a paged bucket's scan of at least a page of slots does not notice.
 //!
 //! # Extended entry
@@ -72,8 +72,8 @@ pub(crate) fn migration_record<M: Memory>(view: &Pages<'_, M>, header: Extent) -
 }
 
 /// Points `header` at `record`, or at none: what a new header starts with.
-pub(crate) fn set_migration_record<M: Memory>(
-    store: &PageStore<M>,
+pub(crate) fn set_migration_record<M: Memory, D: Memory>(
+    store: &PageStore<M, D>,
     header: Extent,
     record: Option<Extent>,
 ) {
@@ -185,7 +185,7 @@ impl LabelBucket {
     }
 
     /// Writes the header, if the bucket has one.
-    pub(crate) fn write_header<M: Memory>(&self, store: &PageStore<M>) {
+    pub(crate) fn write_header<M: Memory, D: Memory>(&self, store: &PageStore<M, D>) {
         let Some(header) = self.header else { return };
         let (plane, width, version) = self.values.map_or((Plane::Empty, 0, 0), |v| {
             (v.plane, v.width.get(), v.version.get())

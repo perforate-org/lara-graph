@@ -15,8 +15,8 @@ use core::fmt::Write as _;
 use core::ops::ControlFlow;
 
 use lara_graph::{
-    Direction, Graph, Label, Memories, Memory, MemoryRole, NewEdge, NodeId, Order, Placement,
-    Progress, Removal, VecMemory,
+    Adjacency, Direction, Edge, EdgeLabel, Graph, Memories, Memory, MemoryRole, NodeId, Order,
+    Placement, Progress, Removal, VecMemory,
 };
 
 type Failed = Box<dyn core::error::Error>;
@@ -108,7 +108,7 @@ impl Sized {
     fn new() -> Self {
         let memories: Vec<VecMemory> = MemoryRole::ALL.iter().map(|_| VecMemory::new()).collect();
         let shared = memories.clone();
-        let graph = Graph::new(Memories::from_fn(|role| {
+        let graph = Graph::format(Memories::from_fn(|role| {
             shared
                 .get(usize::from(role.index()))
                 .cloned()
@@ -122,14 +122,14 @@ impl Sized {
     }
 }
 
-type Edge = (NodeId, Label, NodeId);
+type Link = (NodeId, EdgeLabel, NodeId);
 
 fn add(
     g: &mut Graph<VecMemory>,
-    (from, label, to): Edge,
+    (from, label, to): Link,
     placement: Placement,
 ) -> Result<(), Failed> {
-    g.add_edge(NewEdge::directed(from, label, to, placement, &[]))?;
+    g.add_edge_with(Edge::directed(from, label, to), placement)?;
     Ok(())
 }
 
@@ -137,12 +137,12 @@ fn add(
 /// compacts each end's bucket once its holes reach its live edges.
 fn remove(
     g: &mut Graph<VecMemory>,
-    (from, label, to): Edge,
+    (from, label, to): Link,
     compact: Compaction,
 ) -> Result<(), Failed> {
     let half = g.visit_edges_between(
         from,
-        (label, Direction::Outgoing),
+        label.outgoing(),
         to,
         Order::Ascending,
         ControlFlow::Break,
@@ -162,7 +162,7 @@ fn remove(
         .into_iter()
         .filter(|(_, _, fill)| fill.holes() >= fill.live().max(1))
     {
-        while g.compact(v, (label, direction))?.progress() == Progress::Remaining {}
+        while g.compact(v, Adjacency::new(label, direction))?.progress() == Progress::Remaining {}
     }
     Ok(())
 }
@@ -171,9 +171,9 @@ fn remove(
 fn holes(g: &Graph<VecMemory>, labels: u16) -> Result<u64, Failed> {
     let mut sum = 0;
     for v in (0..NODES).map(NodeId::new) {
-        for label in (0..labels).map(Label::new) {
+        for label in (0..labels).map(EdgeLabel::new) {
             for direction in [Direction::Outgoing, Direction::Incoming] {
-                sum += u64::from(g.holes(v, (label, direction))?);
+                sum += u64::from(g.holes(v, Adjacency::new(label, direction))?);
             }
         }
     }
@@ -188,13 +188,13 @@ fn float(n: u64) -> f64 {
 fn run(policy: Policy) -> Result<(), Failed> {
     let mut sized = Sized::new();
     for _ in 0..NODES {
-        sized.graph.add_node()?;
+        sized.graph.add_node(&[])?;
     }
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
-    let next = |rng: &mut Rng| -> Result<Edge, Failed> {
+    let next = |rng: &mut Rng| -> Result<Link, Failed> {
         let node =
             |rng: &mut Rng| NodeId::new(u32::try_from(rng.below(u64::from(NODES))).unwrap_or(0));
-        let label = Label::new(u16::try_from(rng.below(u64::from(policy.labels)))?);
+        let label = EdgeLabel::new(u16::try_from(rng.below(u64::from(policy.labels)))?);
         Ok((node(rng), label, node(rng)))
     };
     let mut window = VecDeque::with_capacity(WINDOW);
@@ -231,7 +231,7 @@ fn run(policy: Policy) -> Result<(), Failed> {
     }
     let mut fresh = Sized::new();
     for _ in 0..NODES {
-        fresh.graph.add_node()?;
+        fresh.graph.add_node(&[])?;
     }
     for &edge in &window {
         add(&mut fresh.graph, edge, policy.placement)?;

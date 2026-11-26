@@ -7,7 +7,7 @@ use crate::{Bench, LABEL, graph, nodes};
 use alloc::collections::VecDeque;
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::ops::ControlFlow;
-use lara_graph::{Direction, NewEdge, NodeId, Order, Placement, Progress, Removal};
+use lara_graph::{Adjacency, Direction, Edge, NodeId, Order, Progress, Removal};
 
 const NODES: u32 = 8192;
 /// Live edges: degree 8.
@@ -68,13 +68,7 @@ impl Window {
     fn add(&mut self) {
         let (from, to) = self.rng.edge(&self.nodes);
         self.graph
-            .add_edge(NewEdge::directed(
-                from,
-                LABEL,
-                to,
-                Placement::ReuseHoles,
-                &[],
-            ))
+            .add_edge(Edge::directed(from, LABEL, to))
             .unwrap_or_else(|e| panic!("insert: {e}"));
         self.live.push_back((from, to));
     }
@@ -85,7 +79,7 @@ impl Window {
         let Some((from, to)) = self.live.pop_front() else {
             return;
         };
-        let out = (LABEL, Direction::Outgoing);
+        let out = LABEL.outgoing();
         let half = self
             .graph
             .visit_edges_between(from, out, to, Order::Ascending, ControlFlow::Break)
@@ -113,7 +107,7 @@ impl Window {
     fn compact(&mut self, v: NodeId, direction: Direction) {
         while self
             .graph
-            .compact(v, (LABEL, direction))
+            .compact(v, Adjacency::new(LABEL, direction))
             .unwrap_or_else(|e| panic!("compact: {e}"))
             .progress()
             == Progress::Remaining

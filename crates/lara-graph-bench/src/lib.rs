@@ -12,8 +12,7 @@ use core::hint::black_box;
 use ic_stable_structures::DefaultMemoryImpl;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use lara_graph::{
-    Direction, EdgeRef, Error, Graph, Halves, Label, Memories, Memory, NewEdge, NodeId, Placement,
-    Position, ReadBatch,
+    Edge, EdgeLabel, EdgeRef, Error, Graph, Halves, Memories, Memory, NodeId, Position, ReadBatch,
 };
 
 mod all_labels;
@@ -32,7 +31,7 @@ mod sorted;
 pub mod two_hop;
 mod values;
 
-const LABEL: Label = Label::new(2);
+const LABEL: EdgeLabel = EdgeLabel::new(2);
 
 /// The memory a canister gives a graph.
 type BenchMemory = VirtualMemory<DefaultMemoryImpl>;
@@ -49,7 +48,7 @@ fn graph() -> Bench {
 }
 
 fn node<M: Memory>(g: &mut Graph<M>) -> NodeId {
-    g.add_node().unwrap_or_else(|e| panic!("node: {e}"))
+    g.add_node(&[]).unwrap_or_else(|e| panic!("node: {e}"))
 }
 
 fn nodes<M: Memory>(g: &mut Graph<M>, n: u32) -> Vec<NodeId> {
@@ -62,14 +61,8 @@ fn last(edges: &[Halves]) -> Halves {
 }
 
 fn directed<M: Memory>(g: &mut Graph<M>, from: NodeId, to: NodeId) -> Halves {
-    g.add_edge(NewEdge::directed(
-        from,
-        LABEL,
-        to,
-        Placement::ReuseHoles,
-        &[],
-    ))
-    .unwrap_or_else(|e| panic!("insert: {e}"))
+    g.add_edge(Edge::directed(from, LABEL, to))
+        .unwrap_or_else(|e| panic!("insert: {e}"))
 }
 
 /// A hub with an edge to each of `degree` fresh leaves; returns the hub and the edges.
@@ -96,7 +89,7 @@ fn seed_parallel<M: Memory>(g: &mut Graph<M>, n: u32) -> (NodeId, Vec<EdgeRef>) 
 /// The out halves at `hub`'s first `n` positions.
 fn first_halves(hub: NodeId, n: u32) -> Vec<EdgeRef> {
     (0..n)
-        .map(|i| EdgeRef::new(hub, LABEL, Direction::Outgoing, Position::new(i)))
+        .map(|i| EdgeRef::new(hub, LABEL.outgoing(), Position::new(i)))
         .collect()
 }
 

@@ -35,7 +35,7 @@
 //! ```
 
 use crate::bucket::values::{self, PAGES_PER_WRITE, Plane, ROOT_BYTES};
-use crate::id::{Label, NodeId, Width};
+use crate::id::{NodeId, NodeLabel, Width};
 use crate::store::corrupt::corrupt;
 use crate::store::memory::{Memory, WriteError};
 use crate::store::page_store::{PageStore, Pages};
@@ -71,7 +71,7 @@ struct LabelCell {
 }
 
 impl LabelCell {
-    fn read<M: Memory>(view: &Pages<'_, M>, dir: Plane, label: Label) -> Self {
+    fn read<M: Memory>(view: &Pages<'_, M>, dir: Plane, label: NodeLabel) -> Self {
         let mut bytes = [0u8; LABEL_CELL];
         values::read(
             view,
@@ -94,10 +94,10 @@ impl LabelCell {
     }
 
     /// Writes the cell back with its chunk `chunk_no` now `chunk` and its count moved by one.
-    fn write<M: Memory>(
+    fn write<M: Memory, D: Memory>(
         self,
-        store: &mut PageStore<M>,
-        (dir, label): (Plane, Label),
+        store: &mut PageStore<M, D>,
+        (dir, label): (Plane, NodeLabel),
         (chunk_no, chunk, change): (u32, Chunk, Change),
     ) -> Result<Plane, WriteError> {
         let chunks = values::write(
@@ -132,10 +132,10 @@ fn split(node: NodeId) -> (u32, u16) {
 
 /// Adds `node` to `label`'s postings, within [`PAGES_PER_ADD`] reserved pages, and returns the
 /// directory's new root. `node` must not have `label` yet.
-pub(crate) fn add<M: Memory>(
-    store: &mut PageStore<M>,
+pub(crate) fn add<M: Memory, D: Memory>(
+    store: &mut PageStore<M, D>,
     dir: Plane,
-    label: Label,
+    label: NodeLabel,
     node: NodeId,
 ) -> Result<Plane, WriteError> {
     let (chunk_no, low) = split(node);
@@ -146,7 +146,12 @@ pub(crate) fn add<M: Memory>(
 
 /// Removes `node` from `label`'s postings, in place: the directory's root does not change.
 /// `node` must have `label`. Never allocates.
-pub(crate) fn remove<M: Memory>(store: &mut PageStore<M>, dir: Plane, label: Label, node: NodeId) {
+pub(crate) fn remove<M: Memory, D: Memory>(
+    store: &mut PageStore<M, D>,
+    dir: Plane,
+    label: NodeLabel,
+    node: NodeId,
+) {
     let (chunk_no, low) = split(node);
     let cell = LabelCell::read(&store.pages(), dir, label);
     let next = Chunk::read(&store.pages(), cell.chunks, chunk_no).removed(store, low);
@@ -161,7 +166,7 @@ pub(crate) fn remove<M: Memory>(store: &mut PageStore<M>, dir: Plane, label: Lab
 }
 
 /// How many nodes have `label`.
-pub(crate) fn count<M: Memory>(view: &Pages<'_, M>, dir: Plane, label: Label) -> u32 {
+pub(crate) fn count<M: Memory>(view: &Pages<'_, M>, dir: Plane, label: NodeLabel) -> u32 {
     LabelCell::read(view, dir, label).count
 }
 
@@ -170,7 +175,7 @@ pub(crate) fn count<M: Memory>(view: &Pages<'_, M>, dir: Plane, label: Label) ->
 pub(crate) fn visit<M: Memory, B>(
     view: &Pages<'_, M>,
     dir: Plane,
-    (label, from, nodes): (Label, u32, u32),
+    (label, from, nodes): (NodeLabel, u32, u32),
     f: &mut impl FnMut(NodeId) -> ControlFlow<B>,
 ) -> Option<B> {
     let cell = LabelCell::read(view, dir, label);
@@ -201,7 +206,7 @@ pub(crate) fn extents<M: Memory>(view: &Pages<'_, M>, dir: Plane, nodes: u32) ->
         return out;
     }
     for label in 0..=u16::MAX {
-        let cell = LabelCell::read(view, dir, Label::new(label));
+        let cell = LabelCell::read(view, dir, NodeLabel::new(label));
         if cell.chunks == Plane::Empty {
             continue;
         }
@@ -215,7 +220,7 @@ pub(crate) fn extents<M: Memory>(view: &Pages<'_, M>, dir: Plane, nodes: u32) ->
 
 /// Every label with postings and how many nodes it counts (test invariant checks).
 #[cfg(test)]
-pub(crate) fn labels<M: Memory>(view: &Pages<'_, M>, dir: Plane) -> Vec<(Label, u32)> {
+pub(crate) fn labels<M: Memory>(view: &Pages<'_, M>, dir: Plane) -> Vec<(NodeLabel, u32)> {
     let mut out = Vec::new();
     values::visit(
         view,
@@ -227,7 +232,7 @@ pub(crate) fn labels<M: Memory>(view: &Pages<'_, M>, dir: Plane) -> Vec<(Label, 
                 let [.., c0, c1, c2, c3] = *raw;
                 let count = u32::from_le_bytes([c0, c1, c2, c3]);
                 if count > 0 {
-                    out.push((Label::new(u16::try_from(label).unwrap_or(0)), count));
+                    out.push((NodeLabel::new(u16::try_from(label).unwrap_or(0)), count));
                 }
             }
             ControlFlow::<()>::Continue(())

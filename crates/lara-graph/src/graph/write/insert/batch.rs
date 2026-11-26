@@ -6,15 +6,15 @@ use crate::bucket::LabelBucketKey;
 use crate::edge::HoleCursor;
 use crate::error::{BatchError, Error};
 use crate::graph::Graph;
+use crate::graph::GraphMemories;
 use crate::id::{EdgeRef, Halves, NodeId};
-use crate::input::{EdgeKind, NewEdge};
-use crate::store::memory::Memory;
+use crate::input::{Edge, EdgeKind, Placement};
 use alloc::vec::Vec;
 
 /// Whether a target repeats near the start of the batch. The probe is capped so a long unique
 /// fan-out does not pay for a set it will not use; a repeated run of edges is visible early.
 #[inline(never)]
-fn repeated_targets(edges: &[NewEdge<'_>]) -> bool {
+fn repeated_targets(edges: &[Edge<'_>]) -> bool {
     let sample = edges.get(..64).unwrap_or(edges);
     let wanted = sample.len().saturating_mul(2).clamp(16, 128);
     let size = wanted.next_power_of_two();
@@ -49,8 +49,8 @@ fn seen_before(slots: &mut [u32], mask: usize, node: NodeId) -> bool {
     }
 }
 
-impl<M: Memory> Graph<M> {
-    /// Adds every edge in `edges`, in order. Each edge is all-or-none like [`Self::add_edge`],
+impl<S: GraphMemories> Graph<S> {
+    /// Adds every edge in `edges`, in order, placed as [`Self::add_edge`] places one. Each edge is all-or-none like [`Self::add_edge`],
     /// but the batch is not atomic: an error leaves the edges before it inserted.
     ///
     /// All endpoints are checked and every value length is validated before the first write.
@@ -60,53 +60,76 @@ impl<M: Memory> Graph<M> {
     /// # Errors
     ///
     /// As [`Self::add_edge`], for the edge that fails.
-    pub fn add_edges(&mut self, edges: &[NewEdge<'_>]) -> Result<Vec<Halves>, BatchError> {
-        add_edges(self, edges)
+    pub fn add_edges(&mut self, edges: &[Edge<'_>]) -> Result<Vec<Halves>, BatchError> {
+        add_edges_reusing_holes(self, edges)
+    }
+
+    /// [`Self::add_edges`], placing each half by `placement`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::add_edge`], for the edge that fails.
+    pub fn add_edges_with(
+        &mut self,
+        edges: &[Edge<'_>],
+        placement: Placement,
+    ) -> Result<Vec<Halves>, BatchError> {
+        add_edges(self, edges, placement)
     }
 }
 
+/// [`Graph::add_edges`]: [`add_edges`] by the default placement.
+fn add_edges_reusing_holes<S: GraphMemories>(
+    graph: &mut Graph<S>,
+    edges: &[Edge<'_>],
+) -> Result<Vec<Halves>, BatchError> {
+    add_edges(graph, edges, Placement::ReuseHoles)
+}
+
 /// [`Graph::add_edges`]: checks every edge, then takes the path that suits the batch.
-fn add_edges<M: Memory>(
-    graph: &mut Graph<M>,
-    edges: &[NewEdge<'_>],
+fn add_edges<S: GraphMemories>(
+    graph: &mut Graph<S>,
+    edges: &[Edge<'_>],
+    placement: Placement,
 ) -> Result<Vec<Halves>, BatchError> {
     for (index, edge) in edges.iter().enumerate() {
         graph
             .check(edge.from())
             .and_then(|()| graph.check(edge.to()))
-            .and_then(|()| graph.value_schema(edge.label(), edge.value()))
+            .and_then(|()| graph.value_schema(edge.label(), edge.bytes()))
             .map_err(|error| BatchError::unchanged(index, error))?;
     }
     let all_directed = edges.iter().all(|edge| edge.kind() == EdgeKind::Directed);
     if all_directed && repeated_targets(edges) {
-        return add_repeated(graph, edges);
+        return add_repeated(graph, edges, placement);
     }
     if edges.iter().all(|edge| edge.kind() == EdgeKind::Undirected) {
-        return add_undirected(graph, edges);
+        return add_undirected(graph, edges, placement);
     }
     if !all_directed {
-        return add_mixed(graph, edges);
+        return add_mixed(graph, edges, placement);
     }
-    add_directed(graph, edges)
+    add_directed(graph, edges, placement)
 }
 
 /// A directed batch with unique targets: the source's last place, and a cursor into its holes.
-fn add_directed<M: Memory>(
-    graph: &mut Graph<M>,
-    edges: &[NewEdge<'_>],
+fn add_directed<S: GraphMemories>(
+    graph: &mut Graph<S>,
+    edges: &[Edge<'_>],
+    placement: Placement,
 ) -> Result<Vec<Halves>, BatchError> {
     let mut out = Vec::with_capacity(edges.len());
     let mut cache: Option<(NodeId, LabelBucketKey, Place)> = None;
     let mut holes = HoleCursor::default();
     for (index, edge) in edges.iter().enumerate() {
-        let [from, to] = Half::directed(edge);
+        let [from, to] = Half::directed(edge, placement);
         let cached = cache
             .filter(|(last_node, last_key, _)| *last_node == edge.from() && *last_key == from.key)
             .map(|(_, _, place)| place);
         let (halves, updated) = graph
             .insert_halves_with(
                 [from, to],
-                edge.value(),
+                edge.bytes(),
                 &[cached, None],
                 Some((0, &mut holes)),
             )
@@ -124,23 +147,27 @@ fn add_directed<M: Memory>(
 /// A batch with both edge kinds: every half is cached by its endpoint, independent of the
 /// half's role in a directed or undirected edge.
 #[inline(never)]
-fn add_mixed<M: Memory>(
-    graph: &mut Graph<M>,
-    edges: &[NewEdge<'_>],
+fn add_mixed<S: GraphMemories>(
+    graph: &mut Graph<S>,
+    edges: &[Edge<'_>],
+    placement: Placement,
 ) -> Result<Vec<Halves>, BatchError> {
     let mut out = Vec::with_capacity(edges.len());
     let mut cache = PlaceCache::<MIXED_CACHE>::EMPTY;
     for (index, edge) in edges.iter().enumerate() {
         let halves = match edge.kind() {
-            EdgeKind::Directed => {
-                insert_remembered(graph, Half::directed(edge), edge.value(), &mut cache)
-                    .map(|[first, second]| Halves::of(first, second))
-            }
-            EdgeKind::Undirected => match Half::undirected(edge) {
-                (at_high, None) => insert_remembered(graph, [at_high], edge.value(), &mut cache)
+            EdgeKind::Directed => insert_remembered(
+                graph,
+                Half::directed(edge, placement),
+                edge.bytes(),
+                &mut cache,
+            )
+            .map(|[first, second]| Halves::of(first, second)),
+            EdgeKind::Undirected => match Half::undirected(edge, placement) {
+                (at_high, None) => insert_remembered(graph, [at_high], edge.bytes(), &mut cache)
                     .map(|[half]| Halves::new(half, half)),
                 (at_high, Some(at_low)) => {
-                    insert_remembered(graph, [at_high, at_low], edge.value(), &mut cache)
+                    insert_remembered(graph, [at_high, at_low], edge.bytes(), &mut cache)
                         .map(|[first, second]| Halves::of(first, second))
                 }
             },
@@ -151,8 +178,8 @@ fn add_mixed<M: Memory>(
 }
 
 /// Inserts `halves` with the places `cache` remembers, then remembers their new places.
-fn insert_remembered<M: Memory, const N: usize>(
-    graph: &mut Graph<M>,
+fn insert_remembered<S: GraphMemories, const N: usize>(
+    graph: &mut Graph<S>,
     halves: [Half; N],
     value: &[u8],
     cache: &mut PlaceCache<MIXED_CACHE>,
@@ -164,20 +191,21 @@ fn insert_remembered<M: Memory, const N: usize>(
 }
 
 /// Undirected batches cache both endpoints by `(node, key)`.
-fn add_undirected<M: Memory>(
-    graph: &mut Graph<M>,
-    edges: &[NewEdge<'_>],
+fn add_undirected<S: GraphMemories>(
+    graph: &mut Graph<S>,
+    edges: &[Edge<'_>],
+    placement: Placement,
 ) -> Result<Vec<Halves>, BatchError> {
     let mut out = Vec::with_capacity(edges.len());
     let mut cache = EndCache::EMPTY;
     for (index, edge) in edges.iter().enumerate() {
-        let (at_high, at_low) = Half::undirected(edge);
+        let (at_high, at_low) = Half::undirected(edge, placement);
         let ends = (at_high.node, at_high.target);
         let key = at_high.key;
         let [cache_high, cache_low] = cache.places(ends, key);
         let Some(at_low) = at_low else {
             let (halves, updated) = graph
-                .insert_halves_with([at_high], edge.value(), &[cache_high], None)
+                .insert_halves_with([at_high], edge.bytes(), &[cache_high], None)
                 .map_err(|error| BatchError::after_prefix(index, error))?;
             let [half] = halves;
             out.push(Halves::new(half, half));
@@ -188,7 +216,7 @@ fn add_undirected<M: Memory>(
         let (halves, updated) = graph
             .insert_halves_with(
                 [at_high, at_low],
-                edge.value(),
+                edge.bytes(),
                 &[cache_high, cache_low],
                 None,
             )
@@ -203,17 +231,18 @@ fn add_undirected<M: Memory>(
 /// [`Graph::add_edges`] with both endpoint places cached. Targets that repeat within the batch
 /// make the target-side reads worth keeping.
 #[inline(never)]
-fn add_repeated<M: Memory>(
-    graph: &mut Graph<M>,
-    edges: &[NewEdge<'_>],
+fn add_repeated<S: GraphMemories>(
+    graph: &mut Graph<S>,
+    edges: &[Edge<'_>],
+    placement: Placement,
 ) -> Result<Vec<Halves>, BatchError> {
     let mut out = Vec::with_capacity(edges.len());
     let mut cache = EdgeCache::EMPTY;
     for (index, edge) in edges.iter().enumerate() {
-        let halves = Half::directed(edge);
+        let halves = Half::directed(edge, placement);
         let cached = cache.places(halves);
         let (inserted, updated) = graph
-            .insert_halves_with(halves, edge.value(), &cached, None)
+            .insert_halves_with(halves, edge.bytes(), &cached, None)
             .map_err(|error| BatchError::after_prefix(index, error))?;
         let [first, second] = inserted;
         out.push(Halves::of(first, second));

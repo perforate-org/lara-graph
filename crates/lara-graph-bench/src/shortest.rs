@@ -10,10 +10,10 @@ use canbench_rs::{BenchResult, bench, bench_fn};
 use core::cmp::Reverse;
 use core::hint::black_box;
 use core::ops::ControlFlow;
-use lara_graph::{Direction, Graph, Memory, NewEdge, NodeId, Order, Placement, Width};
+use lara_graph::{Edge, Graph, Memory, NodeId, Order, Placement, Width};
 
 const SIDE: u32 = 32;
-const OUT: (lara_graph::Label, Direction) = (LABEL, Direction::Outgoing);
+const OUT: lara_graph::Adjacency = LABEL.outgoing();
 
 /// A `SIDE` × `SIDE` grid with an edge each way between neighbours, weighted 1..=100 by a fixed
 /// sequence; returns the nodes in row-major order.
@@ -47,7 +47,7 @@ fn grid<M: Memory>(g: &mut Graph<M>) -> Vec<NodeId> {
         .collect();
     for (from, to) in links {
         let w = weight().to_le_bytes();
-        g.add_edge(NewEdge::directed(from, LABEL, to, Placement::Append, &w))
+        g.add_edge_with(Edge::directed(from, LABEL, to).value(&w), Placement::Append)
             .unwrap_or_else(|e| panic!("insert: {e}"));
     }
     all
@@ -73,16 +73,16 @@ fn dijkstra<M: Memory>(g: &Graph<M>, all: &[NodeId], source: NodeId) -> u64 {
         if dist.get(slot(v)).is_some_and(|&best| d > best) {
             continue;
         }
-        g.visit_neighbors_with_values(v, (OUT.0, OUT.1), Order::Ascending, |e, value| {
+        g.visit_neighbors_with_values(v, OUT, Order::Ascending, |e, value| {
             let w = value
                 .first_chunk::<8>()
                 .map_or(u64::MAX, |bytes| u64::from_le_bytes(*bytes));
             let next = d.saturating_add(w);
-            if let Some(best) = dist.get_mut(slot(e.target()))
+            if let Some(best) = dist.get_mut(slot(e.node()))
                 && next < *best
             {
                 *best = next;
-                queue.push(Reverse((next, e.target().index())));
+                queue.push(Reverse((next, e.node().index())));
             }
             ControlFlow::<()>::Continue(())
         })
@@ -101,12 +101,12 @@ fn bfs<M: Memory>(g: &Graph<M>, all: &[NodeId], source: NodeId) -> u32 {
     let mut reached = 0;
     while let Some(v) = queue.pop_front() {
         reached += 1;
-        g.visit_neighbors(v, (OUT.0, OUT.1), Order::Ascending, |e| {
-            if let Some(s) = seen.get_mut(slot(e.target()))
+        g.visit_neighbors(v, OUT, Order::Ascending, |e| {
+            if let Some(s) = seen.get_mut(slot(e.node()))
                 && !*s
             {
                 *s = true;
-                queue.push_back(e.target());
+                queue.push_back(e.node());
             }
             ControlFlow::<()>::Continue(())
         })

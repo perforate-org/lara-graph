@@ -6,7 +6,8 @@
 
 use core::ops::ControlFlow;
 use lara_graph::{
-    Direction, Graph, Label, Memory, NewEdge, NodeId, NodeState, Order, Placement, ReadBatch,
+    Adjacency, Direction, Edge, EdgeLabel, Graph, Memory, NodeId, NodeState, Order, Placement,
+    ReadBatch,
 };
 
 /// Satellites around the hub: the first hop.
@@ -15,7 +16,7 @@ pub const SATELLITES: u32 = 1024;
 pub const FANOUT: u32 = 8;
 /// Nodes the scattered layout draws its satellites from.
 const POOL: u32 = 65536;
-const LABEL: Label = Label::new(2);
+const LABEL: EdgeLabel = EdgeLabel::new(2);
 
 /// Where the second hop's data lands relative to the order the traversal reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,12 +65,17 @@ impl Rng {
     }
 }
 
+/// The bench label's edges in `direction`.
+const fn adjacency(direction: Direction) -> Adjacency {
+    Adjacency::new(LABEL, direction)
+}
+
 fn node<M: Memory>(g: &mut Graph<M>) -> NodeId {
-    g.add_node().unwrap_or_else(|e| panic!("node: {e}"))
+    g.add_node(&[]).unwrap_or_else(|e| panic!("node: {e}"))
 }
 
 fn edge<M: Memory>(g: &mut Graph<M>, from: NodeId, to: NodeId) {
-    g.add_edge(NewEdge::directed(from, LABEL, to, Placement::Append, &[]))
+    g.add_edge_with(Edge::directed(from, LABEL, to), Placement::Append)
         .unwrap_or_else(|e| panic!("insert: {e}"));
 }
 
@@ -115,16 +121,11 @@ pub fn build<M: Memory>(g: &mut Graph<M>, layout: Layout) -> NodeId {
 /// If `hub` is not a node of `g`.
 pub fn visit<M: Memory>(g: &Graph<M>, hub: NodeId) -> u64 {
     let mut seen = 0u64;
-    let first = g.visit_neighbors(hub, (LABEL, Direction::Outgoing), Order::Ascending, |e| {
-        let second = g.visit_neighbors(
-            e.target(),
-            (LABEL, Direction::Outgoing),
-            Order::Ascending,
-            |_| {
-                seen += 1;
-                ControlFlow::<()>::Continue(())
-            },
-        );
+    let first = g.visit_neighbors(hub, LABEL.outgoing(), Order::Ascending, |e| {
+        let second = g.visit_neighbors(e.node(), LABEL.outgoing(), Order::Ascending, |_| {
+            seen += 1;
+            ControlFlow::<()>::Continue(())
+        });
         second.unwrap_or_else(|err| panic!("second hop: {err}"));
         ControlFlow::<()>::Continue(())
     });
@@ -139,8 +140,8 @@ pub fn visit<M: Memory>(g: &Graph<M>, hub: NodeId) -> u64 {
 /// If `hub` is not a node of `g`.
 pub fn satellites<M: Memory>(g: &Graph<M>, hub: NodeId) -> Vec<NodeId> {
     let mut out = Vec::new();
-    g.visit_neighbors(hub, (LABEL, Direction::Outgoing), Order::Ascending, |e| {
-        out.push(e.target());
+    g.visit_neighbors(hub, LABEL.outgoing(), Order::Ascending, |e| {
+        out.push(e.node());
         ControlFlow::<()>::Continue(())
     })
     .unwrap_or_else(|err| panic!("satellites: {err}"));
@@ -154,7 +155,7 @@ pub fn satellites<M: Memory>(g: &Graph<M>, hub: NodeId) -> Vec<NodeId> {
 /// If `v` is not a node of `g`.
 pub fn visit_one<M: Memory>(g: &Graph<M>, v: NodeId, direction: Direction) -> u64 {
     let mut seen = 0u64;
-    g.visit_neighbors(v, (LABEL, direction), Order::Ascending, |_| {
+    g.visit_neighbors(v, adjacency(direction), Order::Ascending, |_| {
         seen += 1;
         ControlFlow::<()>::Continue(())
     })
@@ -168,7 +169,7 @@ pub fn visit_one<M: Memory>(g: &Graph<M>, v: NodeId, direction: Direction) -> u6
 ///
 /// If `v` is not a node of `g`.
 pub fn degree<M: Memory>(g: &Graph<M>, v: NodeId, direction: Direction) -> u32 {
-    g.degree(v, (LABEL, direction))
+    g.degree(v, adjacency(direction))
         .unwrap_or_else(|err| panic!("degree: {err}"))
 }
 
@@ -181,7 +182,7 @@ pub fn visit_many<M: Memory>(g: &Graph<M>, nodes: &[NodeId], direction: Directio
     let mut seen = 0u64;
     let mut batch = g.read_batch();
     batch
-        .visit_neighbors_each(nodes, (LABEL, direction), Order::Ascending, |_, _| {
+        .visit_neighbors_each(nodes, adjacency(direction), Order::Ascending, |_, _| {
             seen += 1;
             ControlFlow::<()>::Continue(())
         })
@@ -201,7 +202,7 @@ pub fn visit_many_batch<M: Memory>(
 ) -> u64 {
     let mut seen = 0u64;
     batch
-        .visit_neighbors_each(nodes, (LABEL, direction), Order::Ascending, |_, _| {
+        .visit_neighbors_each(nodes, adjacency(direction), Order::Ascending, |_, _| {
             seen += 1;
             ControlFlow::<()>::Continue(())
         })
@@ -218,7 +219,7 @@ pub fn degree_many<M: Memory>(g: &Graph<M>, nodes: &[NodeId], direction: Directi
     let mut batch = g.read_batch();
     let mut degrees = Vec::new();
     batch
-        .degree_each(nodes, (LABEL, direction), &mut degrees)
+        .degree_each(nodes, adjacency(direction), &mut degrees)
         .unwrap_or_else(|err| panic!("degree batch: {err}"));
     degrees.into_iter().map(u64::from).sum()
 }

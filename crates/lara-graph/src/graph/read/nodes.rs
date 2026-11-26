@@ -4,13 +4,13 @@
 use crate::bucket::LabelBucket;
 use crate::error::Error;
 use crate::graph::Graph;
-use crate::id::{Direction, Label, NodeId, NodeState};
+use crate::graph::GraphMemories;
+use crate::id::{Direction, EdgeLabel, NodeId, NodeState};
 use crate::node::label_bucket_list;
-use crate::store::memory::Memory;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// Number of local nodes; ids are `0..node_count`. Proxies are counted apart
     /// ([`Self::proxy_count`]).
     #[must_use]
@@ -24,7 +24,7 @@ impl<M: Memory> Graph<M> {
         self.nodes.proxy_count()
     }
 
-    /// Whether `v` is live, being detached or deleted.
+    /// Whether `v` is live, being deleted or deleted.
     ///
     /// # Errors
     ///
@@ -43,7 +43,7 @@ impl<M: Memory> Graph<M> {
         &self,
         v: NodeId,
         direction: Direction,
-        out: &mut Vec<Label>,
+        out: &mut Vec<EdgeLabel>,
     ) -> Result<(), Error> {
         let Some(list) = self.label_bucket_list(v)? else {
             out.clear();

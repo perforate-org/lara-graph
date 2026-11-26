@@ -6,11 +6,11 @@ use super::*;
 fn labels_of<M: Memory>(g: &Graph<M>, x: NodeId) -> Vec<u16> {
     let mut out = Vec::new();
     g.node_labels(x, &mut out).unwrap();
-    out.into_iter().map(Label::get).collect()
+    out.into_iter().map(NodeLabel::get).collect()
 }
 
-fn set(raw: &[u16]) -> Vec<Label> {
-    raw.iter().copied().map(l).collect()
+fn set(raw: &[u16]) -> Vec<NodeLabel> {
+    raw.iter().copied().map(nl).collect()
 }
 
 /// Sets of zero to many labels, given unsorted with repeats, read back sorted and distinct; a
@@ -40,7 +40,7 @@ fn node_labels_hold_sets_of_any_size() {
         assert_eq!(labels_of(&g, x), want, "node {i}");
         for probe in [0, 1, 2, 3, 5, 7, 9, 12, 300, 40_000, u16::MAX, 8] {
             assert_eq!(
-                g.has_node_label(x, l(probe)).unwrap(),
+                g.has_node_label(x, nl(probe)).unwrap(),
                 want.contains(&probe)
             );
         }
@@ -53,7 +53,7 @@ fn node_labels_hold_sets_of_any_size() {
     assert_eq!(labels_of(&g, v(1)), [1, 2, 3, 4]);
     // Edges and new nodes leave labels alone, and labels survive a reopen.
     insert(&mut g, v(1), l(0), v(2));
-    g.add_nodes(NonZeroU32::new(20).unwrap()).unwrap();
+    g.add_nodes(NonZeroU32::new(20).unwrap(), &[]).unwrap();
     drop(g);
     let g = backing.open();
     assert_eq!(labels_of(&g, v(1)), [1, 2, 3, 4]);
@@ -68,16 +68,16 @@ fn node_labels_hold_sets_of_any_size() {
 fn node_labels_take_any_set_of_labels() {
     let backing = Backing::default();
     let mut g = backing.create(2);
-    assert_eq!(g.has_node_label(v(9), l(0)), Err(Error::UnknownNode(v(9))));
+    assert_eq!(g.has_node_label(v(9), nl(0)), Err(Error::UnknownNode(v(9))));
     assert_eq!(g.set_node_labels(v(9), &[]), Err(Error::UnknownNode(v(9))));
-    let every: Vec<Label> = (0..=u16::MAX).rev().map(l).collect();
-    let evens: Vec<Label> = (0..=u16::MAX).step_by(2).map(l).collect();
+    let every: Vec<NodeLabel> = (0..=u16::MAX).rev().map(nl).collect();
+    let evens: Vec<NodeLabel> = (0..=u16::MAX).step_by(2).map(nl).collect();
     for set in [
-        (0..2047).map(l).collect::<Vec<_>>(),
-        (0..2048).map(l).collect(),
+        (0..2047).map(nl).collect::<Vec<_>>(),
+        (0..2048).map(nl).collect(),
         every.clone(),
         evens.clone(),
-        (100..103).map(l).collect(),
+        (100..103).map(nl).collect(),
     ] {
         g.set_node_labels(v(0), &set).unwrap();
         check(&g);
@@ -86,7 +86,7 @@ fn node_labels_take_any_set_of_labels() {
         assert_eq!(labels_of(&g, v(0)), want);
         for probe in [0, 1, 2046, 2047, 32_767, 32_768, 65_534, u16::MAX] {
             assert_eq!(
-                g.has_node_label(v(0), l(probe)).unwrap(),
+                g.has_node_label(v(0), nl(probe)).unwrap(),
                 want.binary_search(&probe).is_ok()
             );
         }
@@ -108,8 +108,8 @@ fn node_labels_survive_bulk_load_and_go_with_deletion() {
             .collect();
         g.set_node_labels(v(i), &set(&raw)).unwrap();
     }
-    let edges: Vec<NewEdge<'_>> = (0..9)
-        .map(|i| NewEdge::directed(v(i), l(0), v(i + 1), Placement::Append, &[]))
+    let edges: Vec<Edge<'_>> = (0..9)
+        .map(|i| Edge::directed(v(i), l(0), v(i + 1)))
         .collect();
     g.bulk_load(&edges).unwrap();
     for i in 0..10 {
@@ -119,8 +119,8 @@ fn node_labels_survive_bulk_load_and_go_with_deletion() {
         assert_eq!(labels_of(&g, v(i)), want, "node {i}");
     }
     check(&g);
-    g.detach(v(3)).unwrap();
-    while g.detach_step(v(3), NonZeroU32::MIN).unwrap().progress() == Progress::Remaining {}
+    g.begin_delete(v(3)).unwrap();
+    while g.delete_step(v(3), NonZeroU32::MIN).unwrap().progress() == Progress::Remaining {}
     check(&g);
     assert_eq!(labels_of(&g, v(3)), Vec::<u16>::new());
     assert_eq!(
@@ -135,10 +135,10 @@ fn node_labels_survive_bulk_load_and_go_with_deletion() {
 fn nodes_with_a_label_come_back_in_id_order() {
     let backing = Backing::default();
     let mut g = backing.create(0);
-    g.add_nodes(NonZeroU32::new(70_000).unwrap()).unwrap();
+    g.add_nodes(NonZeroU32::new(70_000).unwrap(), &[]).unwrap();
     let nodes_with = |g: &Graph<VecMemory>, label: u16, after: Option<NodeId>| {
         let mut out = Vec::new();
-        g.visit_nodes_with_label(l(label), after, |x| {
+        g.visit_nodes_with_label(nl(label), after, |x| {
             out.push(x.index());
             ControlFlow::<()>::Continue(())
         });
@@ -166,7 +166,7 @@ fn nodes_with_a_label_come_back_in_id_order() {
     assert_eq!(nodes_with(&g, 1, None), want1);
     assert_eq!(nodes_with(&g, 2, None), want2);
     assert_eq!(
-        g.node_label_count(l(1)),
+        g.node_label_count(nl(1)),
         u32::try_from(want1.len()).unwrap()
     );
     assert_eq!(nodes_with(&g, 3, None), Vec::<u32>::new());
@@ -174,7 +174,7 @@ fn nodes_with_a_label_come_back_in_id_order() {
     assert_eq!(nodes_with(&g, 1, Some(v(65_535))), resumed);
     // A break stops the walk at once.
     let mut seen = 0;
-    let stopped = g.visit_nodes_with_label(l(1), None, |_| {
+    let stopped = g.visit_nodes_with_label(nl(1), None, |_| {
         seen += 1;
         if seen == 5 {
             ControlFlow::Break(seen)
@@ -190,7 +190,7 @@ fn nodes_with_a_label_come_back_in_id_order() {
     }
     check(&g);
     assert_eq!(nodes_with(&g, 1, None), Vec::<u32>::new());
-    assert_eq!(g.node_label_count(l(1)), 0);
+    assert_eq!(g.node_label_count(nl(1)), 0);
     assert_eq!(nodes_with(&g, 2, None), want2);
 }
 
@@ -210,12 +210,12 @@ fn node_labels_that_run_out_of_memory_change_nothing() {
     while capacity - g.label_bucket_lists.minted() > 26 {
         held.push(g.label_bucket_lists.allocate(ByteClass::PAGE).unwrap());
     }
-    let many: Vec<Label> = (0..6000).map(l).collect();
+    let many: Vec<NodeLabel> = (0..6000).map(nl).collect();
     let error = g.set_node_labels(v(0), &many);
     assert!(matches!(error, Err(Error::OutOfMemory(_))), "{error:?}");
     assert_eq!(labels_of(&g, v(0)), [1, 2, 3]);
-    assert_eq!(g.node_label_count(l(2)), 2);
-    assert_eq!(g.node_label_count(l(0)), 0);
+    assert_eq!(g.node_label_count(nl(2)), 2);
+    assert_eq!(g.node_label_count(nl(0)), 0);
     for extent in held {
         g.label_bucket_lists.release(extent);
     }
@@ -258,11 +258,11 @@ fn batched_label_reads_agree_with_single_reads() {
         for label in [0, 7, 14, 21, 1000] {
             let mut has = Vec::new();
             batch
-                .has_node_label_each(&nodes, l(label), &mut has)
+                .has_node_label_each(&nodes, nl(label), &mut has)
                 .unwrap();
             let single: Vec<bool> = nodes
                 .iter()
-                .map(|&x| g.has_node_label(x, l(label)).unwrap())
+                .map(|&x| g.has_node_label(x, nl(label)).unwrap())
                 .collect();
             assert_eq!(has, single, "label {label}");
         }
@@ -270,11 +270,70 @@ fn batched_label_reads_agree_with_single_reads() {
     let mut batch = g.read_batch();
     let mut has = Vec::new();
     assert_eq!(
-        batch.has_node_label_each(&[v(0), v(99)], l(0), &mut has),
+        batch.has_node_label_each(&[v(0), v(99)], nl(0), &mut has),
         Err(Error::UnknownNode(v(99)))
     );
     assert_eq!(
         batch.node_labels_each(&[v(1), v(1)], |_, _| ControlFlow::Break(7)),
         Ok(Some(7))
     );
+}
+
+#[test]
+fn nodes_get_their_labels_when_added() {
+    let backing = Backing::default();
+    let mut g = backing.create(0);
+    let a = g.add_node(&set(&[5, 3, 5])).unwrap();
+    assert_eq!(labels_of(&g, a), [3, 5], "sorted, repeats once");
+    // Five more, past the cell: each with the same four labels.
+    let many = g
+        .add_nodes(NonZeroU32::new(5).unwrap(), &set(&[9, 1, 4, 2]))
+        .unwrap();
+    assert_eq!(
+        (many.first(), many.last(), many.len().get()),
+        (v(1), v(5), 5)
+    );
+    assert!(many.contains(v(3)) && !many.contains(v(0)) && !many.contains(v(6)));
+    assert_eq!(
+        many.into_iter().collect::<Vec<_>>(),
+        (1..6).map(v).collect::<Vec<_>>()
+    );
+    for x in many {
+        assert_eq!(labels_of(&g, x), [1, 2, 4, 9], "node {x:?}");
+    }
+    let mut with = Vec::new();
+    g.visit_nodes_with_label(nl(4), None, |x| {
+        with.push(x);
+        ControlFlow::<()>::Continue(())
+    });
+    assert_eq!(with, (1..6).map(v).collect::<Vec<_>>());
+    assert_eq!(g.node_label_count(nl(5)), 1);
+    check(&g);
+    let g = backing.open();
+    assert_eq!(labels_of(&g, v(4)), [1, 2, 4, 9], "after a reopen");
+}
+
+#[test]
+fn a_label_is_added_or_removed_alone() {
+    let backing = Backing::default();
+    let mut g = backing.create(0);
+    let a = g.add_node(&set(&[7])).unwrap();
+    assert_eq!(g.add_node_label(a, nl(3)), Ok(true));
+    assert_eq!(g.add_node_label(a, nl(3)), Ok(false), "already there");
+    assert_eq!(labels_of(&g, a), [3, 7]);
+    // Past the cell's two labels, and back.
+    assert_eq!(g.add_node_label(a, nl(1)), Ok(true));
+    assert_eq!(labels_of(&g, a), [1, 3, 7]);
+    assert_eq!(g.remove_node_label(a, nl(7)), Ok(true));
+    assert_eq!(g.remove_node_label(a, nl(7)), Ok(false), "already gone");
+    assert_eq!(labels_of(&g, a), [1, 3]);
+    assert_eq!(g.node_label_count(nl(7)), 0);
+    assert_eq!(g.node_label_count(nl(1)), 1);
+    let proxy = g.add_proxy().unwrap();
+    assert_eq!(g.add_node_label(proxy, nl(1)), Err(Error::Proxy(proxy)));
+    assert_eq!(
+        g.remove_node_label(v(9), nl(1)),
+        Err(Error::UnknownNode(v(9)))
+    );
+    check(&g);
 }

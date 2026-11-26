@@ -6,7 +6,7 @@ use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use core::num::NonZeroU32;
 use core::ops::ControlFlow;
-use lara_graph::{Cursor, Direction, Graph, Memory, Order, Position};
+use lara_graph::{Cursor, Graph, Memory, Order, Position};
 
 /// 51 full scans of a 1024-edge hub bucket (ic-stable-lara `bench_l_s2_h_scn_d_1024`).
 pub(crate) fn scan_hub<M: Memory>(mut g: Graph<M>, degree: u32) -> BenchResult {
@@ -14,7 +14,7 @@ pub(crate) fn scan_hub<M: Memory>(mut g: Graph<M>, degree: u32) -> BenchResult {
     let mut out = Vec::new();
     bench_fn(|| {
         for _ in 0..51 {
-            g.neighbors(hub, (LABEL, Direction::Outgoing), &mut out)
+            g.neighbors(hub, LABEL.outgoing(), &mut out)
                 .unwrap_or_else(|e| panic!("scan: {e}"));
             black_box(out.len());
         }
@@ -31,7 +31,7 @@ fn visit_hub_in<M: Memory>(mut g: Graph<M>, degree: u32, order: Order) -> BenchR
     bench_fn(|| {
         for _ in 0..51 {
             let mut count = 0u32;
-            g.visit_neighbors(hub, (LABEL, Direction::Outgoing), order, |_| {
+            g.visit_neighbors(hub, LABEL.outgoing(), order, |_| {
                 count += 1;
                 ControlFlow::<()>::Continue(())
             })
@@ -67,7 +67,7 @@ fn hub_windows_descending_65536() -> BenchResult {
         let mut count = 0u32;
         while let Some(at) = cursor {
             cursor = g
-                .visit_window(hub, (LABEL, Direction::Outgoing), at, |_| count += 1)
+                .visit_window(hub, LABEL.outgoing(), at, |_| count += 1)
                 .unwrap_or_else(|e| panic!("window: {e}"));
         }
         black_box(count);
@@ -84,7 +84,7 @@ fn hub_targets_at_256_of_65536() -> BenchResult {
         .collect();
     let mut out = Vec::new();
     bench_fn(|| {
-        g.targets_at(hub, (LABEL, Direction::Outgoing), &positions, &mut out)
+        g.neighbors_at(hub, LABEL.outgoing(), &positions, &mut out)
             .unwrap_or_else(|e| panic!("targets: {e}"));
         black_box(out.len());
     })
@@ -108,7 +108,7 @@ fn offset_60000_of_hub_65536() -> BenchResult {
     let (hub, _) = seed_hub(&mut g, 65536);
     bench_fn(|| {
         black_box(
-            g.nth_position(hub, (LABEL, Direction::Outgoing), Order::Ascending, 60_000)
+            g.nth_position(hub, LABEL.outgoing(), Order::Ascending, 60_000)
                 .unwrap_or_else(|e| panic!("offset: {e}")),
         )
     })
@@ -122,7 +122,7 @@ fn offset_60000_of_hub_65536_counted() -> BenchResult {
     bench_fn(|| {
         let mut left = 60_000u32;
         black_box(
-            g.visit_neighbors(hub, (LABEL, Direction::Outgoing), Order::Ascending, |e| {
+            g.visit_neighbors(hub, LABEL.outgoing(), Order::Ascending, |e| {
                 if left == 0 {
                     ControlFlow::Break(e.position())
                 } else {

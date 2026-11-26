@@ -5,7 +5,7 @@ use crate::{LABEL, directed, graph, node, nodes};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use core::ops::ControlFlow;
-use lara_graph::{Direction, Graph, Label, Memory, NodeId, Order};
+use lara_graph::{Graph, Memory, NodeId, NodeLabel, Order};
 
 /// `n` nodes, each labelled with `per_node` labels from a pool of 16, the one checked among them
 /// for every other node.
@@ -13,7 +13,9 @@ fn labelled<M: Memory>(g: &mut Graph<M>, n: u32, per_node: u16) -> Vec<NodeId> {
     let all = nodes(g, n);
     for (i, &x) in (0u16..).zip(&all) {
         let first = i % 2;
-        let labels: Vec<Label> = (0..per_node).map(|k| Label::new(first + 2 * k)).collect();
+        let labels: Vec<NodeLabel> = (0..per_node)
+            .map(|k| NodeLabel::new(first + 2 * k))
+            .collect();
         g.set_node_labels(x, &labels)
             .unwrap_or_else(|e| panic!("labels: {e}"));
     }
@@ -23,7 +25,7 @@ fn labelled<M: Memory>(g: &mut Graph<M>, n: u32, per_node: u16) -> Vec<NodeId> {
 fn check_each<M: Memory>(g: &Graph<M>, all: &[NodeId]) -> u32 {
     let mut hits = 0;
     for &x in all {
-        if g.has_node_label(x, Label::new(0))
+        if g.has_node_label(x, NodeLabel::new(0))
             .unwrap_or_else(|e| panic!("label: {e}"))
         {
             hits += 1;
@@ -48,7 +50,7 @@ fn has_node_label_1024_batched() -> BenchResult {
     bench_fn(|| {
         let mut has = Vec::new();
         g.read_batch()
-            .has_node_label_each(&all, Label::new(0), &mut has)
+            .has_node_label_each(&all, NodeLabel::new(0), &mut has)
             .unwrap_or_else(|e| panic!("labels: {e}"));
         black_box(has.iter().filter(|&&h| h).count())
     })
@@ -74,8 +76,8 @@ fn expand_label_filter_1024() -> BenchResult {
     }
     bench_fn(|| {
         let mut kept = 0u32;
-        g.visit_neighbors(hub, (LABEL, Direction::Outgoing), Order::Ascending, |e| {
-            if g.has_node_label(e.target(), Label::new(0))
+        g.visit_neighbors(hub, LABEL.outgoing(), Order::Ascending, |e| {
+            if g.has_node_label(e.node(), NodeLabel::new(0))
                 .unwrap_or_else(|err| panic!("label: {err}"))
             {
                 kept += 1;
@@ -94,7 +96,7 @@ fn set_node_labels_1024() -> BenchResult {
     let all = nodes(&mut g, 1024);
     bench_fn(|| {
         for &x in &all {
-            g.set_node_labels(x, &[Label::new(3)])
+            g.set_node_labels(x, &[NodeLabel::new(3)])
                 .unwrap_or_else(|e| panic!("labels: {e}"));
         }
     })
@@ -105,7 +107,7 @@ fn set_node_labels_1024() -> BenchResult {
 fn set_node_labels_spilled_1024() -> BenchResult {
     let mut g = graph();
     let all = nodes(&mut g, 1024);
-    let labels: Vec<Label> = (0..8).map(Label::new).collect();
+    let labels: Vec<NodeLabel> = (0..8).map(NodeLabel::new).collect();
     bench_fn(|| {
         for &x in &all {
             g.set_node_labels(x, &labels)
@@ -118,13 +120,13 @@ fn set_node_labels_spilled_1024() -> BenchResult {
 /// `node_scan` benches lay them out.
 fn scan_fixture<M: Memory>(g: &mut Graph<M>, rare: u32) {
     for (i, x) in (0..).zip(nodes(g, 10_000)) {
-        let label = Label::new(u16::from(i < rare));
+        let label = NodeLabel::new(u16::from(i < rare));
         g.set_node_labels(x, &[label])
             .unwrap_or_else(|e| panic!("labels: {e}"));
     }
 }
 
-fn scan(g: &Graph<impl Memory>, label: Label) -> u32 {
+fn scan(g: &Graph<impl Memory>, label: NodeLabel) -> u32 {
     let mut n = 0;
     g.visit_nodes_with_label(label, None, |_| {
         n += 1;
@@ -138,7 +140,7 @@ fn scan(g: &Graph<impl Memory>, label: Label) -> u32 {
 fn nodes_with_label_rare_10k() -> BenchResult {
     let mut g = graph();
     scan_fixture(&mut g, 16);
-    bench_fn(|| black_box(scan(&g, Label::new(1))))
+    bench_fn(|| black_box(scan(&g, NodeLabel::new(1))))
 }
 
 /// The nodes of a label 9,984 of 10,000 nodes have: Gleaph's common-label scan.
@@ -146,5 +148,5 @@ fn nodes_with_label_rare_10k() -> BenchResult {
 fn nodes_with_label_common_10k() -> BenchResult {
     let mut g = graph();
     scan_fixture(&mut g, 16);
-    bench_fn(|| black_box(scan(&g, Label::new(0))))
+    bench_fn(|| black_box(scan(&g, NodeLabel::new(0))))
 }

@@ -62,14 +62,7 @@ fn the_page_index_deepens_past_one_page_of_entries() {
     for _ in 0..total {
         let before = g.edges.store().minted();
         // An undirected self-loop: one half, one bucket insert.
-        g.add_edge(NewEdge::undirected(
-            v(0),
-            l(0),
-            v(0),
-            Placement::ReuseHoles,
-            &[],
-        ))
-        .unwrap();
+        g.add_edge(Edge::undirected(v(0), l(0), v(0))).unwrap();
         most = most.max(g.edges.store().minted() - before);
     }
     let bound = pages_per_half(None);
@@ -84,8 +77,8 @@ fn the_page_index_deepens_past_one_page_of_entries() {
         .collect();
     assert_eq!(positions, (0..total).collect::<Vec<_>>());
     for at in [0, PAGE_SLOTS * paged::FANOUT, total - 1] {
-        let half = EdgeRef::new(v(0), l(0), Direction::Undirected, p(at));
-        assert_eq!(g.edge_target(half), Ok(Some(v(0))));
+        let half = EdgeRef::new(v(0), l(0).undirected(), p(at));
+        assert_eq!(g.other_end(half), Ok(Some(v(0))));
     }
     check(&backing.open());
 }
@@ -102,19 +95,11 @@ fn appending_never_fills_a_hole_in_any_bucket_form() {
         remove(&mut g, v(0), label, p(total - 2));
         // An edge to another node could safely take the hole; appending must not.
         let appended = g
-            .add_edge(NewEdge::directed(v(0), label, v(2), Placement::Append, &[]))
+            .add_edge_with(Edge::directed(v(0), label, v(2)), Placement::Append)
             .unwrap();
         assert_eq!(appended.canonical().position(), p(total), "{total} edges");
         // No live edge to node 0 follows the hole, so reusing it is safe.
-        let reused = g
-            .add_edge(NewEdge::directed(
-                v(0),
-                label,
-                v(0),
-                Placement::ReuseHoles,
-                &[],
-            ))
-            .unwrap();
+        let reused = g.add_edge(Edge::directed(v(0), label, v(0))).unwrap();
         assert_eq!(reused.canonical().position(), p(total - 2), "{total} edges");
     }
     check(&g);
@@ -126,12 +111,12 @@ fn appending_never_fills_a_hole_in_any_bucket_form() {
 fn compacting_a_mostly_emptied_hub_shrinks_its_index() {
     let backing = Backing::default();
     let mut g = backing.create(1);
-    let hub = g.add_node().unwrap();
+    let hub = g.add_node(&[]).unwrap();
     let mut edges = Vec::new();
     for _ in 0..6000 {
-        let leaf = g.add_node().unwrap();
+        let leaf = g.add_node(&[]).unwrap();
         edges.push(
-            g.add_edge(NewEdge::directed(hub, l(0), leaf, Placement::Append, &[]))
+            g.add_edge_with(Edge::directed(hub, l(0), leaf), Placement::Append)
                 .unwrap(),
         );
     }
@@ -154,12 +139,7 @@ fn compacting_a_mostly_emptied_hub_shrinks_its_index() {
             g.remove_edge(halves.other()).unwrap();
         }
     }
-    while g
-        .compact(hub, (l(0), Direction::Outgoing))
-        .unwrap()
-        .progress()
-        == Progress::Remaining
-    {}
+    while g.compact(hub, l(0).outgoing()).unwrap().progress() == Progress::Remaining {}
     let after = index_pages(&g);
     assert!(after * 2 < before, "{after} index pages of {before}");
     for halves in edges.iter().step_by(16) {

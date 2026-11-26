@@ -3,7 +3,7 @@
 
 #[cfg(doc)]
 use crate::graph::Graph;
-use crate::id::{EdgeRef, Label, NodeId, Position};
+use crate::id::{EdgeLabel, EdgeRef, NodeId, Position};
 use core::num::NonZeroU32;
 
 /// Which way a read goes through a bucket's positions.
@@ -78,7 +78,7 @@ pub enum Placement {
     ReuseHoles,
 }
 
-/// Whether [`NewEdge`] is directed or undirected.
+/// Whether [`Edge`] is directed or undirected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EdgeKind {
     /// `from -[label]-> to`.
@@ -87,58 +87,51 @@ pub enum EdgeKind {
     Undirected,
 }
 
-/// One edge for [`Graph::add_edges`].
+/// An edge to insert: its ends, label and kind, and its value when its label declares a width.
+/// Where it goes in each bucket is the insert's choice ([`Graph::add_edge_with`]), not the
+/// edge's.
 #[derive(Clone, Copy, Debug)]
-pub struct NewEdge<'a> {
+pub struct Edge<'a> {
     kind: EdgeKind,
     from: NodeId,
-    label: Label,
+    label: EdgeLabel,
     to: NodeId,
-    placement: Placement,
     value: &'a [u8],
 }
 
-impl<'a> NewEdge<'a> {
-    /// The directed edge `from -[label]-> to`, placed by `placement` in both buckets.
+impl<'a> Edge<'a> {
+    /// The directed edge `from -[label]-> to`, without a value.
     #[must_use]
-    pub const fn directed(
-        from: NodeId,
-        label: Label,
-        to: NodeId,
-        placement: Placement,
-        value: &'a [u8],
-    ) -> Self {
+    pub const fn directed(from: NodeId, label: EdgeLabel, to: NodeId) -> Self {
         Self {
             kind: EdgeKind::Directed,
             from,
             label,
             to,
-            placement,
-            value,
+            value: &[],
         }
     }
 
-    /// The undirected edge `a -[label]- b`, placed by `placement` in both buckets.
+    /// The undirected edge `a -[label]- b`, without a value.
     #[must_use]
-    pub const fn undirected(
-        a: NodeId,
-        label: Label,
-        b: NodeId,
-        placement: Placement,
-        value: &'a [u8],
-    ) -> Self {
+    pub const fn undirected(a: NodeId, label: EdgeLabel, b: NodeId) -> Self {
         Self {
             kind: EdgeKind::Undirected,
             from: a,
             label,
             to: b,
-            placement,
-            value,
+            value: &[],
         }
+    }
+
+    /// The edge with `value`, which must be as wide as its label declares.
+    #[must_use]
+    pub const fn value(self, value: &'a [u8]) -> Self {
+        Self { value, ..self }
     }
 }
 
-impl NewEdge<'_> {
+impl Edge<'_> {
     pub(crate) const fn kind(&self) -> EdgeKind {
         self.kind
     }
@@ -147,7 +140,7 @@ impl NewEdge<'_> {
         self.from
     }
 
-    pub(crate) const fn label(&self) -> Label {
+    pub(crate) const fn label(&self) -> EdgeLabel {
         self.label
     }
 
@@ -155,12 +148,8 @@ impl NewEdge<'_> {
         self.to
     }
 
-    pub(crate) const fn value(&self) -> &[u8] {
+    pub(crate) const fn bytes(&self) -> &[u8] {
         self.value
-    }
-
-    pub(crate) const fn placement(&self) -> Placement {
-        self.placement
     }
 }
 

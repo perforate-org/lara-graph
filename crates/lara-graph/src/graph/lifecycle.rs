@@ -1,26 +1,27 @@
 //! Making, opening and giving back a graph's memories, as ic-stable-structures' structures do:
-//! `new` formats, `load` reopens, `init` does whichever the memories call for. Each reads or
+//! `format` formats, `load` reopens, `init` does whichever the memories call for. Each reads or
 //! writes headers only, so it costs the same on every message that might be the first after an
 //! install or an upgrade.
 
 use super::{Graph, VERSION};
 use crate::error::InitError;
-use crate::graph::memories::Memories;
+use crate::graph::memories::{GraphMemories, Memories, MemoriesOf};
 use crate::node::labels::{LabelStore, MAGIC as LABELS_MAGIC};
 use crate::node::store::{MAGIC as NODES_MAGIC, NodeStore, PROXIES_MAGIC};
 use crate::store::memory::{Memory, WriteError};
 use crate::store::page_store::{self, PageStore, header};
 use crate::store::units::Overflow;
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// Formats `memories` as an empty graph, overwriting whatever they held.
     ///
     /// # Panics
     ///
-    /// When a memory cannot grow; [`Self::try_new`] returns the error instead.
+    /// When a memory cannot grow; [`Self::try_format`] returns the error instead.
     #[must_use]
-    pub fn new(memories: Memories<M>) -> Self {
-        Self::try_new(memories).unwrap_or_else(|e| panic!("lara-graph: cannot make a graph: {e}"))
+    pub fn format(memories: MemoriesOf<S>) -> Self {
+        Self::try_format(memories)
+            .unwrap_or_else(|e| panic!("lara-graph: cannot format a graph: {e}"))
     }
 
     /// Opens the graph `memories` hold.
@@ -30,7 +31,7 @@ impl<M: Memory> Graph<M> {
     /// When they hold no graph, or one of another layout version; [`Self::try_load`] returns
     /// the error instead.
     #[must_use]
-    pub fn load(memories: Memories<M>) -> Self {
+    pub fn load(memories: MemoriesOf<S>) -> Self {
         Self::try_load(memories).unwrap_or_else(|e| panic!("lara-graph: cannot load a graph: {e}"))
     }
 
@@ -43,28 +44,32 @@ impl<M: Memory> Graph<M> {
     /// When the graph is of another layout version, or a memory cannot grow; [`Self::try_init`]
     /// returns the error instead.
     #[must_use]
-    pub fn init(memories: Memories<M>) -> Self {
+    pub fn init(memories: MemoriesOf<S>) -> Self {
         Self::try_init(memories).unwrap_or_else(|e| panic!("lara-graph: cannot init a graph: {e}"))
     }
 
-    /// [`Self::new`], returning the error.
+    /// [`Self::format`], returning the error.
     ///
     /// # Errors
     ///
     /// [`InitError::OutOfMemory`].
-    pub fn try_new(memories: Memories<M>) -> Result<Self, InitError> {
-        let (
-            (nodes, proxies, node_labels),
-            [edge_pages, edge_directory],
-            [label_bucket_list_pages, label_bucket_list_directory],
-        ) = memories.into_parts();
+    pub fn try_format(memories: MemoriesOf<S>) -> Result<Self, InitError> {
+        let Memories {
+            nodes,
+            edge_pages,
+            edge_directory,
+            label_bucket_list_pages,
+            label_bucket_list_directory,
+            node_labels,
+            proxies,
+        } = memories;
         let edges = PageStore::format(edge_pages, edge_directory).map_err(init_error)?;
         let label_bucket_lists =
             PageStore::format(label_bucket_list_pages, label_bucket_list_directory)
                 .map_err(init_error)?;
         let nodes = NodeStore::format(nodes, proxies, VERSION).map_err(init_error)?;
         let labels = LabelStore::format(node_labels, VERSION).map_err(init_error)?;
-        Ok(Self::assemble((nodes, labels), edges, label_bucket_lists))
+        Ok(Self::assemble(nodes, labels, (edges, label_bucket_lists)))
     }
 
     /// [`Self::load`], returning the error.
@@ -72,15 +77,19 @@ impl<M: Memory> Graph<M> {
     /// # Errors
     ///
     /// [`InitError::NotAGraph`] or [`InitError::UnsupportedVersion`].
-    pub fn try_load(memories: Memories<M>) -> Result<Self, InitError> {
-        let (
-            (nodes, proxies, node_labels),
-            [edge_pages, edge_directory],
-            [label_bucket_list_pages, label_bucket_list_directory],
-        ) = memories.into_parts();
+    pub fn try_load(memories: MemoriesOf<S>) -> Result<Self, InitError> {
+        let Memories {
+            nodes,
+            edge_pages,
+            edge_directory,
+            label_bucket_list_pages,
+            label_bucket_list_directory,
+            node_labels,
+            proxies,
+        } = memories;
         // An empty proxies memory is a graph that never had a proxy.
-        if proxies.size() > 0 {
-            expect_header(&proxies, PROXIES_MAGIC)?;
+        if let Some(proxies) = proxies.as_ref().filter(|p| p.size() > 0) {
+            expect_header(proxies, PROXIES_MAGIC)?;
         }
         expect_header(&nodes, NODES_MAGIC)?;
         expect_header(&node_labels, LABELS_MAGIC)?;
@@ -89,12 +98,9 @@ impl<M: Memory> Graph<M> {
             PageStore::open(label_bucket_list_pages, label_bucket_list_directory)
                 .map_err(open_error)?;
         Ok(Self::assemble(
-            (
-                NodeStore::open(nodes, proxies, VERSION),
-                LabelStore::open(node_labels),
-            ),
-            edges,
-            label_bucket_lists,
+            NodeStore::open(nodes, proxies, VERSION),
+            LabelStore::open(node_labels),
+            (edges, label_bucket_lists),
         ))
     }
 
@@ -104,26 +110,30 @@ impl<M: Memory> Graph<M> {
     ///
     /// [`InitError::UnsupportedVersion`], [`InitError::OutOfMemory`], or
     /// [`InitError::NotAGraph`] when the nodes memory holds a graph and the others do not.
-    pub fn try_init(memories: Memories<M>) -> Result<Self, InitError> {
-        if header(memories.nodes(), NODES_MAGIC).is_some() {
+    pub fn try_init(memories: MemoriesOf<S>) -> Result<Self, InitError> {
+        if header(&memories.nodes, NODES_MAGIC).is_some() {
             Self::try_load(memories)
         } else {
-            Self::try_new(memories)
+            Self::try_format(memories)
         }
     }
 
     /// The memories back, as they were given: the graph is as it was left in them.
     #[must_use]
-    pub fn into_memories(self) -> Memories<M> {
+    pub fn into_memories(self) -> MemoriesOf<S> {
         let (edge_pages, edge_directory) = self.edges.into_memories();
         let (label_bucket_list_pages, label_bucket_list_directory) =
             self.label_bucket_lists.into_memories();
         let (nodes, proxies) = self.nodes.into_memories();
-        Memories::from_parts(
-            (nodes, proxies, self.labels.into_memory()),
-            [edge_pages, edge_directory],
-            [label_bucket_list_pages, label_bucket_list_directory],
-        )
+        Memories {
+            nodes,
+            edge_pages,
+            edge_directory,
+            label_bucket_list_pages,
+            label_bucket_list_directory,
+            node_labels: self.labels.into_memory(),
+            proxies,
+        }
     }
 }
 

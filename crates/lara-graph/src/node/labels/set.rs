@@ -1,4 +1,4 @@
-//! A node's labels: a set of [`Label`]s in 5 bytes of the node labels memory, and beyond.
+//! A node's labels: a set of [`NodeLabel`]s in 5 bytes of the node labels memory, and beyond.
 //!
 //! Most nodes have one label or two, so the cell holds up to two inline. A larger set goes to the
 //! label bucket list store: up to [`MAX_LISTED`] as a sorted list in one extent, more as a bitmap
@@ -45,7 +45,7 @@
 //!
 //! Label `l` is bit `l % 8` of byte `(l % 32768) / 8` of page `l / 32768`.
 
-use crate::id::Label;
+use crate::id::NodeLabel;
 use crate::store::corrupt::corrupt;
 use crate::store::memory::{Memory, WriteError};
 use crate::store::page_store::{
@@ -76,8 +76,8 @@ const _: () = assert!(MAX_LISTED < 0xFFFF);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LabelSet {
     None,
-    One(Label),
-    Two(Label, Label),
+    One(NodeLabel),
+    Two(NodeLabel, NodeLabel),
     Spilled(Extent),
 }
 
@@ -112,10 +112,10 @@ impl LabelSet {
         let [b0, b1, b2, b3, b4] = bytes;
         match b4 >> KIND_SHIFT {
             NONE => Self::None,
-            ONE => Self::One(Label::new(u16::from_le_bytes([b0, b1]))),
+            ONE => Self::One(NodeLabel::new(u16::from_le_bytes([b0, b1]))),
             TWO => Self::Two(
-                Label::new(u16::from_le_bytes([b0, b1])),
-                Label::new(u16::from_le_bytes([b2, b3])),
+                NodeLabel::new(u16::from_le_bytes([b0, b1])),
+                NodeLabel::new(u16::from_le_bytes([b2, b3])),
             ),
             _ => Self::Spilled(Extent::decode(bytes)),
         }
@@ -123,9 +123,9 @@ impl LabelSet {
 
     /// The cell for `set` (sorted, distinct), writing a larger set to `store`. On error nothing
     /// was allocated.
-    pub(crate) fn store<M: Memory>(
-        store: &mut PageStore<M>,
-        set: &[Label],
+    pub(crate) fn store<M: Memory, D: Memory>(
+        store: &mut PageStore<M, D>,
+        set: &[NodeLabel],
     ) -> Result<Self, WriteError> {
         Ok(match *set {
             [] => Self::None,
@@ -137,7 +137,7 @@ impl LabelSet {
     }
 
     /// Gives back what [`Self::store`] took. Cannot fail.
-    pub(crate) fn release<M: Memory>(self, store: &mut PageStore<M>) {
+    pub(crate) fn release<M: Memory, D: Memory>(self, store: &mut PageStore<M, D>) {
         let Self::Spilled(extent) = self else { return };
         if let Spill::Bitmap(pages) = spill(&store.pages(), extent) {
             for page in pages {
@@ -149,7 +149,7 @@ impl LabelSet {
 
     /// Whether the set holds `label`: a comparison or two inline, a binary search of a listed
     /// set, one bit of a bitmap.
-    pub(crate) fn contains<M: Memory>(self, view: &Pages<'_, M>, label: Label) -> bool {
+    pub(crate) fn contains<M: Memory>(self, view: &Pages<'_, M>, label: NodeLabel) -> bool {
         match self {
             Self::None => false,
             Self::One(a) => a == label,
@@ -178,7 +178,7 @@ impl LabelSet {
     }
 
     /// Appends the set, ascending, to `out`.
-    pub(crate) fn extend_into<M: Memory>(self, view: &Pages<'_, M>, out: &mut Vec<Label>) {
+    pub(crate) fn extend_into<M: Memory>(self, view: &Pages<'_, M>, out: &mut Vec<NodeLabel>) {
         match self {
             Self::None => {}
             Self::One(a) => out.push(a),
@@ -224,26 +224,31 @@ fn spill<M: Memory>(view: &Pages<'_, M>, extent: Extent) -> Spill {
 }
 
 /// Appends a listed set's `count` labels.
-fn listed_into<M: Memory>(view: &Pages<'_, M>, extent: Extent, count: usize, out: &mut Vec<Label>) {
+fn listed_into<M: Memory>(
+    view: &Pages<'_, M>,
+    extent: Extent,
+    count: usize,
+    out: &mut Vec<NodeLabel>,
+) {
     let bytes = view.read(after_count(extent), count * 2);
     out.extend(
         bytes
             .as_chunks::<2>()
             .0
             .iter()
-            .map(|&l| Label::new(u16::from_le_bytes(l))),
+            .map(|&l| NodeLabel::new(u16::from_le_bytes(l))),
     );
 }
 
 /// Appends a bitmap set's labels, ascending: each set bit, lowest first.
-fn bitmap_into<M: Memory>(view: &Pages<'_, M>, pages: [PageId; 2], out: &mut Vec<Label>) {
+fn bitmap_into<M: Memory>(view: &Pages<'_, M>, pages: [PageId; 2], out: &mut Vec<NodeLabel>) {
     for (base, page) in (0u32..).step_by(32768).zip(pages) {
         let bytes = view.read(page.offset(), 4096);
         for (at, &byte) in (base..).step_by(8).zip(&bytes) {
             let mut rest = byte;
             while rest != 0 {
                 let label = u16::try_from(at + rest.trailing_zeros()).unwrap_or(u16::MAX);
-                out.push(Label::new(label));
+                out.push(NodeLabel::new(label));
                 rest &= rest - 1;
             }
         }
@@ -255,14 +260,17 @@ fn after_count(extent: Extent) -> ByteOffset {
 }
 
 /// Page, byte and bit of `label` in a bitmap set.
-fn bit_of(label: Label) -> (usize, u64, u32) {
+fn bit_of(label: NodeLabel) -> (usize, u64, u32) {
     let l = u32::from(label.get());
     let page = usize::try_from(l / LABELS_PER_PAGE).unwrap_or(0);
     (page, u64::from(l % LABELS_PER_PAGE / 8), l % 8)
 }
 
 /// A listed set's extent: its count, then its labels.
-fn listed<M: Memory>(store: &mut PageStore<M>, set: &[Label]) -> Result<Extent, WriteError> {
+fn listed<M: Memory, D: Memory>(
+    store: &mut PageStore<M, D>,
+    set: &[NodeLabel],
+) -> Result<Extent, WriteError> {
     let count = u16::try_from(set.len()).unwrap_or(u16::MAX);
     let bytes: Vec<u8> = count
         .to_le_bytes()
@@ -276,7 +284,10 @@ fn listed<M: Memory>(store: &mut PageStore<M>, set: &[Label]) -> Result<Extent, 
 }
 
 /// A bitmap set: its header, then two pages of bits.
-fn bitmap<M: Memory>(store: &mut PageStore<M>, set: &[Label]) -> Result<Extent, WriteError> {
+fn bitmap<M: Memory, D: Memory>(
+    store: &mut PageStore<M, D>,
+    set: &[NodeLabel],
+) -> Result<Extent, WriteError> {
     let mut txn = SpanTxn::begin(store);
     let header = txn.allocate(ByteClass::B32)?;
     let low = txn.allocate(ByteClass::PAGE)?.page();
@@ -315,9 +326,9 @@ mod tests {
         let extent = Extent::new(PageId::new(77), 5, ByteClass::SMALLEST);
         for cell in [
             LabelSet::None,
-            LabelSet::One(Label::new(0)),
-            LabelSet::One(Label::new(u16::MAX)),
-            LabelSet::Two(Label::new(3), Label::new(u16::MAX)),
+            LabelSet::One(NodeLabel::new(0)),
+            LabelSet::One(NodeLabel::new(u16::MAX)),
+            LabelSet::Two(NodeLabel::new(3), NodeLabel::new(u16::MAX)),
             LabelSet::Spilled(extent),
         ] {
             assert_eq!(LabelSet::decode(cell.encode()), cell);

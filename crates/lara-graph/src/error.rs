@@ -2,7 +2,7 @@
 
 #[cfg(doc)]
 use crate::graph::Graph;
-use crate::id::{Label, NodeId, NodeState, Width};
+use crate::id::{EdgeLabel, NodeId, NodeState, Width};
 use crate::store::memory::{GrowFailed, WriteError};
 use crate::store::units::Overflow;
 use core::fmt;
@@ -19,11 +19,11 @@ pub enum Error {
     /// The node's label bucket list is full: it holds at least 74,168 `(label, direction)`
     /// buckets, and up to about 148,000 when its pages are full.
     TooManyLabelBuckets(NodeId),
-    /// The node is being detached ([`Graph::detach`]) and takes no new edges.
-    Detaching(NodeId),
-    /// [`Graph::detach_step`] on a node that is not being detached.
-    NotDetaching(NodeId),
-    /// The node was deleted ([`Graph::detach`]); ids are never reused.
+    /// The node is being deleted ([`Graph::begin_delete`]) and takes no new edges.
+    Deleting(NodeId),
+    /// [`Graph::delete_step`] on a node that is not being deleted.
+    NotDeleting(NodeId),
+    /// The node was deleted ([`Graph::begin_delete`]); ids are never reused.
     Deleted(NodeId),
     /// [`Graph::bulk_load`] was called on a graph that already holds edges.
     NotEmpty,
@@ -34,24 +34,26 @@ pub enum Error {
         /// The bucket's node.
         node: NodeId,
         /// Its label.
-        label: Label,
+        label: EdgeLabel,
         /// Its direction.
         direction: crate::id::Direction,
     },
     /// The node is a proxy ([`Graph::add_proxy`]), which takes no part in this: proxies have no
     /// labels, no edge joins two of them, and a bulk load places none.
     Proxy(NodeId),
+    /// [`Graph::add_proxies`] on a graph given no proxies memory ([`crate::Memories::proxies`]).
+    NoProxiesMemory,
     /// The label already has a different width ([`Graph::declare_width`]).
     WidthConflict {
         /// The label.
-        label: Label,
+        label: EdgeLabel,
         /// Its width.
         declared: Width,
     },
     /// A value's length is not its label's width (0 for a label without one).
     WrongValueLength {
         /// The label.
-        label: Label,
+        label: EdgeLabel,
         /// The label's width in bytes.
         expected: u16,
         /// The value's length.
@@ -62,7 +64,7 @@ pub enum Error {
 /// A batch operation failed at `index`, with whether earlier elements were applied.
 ///
 /// Only `add_edges` returns [`Self::PartiallyApplied`]; `set_edge_values`, `remove_edges` and
-/// `detach_many` restore or avoid earlier changes on error. On the Internet Computer, a
+/// `begin_delete_many` restore or avoid earlier changes on error. On the Internet Computer, a
 /// canister can trap on [`Self::PartiallyApplied`] to make the update call all-or-none; the IC
 /// discards the call's state changes when the call traps.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -131,7 +133,7 @@ impl fmt::Display for BatchError {
     }
 }
 
-/// A graph could not be made or opened ([`Graph::try_new`], [`Graph::try_load`],
+/// A graph could not be made or opened ([`Graph::try_format`], [`Graph::try_load`],
 /// [`Graph::try_init`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InitError {
@@ -161,11 +163,12 @@ impl fmt::Display for Error {
             Self::TooManyLabelBuckets(v) => {
                 write!(f, "node {} has too many label buckets", v.index())
             }
-            Self::Detaching(v) => write!(f, "node {} is being detached", v.index()),
-            Self::NotDetaching(v) => write!(f, "node {} is not being detached", v.index()),
+            Self::Deleting(v) => write!(f, "node {} is being deleted", v.index()),
+            Self::NotDeleting(v) => write!(f, "node {} is not being deleted", v.index()),
             Self::Deleted(v) => write!(f, "node {} is deleted", v.index()),
             Self::NotEmpty => f.write_str("the graph already holds edges"),
             Self::Proxy(v) => write!(f, "node {} is a proxy", v.index()),
+            Self::NoProxiesMemory => f.write_str("the graph was given no proxies memory"),
             Self::StaleValues {
                 node,
                 label,
@@ -210,7 +213,7 @@ impl Error {
     pub(crate) const fn unless_live(state: NodeState, v: NodeId) -> Result<(), Self> {
         match state {
             NodeState::Live => Ok(()),
-            NodeState::Detaching => Err(Self::Detaching(v)),
+            NodeState::Deleting => Err(Self::Deleting(v)),
             NodeState::Deleted => Err(Self::Deleted(v)),
         }
     }

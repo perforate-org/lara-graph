@@ -6,27 +6,27 @@ use crate::bucket::{LabelBucketKey, Migration};
 use crate::edge::visit_joined;
 use crate::error::Error;
 use crate::graph::Graph;
-use crate::id::{Direction, EdgeRef, Label, Neighbor, NodeId, Position};
+use crate::graph::GraphMemories;
+use crate::id::{Adjacency, EdgeLabel, EdgeRef, Neighbor, NodeId, Position};
 use crate::id::{ValueVersion, Width};
 use crate::input::Order;
-use crate::store::memory::Memory;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// The width of `label`'s values, if it has been declared.
     #[must_use]
-    pub fn width(&self, label: Label) -> Option<Width> {
+    pub fn width(&self, label: EdgeLabel) -> Option<Width> {
         self.widths.get(label)
     }
 
     /// The version of `label`'s current value layout ([`Self::change_width`]), if it has a width.
     #[must_use]
-    pub fn value_version(&self, label: Label) -> Option<ValueVersion> {
+    pub fn value_version(&self, label: EdgeLabel) -> Option<ValueVersion> {
         self.widths.schema(label).map(|s| s.version)
     }
 
-    /// The version the values of `v`'s `(label, direction)` bucket are in, and so how to decode
+    /// The version the values of `v`'s `adjacency` bucket are in, and so how to decode
     /// what reads return from it: an older one until [`Self::migrate_values`] has rewritten them,
     /// the label's current one for a bucket that holds none yet. `None` for a label without a
     /// width or a node without the bucket.
@@ -37,8 +37,9 @@ impl<M: Memory> Graph<M> {
     pub fn bucket_value_version(
         &self,
         v: NodeId,
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
     ) -> Result<Option<ValueVersion>, Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         let Some(schema) = self.widths.schema(label) else {
             self.check(v)?;
             return Ok(None);
@@ -50,17 +51,14 @@ impl<M: Memory> Graph<M> {
         }))
     }
 
-    /// Whether [`Self::migrate_values`] has work in `v`'s `(label, direction)` bucket: it holds
+    /// Whether [`Self::migrate_values`] has work in `v`'s `adjacency` bucket: it holds
     /// values in an older version, or a migration is under way.
     ///
     /// # Errors
     ///
     /// [`Error::UnknownNode`].
-    pub fn needs_migration(
-        &self,
-        v: NodeId,
-        (label, direction): (Label, Direction),
-    ) -> Result<bool, Error> {
+    pub fn needs_migration(&self, v: NodeId, adjacency: Adjacency) -> Result<bool, Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         let Some(schema) = self.widths.schema(label) else {
             self.check(v)?;
             return Ok(false);
@@ -90,7 +88,7 @@ impl<M: Memory> Graph<M> {
         )
     }
 
-    /// Appends the values at `positions` of `v`'s `(label, direction)` bucket to `out`, one width
+    /// Appends the values at `positions` of `v`'s `adjacency` bucket to `out`, one width
     /// each, in the order given: zeros for a hole, a position past the end or no write yet.
     ///
     /// # Errors
@@ -99,10 +97,11 @@ impl<M: Memory> Graph<M> {
     pub fn values_at(
         &self,
         v: NodeId,
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
         positions: &[Position],
         out: &mut Vec<u8>,
     ) -> Result<(), Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         out.clear();
         let width = self.widths.get(label).map_or(0, |w| usize::from(w.get()));
         let found = self.find_label_bucket(v, LabelBucketKey { label, direction })?;
@@ -115,10 +114,10 @@ impl<M: Memory> Graph<M> {
         Ok(())
     }
 
-    /// Calls `f` with the value of every position of `v`'s `(label, direction)` bucket in `order`,
+    /// Calls `f` with the value of every position of `v`'s `adjacency` bucket in `order`,
     /// until it breaks: the first phase of a values-first traversal. Reads the value plane only,
     /// skipping pages the slot index marks all dead; other removed positions come with their last
-    /// value, so the second phase ([`Self::targets_at`]) drops them.
+    /// value, so the second phase ([`Self::neighbors_at`]) drops them.
     ///
     /// # Errors
     ///
@@ -126,10 +125,11 @@ impl<M: Memory> Graph<M> {
     pub fn visit_values<B>(
         &self,
         v: NodeId,
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
         order: Order,
         mut f: impl FnMut(Position, &[u8]) -> ControlFlow<B>,
     ) -> Result<Option<B>, Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         let Some(bucket) = self.read_label_bucket(v, LabelBucketKey { label, direction })? else {
             return Ok(None);
         };
@@ -138,7 +138,7 @@ impl<M: Memory> Graph<M> {
             .visit_values_in(&bucket, label, order, &mut f))
     }
 
-    /// Calls `f` with each live edge of `v`'s `(label, direction)` bucket and its value, in
+    /// Calls `f` with each live edge of `v`'s `adjacency` bucket and its value, in
     /// `order`, until it breaks.
     ///
     /// # Errors
@@ -147,10 +147,11 @@ impl<M: Memory> Graph<M> {
     pub fn visit_neighbors_with_values<B>(
         &self,
         v: NodeId,
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
         order: Order,
         mut f: impl FnMut(Neighbor, &[u8]) -> ControlFlow<B>,
     ) -> Result<Option<B>, Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         let Some(bucket) = self.read_label_bucket(v, LabelBucketKey { label, direction })? else {
             return Ok(None);
         };

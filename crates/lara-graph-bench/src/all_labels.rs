@@ -6,7 +6,7 @@ use crate::{Bench, graph, nodes};
 use canbench_rs::{BenchResult, bench, bench_fn};
 use core::hint::black_box;
 use core::ops::ControlFlow;
-use lara_graph::{Direction, Label, NewEdge, NodeId, Order, Placement};
+use lara_graph::{Direction, Edge, EdgeLabel, NodeId, Order};
 
 const NODES: u32 = 1024;
 const EDGES_PER_NODE: u32 = 32;
@@ -19,15 +19,9 @@ fn build(labels: u16) -> (Bench, Vec<NodeId>) {
         for k in 0..EDGES_PER_NODE {
             let at = (i + usize::try_from(k).unwrap_or(0) * 31 + 1) % all.len();
             let to = all.get(at).copied().unwrap_or(from);
-            let label = Label::new(u16::try_from(k % u32::from(labels)).unwrap_or(0));
-            g.add_edge(NewEdge::directed(
-                from,
-                label,
-                to,
-                Placement::ReuseHoles,
-                &[],
-            ))
-            .unwrap_or_else(|e| panic!("insert: {e}"));
+            let label = EdgeLabel::new(u16::try_from(k % u32::from(labels)).unwrap_or(0));
+            g.add_edge(Edge::directed(from, label, to))
+                .unwrap_or_else(|e| panic!("insert: {e}"));
         }
     }
     (g, all)
@@ -42,7 +36,7 @@ fn by_labels(labels: u16) -> BenchResult {
             g.edge_labels(v, Direction::Outgoing, &mut found)
                 .unwrap_or_else(|e| panic!("labels: {e}"));
             for &label in &found {
-                g.visit_neighbors(v, (label, Direction::Outgoing), Order::Ascending, |_| {
+                g.visit_neighbors(v, label.outgoing(), Order::Ascending, |_| {
                     count += 1;
                     ControlFlow::<()>::Continue(())
                 })

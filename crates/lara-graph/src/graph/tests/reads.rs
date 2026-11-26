@@ -19,14 +19,14 @@ fn visiting_neighbors_sees_live_edges_in_order_and_stops_on_break() {
     }
     remove(&mut g, v(0), l(0), p(1));
     let mut seen = Vec::new();
-    let none = g.visit_neighbors(v(0), (l(0), Direction::Outgoing), Order::Ascending, |e| {
-        seen.push((e.position().index(), e.target().index()));
+    let none = g.visit_neighbors(v(0), l(0).outgoing(), Order::Ascending, |e| {
+        seen.push((e.position().index(), e.node().index()));
         ControlFlow::<()>::Continue(())
     });
     assert_eq!(none, Ok(None));
     assert_eq!(seen, edges(&g, v(0), l(0)));
-    let second_to_2 = g.visit_neighbors(v(0), (l(0), Direction::Outgoing), Order::Ascending, |e| {
-        if e.target() == v(2) {
+    let second_to_2 = g.visit_neighbors(v(0), l(0).outgoing(), Order::Ascending, |e| {
+        if e.node() == v(2) {
             ControlFlow::Break(e.position())
         } else {
             ControlFlow::Continue(())
@@ -34,7 +34,7 @@ fn visiting_neighbors_sees_live_edges_in_order_and_stops_on_break() {
     });
     assert_eq!(second_to_2, Ok(Some(p(3))));
     assert_eq!(
-        g.visit_neighbors(v(1), (l(5), Direction::Incoming), Order::Ascending, |_| {
+        g.visit_neighbors(v(1), l(5).incoming(), Order::Ascending, |_| {
             ControlFlow::Break(())
         }),
         Ok(None)
@@ -55,7 +55,7 @@ fn windows_count_holes_and_hand_back_the_next_cursor() {
     let window = |g: &Graph<VecMemory>, cursor| {
         let mut seen = Vec::new();
         let next = g
-            .visit_window(v(0), (l(0), Direction::Outgoing), cursor, |e| {
+            .visit_window(v(0), l(0).outgoing(), cursor, |e| {
                 seen.push(e.position().index());
             })
             .unwrap();
@@ -79,7 +79,7 @@ fn windows_count_holes_and_hand_back_the_next_cursor() {
     let empty = g
         .visit_window(
             v(1),
-            (l(9), Direction::Incoming),
+            l(9).incoming(),
             Cursor::first(Order::Ascending, span),
             |_| {},
         )
@@ -98,7 +98,7 @@ fn positional_reads_see_holes_released_pages_and_the_end() {
     for at in PAGE_SLOTS..2 * PAGE_SLOTS {
         remove(&mut g, v(0), l(0), p(at));
     }
-    g.compact(v(0), (l(0), Direction::Outgoing)).unwrap();
+    g.compact(v(0), l(0).outgoing()).unwrap();
     remove(&mut g, v(0), l(0), p(5));
     let positions = [
         p(3 * PAGE_SLOTS),
@@ -108,10 +108,10 @@ fn positional_reads_see_holes_released_pages_and_the_end() {
         p(2 * PAGE_SLOTS),
     ];
     let mut out = Vec::new();
-    g.targets_at(v(0), (l(0), Direction::Outgoing), &positions, &mut out)
+    g.neighbors_at(v(0), l(0).outgoing(), &positions, &mut out)
         .unwrap();
     assert_eq!(out, [None, None, None, Some(v(1)), Some(v(1))]);
-    g.targets_at(v(1), (l(3), Direction::Outgoing), &positions, &mut out)
+    g.neighbors_at(v(1), l(3).outgoing(), &positions, &mut out)
         .unwrap();
     assert_eq!(out, [None; 5]);
 }
@@ -122,7 +122,7 @@ fn positional_reads_see_holes_released_pages_and_the_end() {
 fn nth_position_skips_live_edges_in_order() {
     let backing = Backing::default();
     let mut g = backing.create(2);
-    let key = (l(0), Direction::Outgoing);
+    let key = l(0).outgoing();
     let check_all = |g: &Graph<VecMemory>| {
         let live = edges(g, v(0), l(0));
         for order in [Order::Ascending, Order::Descending] {
@@ -176,7 +176,7 @@ fn labeled_graph(backing: &Backing) -> Graph<VecMemory> {
     let mut rng = Rng(0xA11);
     let mut placed = Vec::new();
     for i in 0..1500 {
-        let edge = NewEdge::directed(v(0), l(0), v(i % LABELED_NODES), Placement::ReuseHoles, &[]);
+        let edge = Edge::directed(v(0), l(0), v(i % LABELED_NODES));
         placed.push(g.add_edge(edge).unwrap());
     }
     for _ in 0..3000 {
@@ -190,9 +190,9 @@ fn labeled_graph(backing: &Backing) -> Graph<VecMemory> {
             l(u16::try_from(rng.below(u32::from(LABELS))).unwrap()),
         );
         let edge = if rng.below(4) == 0 {
-            NewEdge::undirected(v(from), label, v(to), Placement::ReuseHoles, &[])
+            Edge::undirected(v(from), label, v(to))
         } else {
-            NewEdge::directed(v(from), label, v(to), Placement::ReuseHoles, &[])
+            Edge::directed(v(from), label, v(to))
         };
         placed.push(g.add_edge(edge).unwrap());
     }
@@ -216,7 +216,7 @@ fn by_label(
     x: u32,
     direction: Direction,
     order: Order,
-) -> Vec<(Label, Neighbor)> {
+) -> Vec<(EdgeLabel, Neighbor)> {
     let mut labels = Vec::new();
     g.edge_labels(v(x), direction, &mut labels).unwrap();
     if order == Order::Descending {
@@ -224,7 +224,7 @@ fn by_label(
     }
     let mut out = Vec::new();
     for label in labels {
-        g.visit_neighbors(v(x), (label, direction), order, |e| {
+        g.visit_neighbors(v(x), Adjacency::new(label, direction), order, |e| {
             out.push((label, e));
             ControlFlow::<()>::Continue(())
         })
@@ -294,7 +294,7 @@ fn batched_every_label_reads_match_single_reads() {
     let nodes: Vec<NodeId> = [3, 0, 17, 3, 63, 40].into_iter().map(v).collect();
     for direction in DIRECTIONS {
         for order in [Order::Ascending, Order::Descending] {
-            let want: Vec<(NodeId, Label, Neighbor)> = nodes
+            let want: Vec<(NodeId, EdgeLabel, Neighbor)> = nodes
                 .iter()
                 .flat_map(|&x| {
                     by_label(&g, x.index(), direction, order)

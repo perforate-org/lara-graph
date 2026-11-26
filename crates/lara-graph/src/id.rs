@@ -98,9 +98,28 @@ impl fmt::Debug for NodeId {
 /// An edge label. Each `(node, label)` pair has its own bucket of edges; labels order
 /// buckets by their raw value (callers may pack flags such as directedness into it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Label(u16);
+pub struct EdgeLabel(u16);
 
-impl Label {
+impl EdgeLabel {
+    /// The label with raw value `raw`.
+    #[must_use]
+    pub const fn new(raw: u16) -> Self {
+        Self(raw)
+    }
+
+    /// The raw value.
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+}
+
+/// A node label. A node carries any set of them, apart from its edges' labels: the same raw value
+/// as an [`EdgeLabel`] names an unrelated label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NodeLabel(u16);
+
+impl NodeLabel {
     /// The label with raw value `raw`.
     #[must_use]
     pub const fn new(raw: u16) -> Self {
@@ -194,7 +213,7 @@ pub enum NodeState {
     /// Takes and holds edges.
     Live,
     /// Being deleted: its edges are removed step by step and it takes no new ones.
-    Detaching,
+    Deleting,
     /// Deleted: it has no edges and takes none.
     Deleted,
 }
@@ -218,6 +237,102 @@ impl Direction {
             Self::Incoming => Self::Outgoing,
             Self::Undirected => Self::Undirected,
         }
+    }
+}
+
+/// Consecutive node ids, as [`crate::Graph::add_nodes`] and [`crate::Graph::add_proxies`]
+/// return them: `count` ids from `first`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NodeIds {
+    first: NodeId,
+    count: NonZeroU32,
+}
+
+impl NodeIds {
+    pub(crate) const fn new(first: NodeId, count: NonZeroU32) -> Self {
+        Self { first, count }
+    }
+
+    /// The first id.
+    #[must_use]
+    pub const fn first(self) -> NodeId {
+        self.first
+    }
+
+    /// The last id.
+    #[must_use]
+    pub const fn last(self) -> NodeId {
+        NodeId::new(self.first.index() + (self.count.get() - 1))
+    }
+
+    /// How many ids: never zero.
+    #[must_use]
+    pub const fn len(self) -> NonZeroU32 {
+        self.count
+    }
+
+    /// Whether `v` is one of them.
+    #[must_use]
+    pub const fn contains(self, v: NodeId) -> bool {
+        v.index() >= self.first.index() && v.index() - self.first.index() < self.count.get()
+    }
+}
+
+impl IntoIterator for NodeIds {
+    type Item = NodeId;
+    type IntoIter = core::iter::Map<core::ops::Range<u32>, fn(u32) -> NodeId>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let first = self.first.index();
+        (first..first + self.count.get()).map(NodeId::new)
+    }
+}
+
+/// One adjacency of a node: its edges with one label in one direction, the edges a read or a
+/// pair of nodes names. Made from the label: `FOLLOWS.outgoing()`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Adjacency {
+    label: EdgeLabel,
+    direction: Direction,
+}
+
+impl Adjacency {
+    /// The edges labelled `label` in `direction`.
+    #[must_use]
+    pub const fn new(label: EdgeLabel, direction: Direction) -> Self {
+        Self { label, direction }
+    }
+
+    /// The edges' label.
+    #[must_use]
+    pub const fn label(self) -> EdgeLabel {
+        self.label
+    }
+
+    /// The edges' direction at the node.
+    #[must_use]
+    pub const fn direction(self) -> Direction {
+        self.direction
+    }
+}
+
+impl EdgeLabel {
+    /// The directed edges labelled `self` that leave a node.
+    #[must_use]
+    pub const fn outgoing(self) -> Adjacency {
+        Adjacency::new(self, Direction::Outgoing)
+    }
+
+    /// The directed edges labelled `self` that enter a node.
+    #[must_use]
+    pub const fn incoming(self) -> Adjacency {
+        Adjacency::new(self, Direction::Incoming)
+    }
+
+    /// The undirected edges labelled `self` at a node.
+    #[must_use]
+    pub const fn undirected(self) -> Adjacency {
+        Adjacency::new(self, Direction::Undirected)
     }
 }
 
@@ -262,7 +377,7 @@ impl Neighbor {
 
     /// The neighbour: the node at the edge's other end.
     #[must_use]
-    pub const fn target(&self) -> NodeId {
+    pub const fn node(&self) -> NodeId {
         self.target
     }
 }
@@ -273,21 +388,37 @@ impl Neighbor {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EdgeRef {
     node: NodeId,
-    label: Label,
+    label: EdgeLabel,
     direction: Direction,
     position: Position,
 }
 
 impl EdgeRef {
-    /// The entry at `position` in `node`'s `(label, direction)` bucket.
+    /// The entry at `position` in `node`'s `adjacency` bucket.
     #[must_use]
-    pub const fn new(node: NodeId, label: Label, direction: Direction, position: Position) -> Self {
+    pub const fn new(node: NodeId, adjacency: Adjacency, position: Position) -> Self {
+        Self::of(node, adjacency.label, adjacency.direction, position)
+    }
+
+    /// [`Self::new`] from the label and direction apart.
+    pub(crate) const fn of(
+        node: NodeId,
+        label: EdgeLabel,
+        direction: Direction,
+        position: Position,
+    ) -> Self {
         Self {
             node,
             label,
             direction,
             position,
         }
+    }
+
+    /// The bucket this half is in, at its node.
+    #[must_use]
+    pub const fn adjacency(&self) -> Adjacency {
+        Adjacency::new(self.label, self.direction)
     }
 
     /// The node whose bucket holds this half.
@@ -298,7 +429,7 @@ impl EdgeRef {
 
     /// The edge's label.
     #[must_use]
-    pub const fn label(&self) -> Label {
+    pub const fn label(&self) -> EdgeLabel {
         self.label
     }
 
@@ -424,15 +555,15 @@ mod proofs {
         kani::assume(a != u32::MAX && b != u32::MAX && a != b);
         let (a, b) = (NodeId::new(a), NodeId::new(b));
         kani::assume(!(a.is_proxy() && b.is_proxy()));
-        let (label, at) = (Label::new(kani::any()), Position::new(kani::any()));
+        let (label, at) = (EdgeLabel::new(kani::any()), Position::new(kani::any()));
         let directed = kani::any::<bool>();
         let (here, there) = if directed {
             (Direction::Outgoing, Direction::Incoming)
         } else {
             (Direction::Undirected, Direction::Undirected)
         };
-        let at_a = EdgeRef::new(a, label, here, at);
-        let at_b = EdgeRef::new(b, label, there, at);
+        let at_a = EdgeRef::of(a, label, here, at);
+        let at_b = EdgeRef::of(b, label, there, at);
         let (a_canonical, b_canonical) = (at_a.is_canonical(b), at_b.is_canonical(a));
         assert!(a_canonical != b_canonical);
         if a.is_proxy() != b.is_proxy() {

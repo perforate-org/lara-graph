@@ -11,15 +11,15 @@ use crate::bucket::descriptor::Descriptor;
 use crate::bucket::stored::Stored;
 use crate::error::Error;
 use crate::graph::Graph;
+use crate::graph::GraphMemories;
 use crate::graph::locate::Found;
 use crate::graph::locate::LastBucket;
-use crate::graph::read::TargetSet;
+use crate::graph::read::NeighborSet;
 use crate::graph::read::sorted::first_past;
-use crate::id::{Direction, Label, Neighbor, NodeId, NodeState, Position};
+use crate::id::{Adjacency, Direction, EdgeLabel, Neighbor, NodeId, NodeState, Position};
 use crate::input::Order;
 use crate::node::labels::CellLines;
 use crate::node::store::RecordLines;
-use crate::store::memory::Memory;
 use alloc::vec::Vec;
 use buffers::{ListPageCache, Mode, for_each_list, mode, record, state, stored};
 use core::ops::ControlFlow;
@@ -28,8 +28,8 @@ use view::BatchView;
 /// A read-only batch over a list of nodes. The node-record line and flat-list page buffers
 /// live as long as the batch, so several reads in one query share them. Drop it before mutating
 /// the graph.
-pub struct ReadBatch<'g, M: Memory> {
-    graph: &'g Graph<M>,
+pub struct ReadBatch<'g, S: GraphMemories> {
+    graph: &'g Graph<S>,
     records: RecordLines,
     label_cells: CellLines,
     list_page: ListPageCache,
@@ -38,8 +38,8 @@ pub struct ReadBatch<'g, M: Memory> {
     last_theirs: LastBucket<Found>,
 }
 
-impl<'g, M: Memory> ReadBatch<'g, M> {
-    fn new(graph: &'g Graph<M>) -> Self {
+impl<'g, S: GraphMemories> ReadBatch<'g, S> {
+    fn new(graph: &'g Graph<S>) -> Self {
         Self {
             graph,
             records: RecordLines::default(),
@@ -51,7 +51,7 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         }
     }
 
-    /// Calls `f` with `(node, edge)` for every live edge of each node's `(label, direction)`
+    /// Calls `f` with `(node, edge)` for every live edge of each node's `adjacency`
     /// bucket, in `nodes` order and `order` within each bucket, until `f` breaks.
     ///
     /// The batch keeps an eight-record line of node records and, when a run of flat lists shares
@@ -64,10 +64,11 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
     pub fn visit_neighbors_each<B>(
         &mut self,
         nodes: &[NodeId],
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
         order: Order,
         f: impl FnMut(NodeId, Neighbor) -> ControlFlow<B>,
     ) -> Result<Option<B>, Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         self.visit_each(nodes, LabelBucketKey { label, direction }, order, f)
     }
 
@@ -106,13 +107,13 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         nodes: &[NodeId],
         direction: Direction,
         order: Order,
-        mut f: impl FnMut(NodeId, Label, Neighbor) -> ControlFlow<B>,
+        mut f: impl FnMut(NodeId, EdgeLabel, Neighbor) -> ControlFlow<B>,
     ) -> Result<Option<B>, Error> {
         let graph = self.graph;
         check_all(graph, nodes.iter().copied())?;
         let mode = mode(nodes);
         let view = graph.view();
-        let mut buckets: Vec<(Label, Stored)> = Vec::new();
+        let mut buckets: Vec<(EdgeLabel, Stored)> = Vec::new();
         for &v in nodes {
             self.buckets_on(&view, (v, direction), mode, &mut buckets);
             if order == Order::Descending {
@@ -132,10 +133,10 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
     /// line and list page.
     fn buckets_on(
         &mut self,
-        view: &BatchView<'g, M>,
+        view: &BatchView<'g, S>,
         (v, direction): (NodeId, Direction),
         mode: Mode,
-        out: &mut Vec<(Label, Stored)>,
+        out: &mut Vec<(EdgeLabel, Stored)>,
     ) {
         out.clear();
         let Some(list) = record(self.graph, &mut self.records, v, mode).list else {
@@ -158,10 +159,11 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
     pub fn visit_neighbors_with_values_each<B>(
         &mut self,
         nodes: &[NodeId],
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
         order: Order,
         mut f: impl FnMut(NodeId, Neighbor, &[u8]) -> ControlFlow<B>,
     ) -> Result<Option<B>, Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         let key = LabelBucketKey { label, direction };
         self.each_bucket(nodes, key, |v, view, bucket| {
             view.visit_with_values(bucket, label, order, &mut |e, value| f(v, e, value))
@@ -169,7 +171,7 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
     }
 
     /// Calls `f` with `(node, position, value)` for every value of each node's
-    /// `(label, direction)` bucket, in `order`, until `f` breaks.
+    /// `adjacency` bucket, in `order`, until `f` breaks.
     ///
     /// # Errors
     ///
@@ -177,10 +179,11 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
     pub fn visit_values_each<B>(
         &mut self,
         nodes: &[NodeId],
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
         order: Order,
         mut f: impl FnMut(NodeId, Position, &[u8]) -> ControlFlow<B>,
     ) -> Result<Option<B>, Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         let graph = self.graph;
         let key = LabelBucketKey { label, direction };
         self.each_bucket(nodes, key, |v, _, bucket| {
@@ -192,7 +195,7 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         })
     }
 
-    /// Calls `f` with each node of `nodes` whose `(label, direction)` bucket shares targets with
+    /// Calls `f` with each node of `nodes` whose `adjacency` bucket shares neighbours with
     /// `set`, and those targets, ascending, each once, in `nodes` order, until `f` breaks:
     /// [`Graph::common_with`] over many nodes, through the batch's record line and list page, with
     /// one pair of buffers for all of them. `above` names, for each node, the target the shared
@@ -204,12 +207,13 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
     /// [`Error::UnknownNode`] for any of `nodes`, before the first callback.
     pub fn common_with_each<B>(
         &mut self,
-        set: &mut TargetSet,
+        set: &mut NeighborSet,
         nodes: &[NodeId],
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
         mut above: impl FnMut(NodeId) -> Option<NodeId>,
         mut f: impl FnMut(NodeId, &[NodeId]) -> ControlFlow<B>,
     ) -> Result<Option<B>, Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         let graph = self.graph;
         if set.is_empty() {
             check_all(graph, nodes.iter().copied())?;
@@ -240,7 +244,7 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         &mut self,
         nodes: &[NodeId],
         key: LabelBucketKey,
-        mut f: impl FnMut(NodeId, &BatchView<'_, M>, &LabelBucket) -> Option<B>,
+        mut f: impl FnMut(NodeId, &BatchView<'_, S>, &LabelBucket) -> Option<B>,
     ) -> Result<Option<B>, Error> {
         let graph = self.graph;
         check_all(graph, nodes.iter().copied())?;
@@ -258,7 +262,7 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         Ok(None)
     }
 
-    /// Replaces `out` with the live-edge counts of each node's `(label, direction)` bucket, one
+    /// Replaces `out` with the live-edge counts of each node's `adjacency` bucket, one
     /// entry per input node and 0 when the node has no bucket. Validates all nodes before it
     /// writes `out`.
     ///
@@ -268,9 +272,10 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
     pub fn degree_each(
         &mut self,
         nodes: &[NodeId],
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
         out: &mut Vec<u32>,
     ) -> Result<(), Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         let graph = self.graph;
         check_all(graph, nodes.iter().copied())?;
         out.clear();
@@ -297,7 +302,7 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
         &mut self,
         nodes: &[NodeId],
         direction: Direction,
-        mut f: impl FnMut(NodeId, Label) -> ControlFlow<B>,
+        mut f: impl FnMut(NodeId, EdgeLabel) -> ControlFlow<B>,
     ) -> Result<Option<B>, Error> {
         let graph = self.graph;
         check_all(graph, nodes.iter().copied())?;
@@ -343,7 +348,7 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
 
     /// Whether `v` has a bucket with a live edge; stops at the first.
     #[inline]
-    fn has_live(&mut self, view: &BatchView<'_, M>, v: NodeId, mode: Mode) -> bool {
+    fn has_live(&mut self, view: &BatchView<'_, S>, v: NodeId, mode: Mode) -> bool {
         let record = record(self.graph, &mut self.records, v, mode);
         let Some(list) = record.list else {
             return false;
@@ -385,7 +390,7 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
     #[inline]
     fn stored_at(
         &mut self,
-        view: &BatchView<'_, M>,
+        view: &BatchView<'_, S>,
         v: NodeId,
         key: LabelBucketKey,
         mode: Mode,
@@ -397,8 +402,8 @@ impl<'g, M: Memory> ReadBatch<'g, M> {
 
 /// Checks every node of a batch before its first read.
 #[inline]
-fn check_all<M: Memory>(
-    graph: &Graph<M>,
+fn check_all<S: GraphMemories>(
+    graph: &Graph<S>,
     nodes: impl IntoIterator<Item = NodeId>,
 ) -> Result<(), Error> {
     for v in nodes {
@@ -407,11 +412,11 @@ fn check_all<M: Memory>(
     Ok(())
 }
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// A read-only batch that keeps its node-record and list-page buffers across calls. Drop it
     /// before mutating the graph.
     #[must_use]
-    pub fn read_batch(&self) -> ReadBatch<'_, M> {
+    pub fn read_batch(&self) -> ReadBatch<'_, S> {
         ReadBatch::new(self)
     }
 }

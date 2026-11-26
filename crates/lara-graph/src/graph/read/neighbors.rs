@@ -6,14 +6,14 @@ use crate::bucket::descriptor::Descriptor;
 use crate::bucket::slots::{self, Span, Window};
 use crate::error::Error;
 use crate::graph::Graph;
-use crate::id::{Direction, EdgeRef, Label, Neighbor, NodeId, Position};
+use crate::graph::GraphMemories;
+use crate::id::{Adjacency, Direction, EdgeLabel, EdgeRef, Neighbor, NodeId, Position};
 use crate::input::{Cursor, Order};
 use crate::node::label_bucket_list;
-use crate::store::memory::Memory;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// The other half of the edge `half` belongs to, or `None` when `half` is not live.
     ///
     /// When the other bucket is small and holds one entry back, that entry is the answer;
@@ -27,7 +27,7 @@ impl<M: Memory> Graph<M> {
         Ok(self.pair(half)?.map(|pair| pair.other))
     }
 
-    /// Calls `f` with each live edge of `v`'s `(label, direction)` bucket in `order`, until it
+    /// Calls `f` with each live edge of `v`'s `adjacency` bucket in `order`, until it
     /// breaks; returns the break value. Reads like [`Self::neighbors`] without collecting.
     ///
     /// # Errors
@@ -36,10 +36,11 @@ impl<M: Memory> Graph<M> {
     pub fn visit_neighbors<B>(
         &self,
         v: NodeId,
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
         order: Order,
         f: impl FnMut(Neighbor) -> ControlFlow<B>,
     ) -> Result<Option<B>, Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         Ok(self
             .bucket(v, LabelBucketKey { label, direction })?
             .and_then(|d| {
@@ -67,14 +68,14 @@ impl<M: Memory> Graph<M> {
         v: NodeId,
         direction: Direction,
         order: Order,
-        mut f: impl FnMut(Label, Neighbor) -> ControlFlow<B>,
+        mut f: impl FnMut(EdgeLabel, Neighbor) -> ControlFlow<B>,
     ) -> Result<Option<B>, Error> {
         let Some(list) = self.label_bucket_list(v)? else {
             return Ok(None);
         };
         let lists = self.label_bucket_lists.pages();
         let edges = self.edge_view().pages();
-        let mut visit = |label: Label, slots: Descriptor| {
+        let mut visit = |label: EdgeLabel, slots: Descriptor| {
             slots::visit(
                 &slots,
                 &edges,
@@ -109,7 +110,7 @@ impl<M: Memory> Graph<M> {
             .find_map(|(label, stored)| visit(label, stored.slots(&edges))))
     }
 
-    /// Calls `f` with each live edge in `cursor`'s window of `v`'s `(label, direction)` bucket, in
+    /// Calls `f` with each live edge in `cursor`'s window of `v`'s `adjacency` bucket, in
     /// its order, and returns the next window, or `None` when the bucket has no positions past this
     /// one. Holes count toward the span, so each call reads at most `span` slots.
     ///
@@ -119,10 +120,11 @@ impl<M: Memory> Graph<M> {
     pub fn visit_window(
         &self,
         v: NodeId,
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
         cursor: Cursor,
         mut f: impl FnMut(Neighbor),
     ) -> Result<Option<Cursor>, Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         let Some(d) = self.bucket(v, LabelBucketKey { label, direction })? else {
             return Ok(None);
         };
@@ -157,20 +159,21 @@ impl<M: Memory> Graph<M> {
         Ok(next.map(|at| Cursor::at(cursor.order(), Position::new(at), cursor.span())))
     }
 
-    /// Replaces the contents of `out` with the targets at `positions` of `v`'s `(label, direction)`
+    /// Replaces the contents of `out` with the targets at `positions` of `v`'s `adjacency`
     /// bucket, in the order given: `None` for a hole or a position past the end. Reads each
     /// touched run or page once.
     ///
     /// # Errors
     ///
     /// [`Error::UnknownNode`].
-    pub fn targets_at(
+    pub fn neighbors_at(
         &self,
         v: NodeId,
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
         positions: &[Position],
         out: &mut Vec<Option<NodeId>>,
     ) -> Result<(), Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         out.clear();
         let Some(d) = self.bucket(v, LabelBucketKey { label, direction })? else {
             out.resize(positions.len(), None);
@@ -201,7 +204,7 @@ impl<M: Memory> Graph<M> {
     }
 }
 
-impl<M: Memory> Graph<M> {
+impl<S: GraphMemories> Graph<S> {
     /// The position of the live edge that `skip` live edges precede in `v`'s `(label,
     /// direction)` bucket, counted in `order`: where a read that skips the first `skip` edges
     /// starts, as [`Self::visit_window`] reads on from it. `None` when the bucket has no more.
@@ -214,27 +217,29 @@ impl<M: Memory> Graph<M> {
     pub fn nth_position(
         &self,
         v: NodeId,
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
         order: Order,
         skip: u32,
     ) -> Result<Option<Position>, Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         Ok(self
             .bucket(v, LabelBucketKey { label, direction })?
             .and_then(|d| slots::nth_live(&d, &self.edge_view().pages(), order, skip)))
     }
 
-    /// Number of live edges in `v`'s `(label, direction)` bucket.
+    /// Number of live edges in `v`'s `adjacency` bucket.
     ///
     /// # Errors
     ///
     /// [`Error::UnknownNode`].
-    pub fn degree(&self, v: NodeId, (label, direction): (Label, Direction)) -> Result<u32, Error> {
+    pub fn degree(&self, v: NodeId, adjacency: Adjacency) -> Result<u32, Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         Ok(self
             .bucket(v, LabelBucketKey { label, direction })?
             .map_or(0, |d| d.live()))
     }
 
-    /// Replaces the contents of `out` with the live edges of `v`'s `(label, direction)` bucket, in
+    /// Replaces the contents of `out` with the live edges of `v`'s `adjacency` bucket, in
     /// position order. Each edge's target is the node at its other end.
     /// [`Self::visit_neighbors`] reads the same edges in about half the instructions when they
     /// need not be kept.
@@ -245,9 +250,10 @@ impl<M: Memory> Graph<M> {
     pub fn neighbors(
         &self,
         v: NodeId,
-        (label, direction): (Label, Direction),
+        adjacency: Adjacency,
         out: &mut Vec<Neighbor>,
     ) -> Result<(), Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         out.clear();
         if let Some(d) = self.bucket(v, LabelBucketKey { label, direction })? {
             slots::read(&d, &self.edge_view().pages(), out);
@@ -260,19 +266,20 @@ impl<M: Memory> Graph<M> {
     /// # Errors
     ///
     /// [`Error::UnknownNode`].
-    pub fn edge_target(&self, half: EdgeRef) -> Result<Option<NodeId>, Error> {
+    pub fn other_end(&self, half: EdgeRef) -> Result<Option<NodeId>, Error> {
         Ok(self
             .bucket(half.node(), LabelBucketKey::of(half))?
             .and_then(|d| slots::get(&d, half.position(), &self.edge_view().pages())))
     }
 
-    /// Removed edges `v`'s `(label, direction)` bucket still holds positions for: the work
+    /// Removed edges `v`'s `adjacency` bucket still holds positions for: the work
     /// compaction can do.
     ///
     /// # Errors
     ///
     /// [`Error::UnknownNode`].
-    pub fn holes(&self, v: NodeId, (label, direction): (Label, Direction)) -> Result<u32, Error> {
+    pub fn holes(&self, v: NodeId, adjacency: Adjacency) -> Result<u32, Error> {
+        let (label, direction) = (adjacency.label(), adjacency.direction());
         Ok(self
             .bucket(v, LabelBucketKey { label, direction })?
             .map_or(0, |d| d.stored() - d.live()))

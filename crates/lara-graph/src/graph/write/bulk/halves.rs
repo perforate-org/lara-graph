@@ -4,7 +4,7 @@ use crate::bucket::LabelBucketKey;
 use crate::edge::BuiltHalf;
 use crate::id::Direction;
 use crate::id::{EdgeRef, Halves, NodeId, Position};
-use crate::input::{EdgeKind, NewEdge};
+use crate::input::{Edge, EdgeKind};
 use crate::store::corrupt::corrupt;
 use alloc::vec::Vec;
 
@@ -74,7 +74,7 @@ impl Half {
 }
 
 /// Splits `edges` into halves sorted by node and label bucket key.
-pub(super) fn split(edges: &[NewEdge<'_>]) -> Vec<Half> {
+pub(super) fn split(edges: &[Edge<'_>]) -> Vec<Half> {
     let mut halves: Vec<Half> = Vec::with_capacity(edges.len() * 2);
     for (edge_index, edge) in edges.iter().enumerate() {
         push_halves(
@@ -88,7 +88,7 @@ pub(super) fn split(edges: &[NewEdge<'_>]) -> Vec<Half> {
 }
 
 /// Pushes the halves of one edge; an undirected self-loop has one.
-fn push_halves(halves: &mut Vec<Half>, edge: &NewEdge<'_>, index: u32) {
+fn push_halves(halves: &mut Vec<Half>, edge: &Edge<'_>, index: u32) {
     let key = |direction| LabelBucketKey {
         label: edge.label(),
         direction,
@@ -145,7 +145,7 @@ pub(super) fn positions(halves: &[Half], edge_count: usize) -> Vec<[u32; 2]> {
 }
 
 /// The [`Halves`] of every edge, from the positions table.
-pub(super) fn edge_halves(edges: &[NewEdge<'_>], positions: &[[u32; 2]]) -> Vec<Halves> {
+pub(super) fn edge_halves(edges: &[Edge<'_>], positions: &[[u32; 2]]) -> Vec<Halves> {
     let mut out = Vec::with_capacity(edges.len());
     for (edge, &[first, second]) in edges.iter().zip(positions) {
         out.push(edge_refs(edge, first, second));
@@ -154,19 +154,19 @@ pub(super) fn edge_halves(edges: &[NewEdge<'_>], positions: &[[u32; 2]]) -> Vec<
 }
 
 /// The [`Halves`] of one edge; an undirected self-loop's two halves share one position.
-fn edge_refs(edge: &NewEdge<'_>, first: u32, second: u32) -> Halves {
+fn edge_refs(edge: &Edge<'_>, first: u32, second: u32) -> Halves {
     let label = edge.label();
     match edge.kind() {
         EdgeKind::Directed => Halves::new(
-            EdgeRef::new(edge.from(), label, Direction::Outgoing, canonical(first)),
-            EdgeRef::new(edge.to(), label, Direction::Incoming, other(second)),
+            EdgeRef::of(edge.from(), label, Direction::Outgoing, canonical(first)),
+            EdgeRef::of(edge.to(), label, Direction::Incoming, other(second)),
         ),
         EdgeKind::Undirected => {
             let (low, high) = (edge.from().min(edge.to()), edge.from().max(edge.to()));
             let second = if low == high { first } else { second };
             Halves::new(
-                EdgeRef::new(high, label, Direction::Undirected, canonical(first)),
-                EdgeRef::new(low, label, Direction::Undirected, other(second)),
+                EdgeRef::of(high, label, Direction::Undirected, canonical(first)),
+                EdgeRef::of(low, label, Direction::Undirected, other(second)),
             )
         }
     }

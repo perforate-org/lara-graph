@@ -64,7 +64,7 @@ fn check_node_labels<M: Memory>(g: &Graph<M>, i: u32, seen: &mut Seen) {
 /// The label postings are exactly the inverse of the nodes' label sets, and own their extents
 /// once.
 fn check_postings<M: Memory>(g: &Graph<M>, seen: &mut Seen) {
-    let mut want: BTreeMap<Label, Vec<NodeId>> = BTreeMap::new();
+    let mut want: BTreeMap<NodeLabel, Vec<NodeId>> = BTreeMap::new();
     for i in 0..g.node_count() {
         let mut labels = Vec::new();
         g.node_labels(v(i), &mut labels).unwrap();
@@ -73,9 +73,9 @@ fn check_postings<M: Memory>(g: &Graph<M>, seen: &mut Seen) {
         }
     }
     let view = g.label_bucket_lists.pages();
-    let listed: Vec<(Label, u32)> =
+    let listed: Vec<(NodeLabel, u32)> =
         crate::node::labels::postings::labels(&view, g.labels.postings());
-    let counts: Vec<(Label, u32)> = want
+    let counts: Vec<(NodeLabel, u32)> = want
         .iter()
         .map(|(&l, nodes)| (l, u32::try_from(nodes.len()).unwrap()))
         .collect();
@@ -103,7 +103,7 @@ struct Seen {
     edges: BTreeSet<(u32, u64, u8)>,
     label_bucket_lists: BTreeSet<(u32, u64, u8)>,
     /// (owner, label, side, other end) → live halves.
-    halves: BTreeMap<(u32, Label, Direction, u32), usize>,
+    halves: BTreeMap<(u32, EdgeLabel, Direction, u32), usize>,
 }
 
 fn check_node<M: Memory>(g: &Graph<M>, i: u32, seen: &mut Seen) {
@@ -158,7 +158,7 @@ fn check_values<M: Memory>(
     if bucket.index == Index::Dropped {
         assert_eq!(
             state,
-            NodeState::Detaching,
+            NodeState::Deleting,
             "an index dropped outside a detach"
         );
         assert!(
@@ -178,10 +178,7 @@ fn check_values<M: Memory>(
     let mut live = Vec::new();
     slots::read(&bucket.slots, &view, &mut live);
     for e in live.iter().filter(|e| e.position().index() < end) {
-        let key = (
-            e.target().index(),
-            e.position().index() / target_index::BLOCK,
-        );
+        let key = (e.node().index(), e.position().index() / target_index::BLOCK);
         *expected.entry(key).or_default() += 1;
     }
     let postings: BTreeMap<(u32, u32), u32> = target_index::postings(&view, bucket.index.tree())
@@ -234,7 +231,7 @@ fn check_bucket<M: Memory>(
     for extent in slots::owned_extents(d, &view) {
         assert!(owned.insert(key(extent)), "edge extent shared");
     }
-    out.iter().map(|e| e.target().index()).collect()
+    out.iter().map(|e| e.node().index()).collect()
 }
 
 /// Each data page's recorded tombstone count matches its slots.
@@ -268,7 +265,7 @@ fn check_page_tombstones<M: Memory>(view: &Pages<'_, M>, paged: &Paged) {
 }
 
 /// Every bucket's live entries to a node are matched by as many entries back.
-fn check_pairs(halves: &BTreeMap<(u32, Label, Direction, u32), usize>) {
+fn check_pairs(halves: &BTreeMap<(u32, EdgeLabel, Direction, u32), usize>) {
     for (&(owner, label, direction, other), &count) in halves {
         let paired = halves.get(&(other, label, direction.opposite(), owner));
         assert_eq!(

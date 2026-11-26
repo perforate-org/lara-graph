@@ -23,7 +23,7 @@ pub(crate) enum Compacted {
     Emptied,
 }
 
-impl<M: Memory> EdgeStore<M> {
+impl<M: Memory, D: Memory> EdgeStore<M, D> {
     /// One bounded compaction step of `bucket`. Plans everything that allocates before it changes
     /// anything, so on error nothing changed.
     pub(crate) fn compact(
@@ -128,7 +128,7 @@ impl<M: Memory> EdgeStore<M> {
         let changes: Vec<Change> = step
             .moves()
             .iter()
-            .flat_map(|m| Change::moved(m.target(), (m.from(), m.to())))
+            .flat_map(|m| Change::moved(m.node(), (m.from(), m.to())))
             .collect();
         let plan = target_index::plan(&self.store.pages(), bucket.index.tree(), &changes);
         self.store.reserve(plan.pages())?;
