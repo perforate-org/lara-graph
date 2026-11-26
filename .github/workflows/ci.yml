@@ -28,6 +28,11 @@ jobs:
       # names.
       - run: rustup toolchain install nightly-2026-10-26 --profile minimal
       - uses: Swatinem/rust-cache@v2
+        with:
+          # The bench crate is a workspace of its own, linted by the gate too.
+          workspaces: |
+            . -> target
+            crates/lara-graph-bench -> target
       - uses: taiki-e/install-action@v2
         with:
           tool: just

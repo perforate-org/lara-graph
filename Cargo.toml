@@ -1,9 +1,8 @@
 [workspace]
 resolver = "2"
-members = [
-    "crates/lara-graph",
-    "crates/lara-graph-bench",
-]
+members = ["crates/lara-graph"]
+# The bench crate is a workspace of its own, with its own committed `Cargo.lock`.
+exclude = ["crates/lara-graph-bench"]
 
 [workspace.package]
 version = "0.1.0"

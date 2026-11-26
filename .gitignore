@@ -1,6 +1,8 @@
 # Rust
 target/
 Cargo.lock
+# The bench crate pins what canbench measures.
+!crates/lara-graph-bench/Cargo.lock
 
 # OS
 .DS_Store

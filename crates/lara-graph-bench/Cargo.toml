@@ -1,8 +1,12 @@
+# A workspace of its own, so that this crate's `Cargo.lock` is committed: canbench in CI then builds
+# the dependencies that were measured. The library's own lock stays uncommitted.
+[workspace]
+
 [package]
 name = "lara-graph-bench"
 description = "canbench instruction measurements for lara-graph on the Internet Computer."
-version.workspace = true
-edition.workspace = true
+version = "0.1.0"
+edition = "2024"
 publish = false
 
 [lib]
@@ -15,5 +19,58 @@ ic-cdk = "0.20"
 ic-stable-structures = "0.7.2"
 lara-graph = { path = "../lara-graph", features = ["ic-stable-structures"] }
 
-[lints]
-workspace = true
+# A copy of the root workspace's lints (`../../Cargo.toml`): this crate is a workspace of its own,
+# so that its `Cargo.lock` can be committed and canbench builds what was measured. Keep the two in
+# step.
+#
+# Every rule here enforces one of the project rules:
+#   [types]   behaviour is specified by types (structs, enums, newtypes, typestate), not by raw
+#             integers, strings or flags
+#   [encap]   encapsulation: nothing internal leaks, every public item is deliberate
+#   [raii]    paired operations are scoped by a value whose drop must run
+#   [nostd]   the core stays `no_std` + `alloc`
+#   [explain] every exception is local, visible and justified
+[lints.rust]
+unsafe_code = "deny"                   # [encap] only the memory seam may read into uninitialized bytes, each use expected and justified
+missing_docs = "deny"                  # [encap] every public item is deliberate
+unreachable_pub = "deny"               # [encap] `pub` only where it is actually exported
+unused_qualifications = "deny"
+# Tests run at full size with `--cfg lara_full_size` (see `crates/lara-graph/src/scale.rs`).
+unexpected_cfgs = { level = "deny", check-cfg = ["cfg(lara_full_size)", "cfg(kani)"] }
+rust_2018_idioms = { level = "deny", priority = -1 }
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+# [types] Raw numeric casts bypass the newtypes; conversions go through named, checked methods.
+as_conversions = "deny"
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+cast_possible_wrap = "deny"
+# [types] `bool` parameters and fields are unnamed enums (thresholds in clippy.toml are zero).
+fn_params_excessive_bools = "deny"
+struct_excessive_bools = "deny"
+# [types] A new enum variant must be handled deliberately at every match.
+wildcard_enum_match_arm = "deny"
+match_wildcard_for_single_variants = "deny"
+# [types] Failures are typed errors, not panics hidden in `unwrap`.
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+# [encap] A module is one file named after it, never `mod.rs`.
+mod_module_files = "deny"
+# [encap]
+pub_underscore_fields = "deny"
+exhaustive_structs = "deny"            # public structs keep private fields (construct via API)
+partial_pub_fields = "deny"
+# [raii] A guard's drop is its contract.
+mem_forget = "deny"
+# [nostd]
+std_instead_of_core = "deny"
+std_instead_of_alloc = "deny"
+alloc_instead_of_core = "deny"
+# [explain] `#[expect(..., reason = "...")]` instead of silent `#[allow]`.
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+# `unreachable_pub` already governs visibility; `pub(crate)` would contradict it.
+redundant_pub_crate = "allow"
+module_name_repetitions = "allow"

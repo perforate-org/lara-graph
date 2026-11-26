@@ -1,15 +1,19 @@
 # Gates for `lara-graph`.
 
 crate := "lara-graph"
+# The bench crate is a workspace of its own (see its Cargo.toml).
+bench := "--manifest-path crates/lara-graph-bench/Cargo.toml"
 
 # Every gate; CI and pre-commit run this.
 gate: fmt clippy test doc deslop smells
 
 fmt:
     cargo fmt -p {{crate}} --check
+    cargo fmt {{bench}} --check
 
 clippy:
     cargo clippy -p {{crate}} --all-targets --all-features -- -D warnings
+    cargo clippy {{bench}} --all-targets --locked -- -D warnings
 
 # The modules' documentation is the specification: every link in it must resolve.
 doc:
