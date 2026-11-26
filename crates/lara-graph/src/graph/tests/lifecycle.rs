@@ -32,6 +32,30 @@ fn label_widths_are_declared_once_and_survive_a_reopen() {
     assert_eq!(Width::new(4097), None);
 }
 
+/// Widths on labels far apart make the table a tree with missing pages between them; a reopen
+/// reads only the pages it has, and finds each width.
+#[test]
+fn widths_across_the_label_range_survive_a_reopen() {
+    let backing = Backing::default();
+    let w = |bytes| Width::new(bytes).unwrap();
+    let labels = [(2, 8), (1_500, 16), (40_000, 4), (u16::MAX, 2)];
+    {
+        let mut g = backing.create(1);
+        for (label, width) in labels {
+            g.declare_width(EdgeLabel::new(label), w(width)).unwrap();
+        }
+        check(&g);
+    }
+    let g = backing.open();
+    for (label, width) in labels {
+        assert_eq!(g.width(EdgeLabel::new(label)), Some(w(width)), "label {label}");
+    }
+    for label in [0, 3, 1_499, 1_501, 39_999, u16::MAX - 1] {
+        assert_eq!(g.width(EdgeLabel::new(label)), None, "label {label}");
+    }
+    check(&g);
+}
+
 /// The edges of the first four nodes, under labels 0 to 2, on both sides.
 fn snapshot(g: &Graph<VecMemory>) -> Vec<Vec<Vec<(u32, u32)>>> {
     (0..4.min(g.node_count()))

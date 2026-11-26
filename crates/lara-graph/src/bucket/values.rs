@@ -220,6 +220,34 @@ pub(crate) fn visit<M: Memory, B>(
     None
 }
 
+/// Calls `f` with the values of positions `low..high` that have storage, a value page (or the
+/// run) at a time, as `(first position, bytes)`, lowest first; positions without storage are
+/// skipped, not read as zeros. For a plane mostly without storage over a wide range, such as
+/// the width table over every label: [`visit`] would zero and pass every missing page.
+pub(crate) fn visit_stored<M: Memory, B>(
+    view: &Pages<'_, M>,
+    plane: Plane,
+    width: Width,
+    (low, high): (u32, u32),
+    mut f: impl FnMut(u32, &[u8]) -> core::ops::ControlFlow<B>,
+) -> Option<B> {
+    let cpp = cells_per_page(width);
+    let mut buf = ReadBuf::new();
+    for page in low / cpp..high.div_ceil(cpp) {
+        let (a, b) = ((page * cpp).max(low), ((page + 1) * cpp).min(high));
+        let cell = cell_at(view, plane, width, a);
+        let stored = stored_cells(plane, width, cell, (a, b));
+        let Some(at) = cell.filter(|_| stored > 0) else {
+            continue;
+        };
+        let len = usize::try_from(stored).unwrap_or(0) * width_len(width);
+        if let core::ops::ControlFlow::Break(done) = f(a, buf.fill(view, at, len)) {
+            return Some(done);
+        }
+    }
+    None
+}
+
 /// The values of positions `a..b`, all on one value page (or in the run), read into `buf`;
 /// missing storage comes as zeros. Always inlined into [`visit`], as [`cell_at`] is into it: as
 /// a call, a value visit cost about 60 instructions a node more (`visit_values_many_1024_loop`).

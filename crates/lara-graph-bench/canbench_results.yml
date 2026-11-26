@@ -848,6 +848,27 @@ benches:
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
+  open_1024:
+    total:
+      calls: 1
+      instructions: 8884
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  open_width_high_label_1024:
+    total:
+      calls: 1
+      instructions: 85501
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
+  open_width_low_label_1024:
+    total:
+      calls: 1
+      instructions: 10884
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes: {}
   read_8_bytes_1024:
     total:
       calls: 1

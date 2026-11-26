@@ -24,6 +24,7 @@ mod insert;
 mod locality;
 mod lookup;
 mod node_labels;
+mod open;
 mod remove;
 mod scan;
 mod shortest;

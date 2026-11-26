@@ -65,14 +65,16 @@ impl Widths {
         }
     }
 
-    /// Reads the table whose root the nodes header holds.
+    /// Reads the table whose root the nodes header holds, as every open does: only its pages
+    /// with storage. Visiting every label's cell, missing pages as zeros, cost about 1.8M
+    /// instructions an open whatever the widths (`open_1024`: 8.9K now).
     pub(crate) fn load<M: Memory>(plane: Plane, label_bucket_lists: &PageStore<M>) -> Self {
         let mut sorted = Vec::new();
-        values::visit(
+        values::visit_stored(
             &label_bucket_lists.pages(),
             plane,
             CELL,
-            (0, 1 << 16, false),
+            (0, 1 << 16),
             |at, bytes| {
                 for (label, &[w0, w1, version, _]) in (at..).zip(bytes.as_chunks::<4>().0) {
                     if let Some(width) = Width::new(u16::from_le_bytes([w0, w1])) {
