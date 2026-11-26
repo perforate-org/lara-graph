@@ -12,17 +12,17 @@
 
 = Evaluation (sample)
 
-Visiting the edges of a 65,536-edge node costs #num("lara_stable_visit_65536") instructions on
-stable memory against #num("btree_visit_65536_stable") for a `StableBTreeMap`
-(#ratio("btree_visit_65536_stable", "lara_stable_visit_65536") fewer). Batching node insertion
+Visiting the edges of a 65,536-edge node costs #num("hub_visit_65536") instructions on
+stable memory against #num("btree_visit_65536") for a `StableBTreeMap`
+(#ratio("btree_visit_65536", "hub_visit_65536") fewer). Batching node insertion
 changes the cost by #change("add_nodes_1024_loop", "add_nodes_1024_batched").
 
 #figure(
   bench-table((
-    ([Insert 1,024], "lara_stable_insert_1024"),
-    ([Insert 65,536], "lara_stable_insert_65536"),
-    ([Scan 65,536], "lara_stable_scan_65536"),
-    ([Visit 65,536], "lara_stable_visit_65536"),
+    ([Insert 1,024], "hub_insert_1024"),
+    ([Insert 65,536], "hub_insert_65536"),
+    ([Scan 65,536], "hub_scan_65536"),
+    ([Visit 65,536], "hub_visit_65536"),
   )),
   caption: [LARA on stable memory.],
 )
@@ -30,10 +30,10 @@ changes the cost by #change("add_nodes_1024_loop", "add_nodes_1024_batched").
 #figure(
   bench-bars(
     (
-      ([insert 1k], ("lara_stable_insert_1024", "btree_insert_1024_stable")),
-      ([insert 64k], ("lara_stable_insert_65536", "btree_insert_65536_stable")),
-      ([scan 64k], ("lara_stable_scan_65536", "btree_scan_65536_stable")),
-      ([visit 64k], ("lara_stable_visit_65536", "btree_visit_65536_stable")),
+      ([insert 1k], ("hub_insert_1024", "btree_insert_1024")),
+      ([insert 64k], ("hub_insert_65536", "btree_insert_65536")),
+      ([scan 64k], ("hub_scan_65536", "btree_scan_65536")),
+      ([visit 64k], ("hub_visit_65536", "btree_visit_65536")),
     ),
     series: ([LARA], [StableBTreeMap]),
   ),
@@ -41,7 +41,7 @@ changes the cost by #change("add_nodes_1024_loop", "add_nodes_1024_batched").
 )
 
 #figure(
-  item("/crates/lara-graph-bench/src/btree.rs", "fn lara_stable_visit_65536"),
+  item("/crates/lara-graph-bench/src/scan.rs", "fn hub_visit_65536"),
   caption: [The benchmark behind the visit numbers.],
 )
 
