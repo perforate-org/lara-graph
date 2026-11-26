@@ -41,7 +41,7 @@ impl<S: GraphMemories> Graph<S> {
                     .list
                     .unwrap_or_else(|| corrupt("present bucket without a list"));
                 let list =
-                    label_bucket_list::remove(&mut self.label_bucket_lists, list, found.entry);
+                    label_bucket_list::remove(&mut self.edges.lists_mut(), list, found.entry);
                 self.set_label_bucket_list(v, record, list);
             }
         }

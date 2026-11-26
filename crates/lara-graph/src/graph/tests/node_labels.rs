@@ -202,13 +202,13 @@ fn node_labels_that_run_out_of_memory_change_nothing() {
     let mut g = backing.create(4);
     g.set_node_labels(v(0), &set(&[1, 2, 3])).unwrap();
     g.set_node_labels(v(1), &set(&[2])).unwrap();
-    let memory = &backing.memories[usize::from(MemoryRole::LabelBucketListPages.index())];
+    let memory = &backing.memories[usize::from(MemoryRole::Pages.index())];
     memory.cap(memory.size());
     let capacity = u32::try_from(memory.size() * (PAGE_SIZE / 4096)).unwrap();
     // Leave room for the new set and the first few postings only.
     let mut held = Vec::new();
-    while capacity - g.label_bucket_lists.minted() > 26 {
-        held.push(g.label_bucket_lists.allocate(ByteClass::PAGE).unwrap());
+    while capacity - g.edges.store().minted() > 26 {
+        held.push(g.edges.lists_mut().allocate(ByteClass::PAGE).unwrap());
     }
     let many: Vec<NodeLabel> = (0..6000).map(nl).collect();
     let error = g.set_node_labels(v(0), &many);
@@ -217,7 +217,7 @@ fn node_labels_that_run_out_of_memory_change_nothing() {
     assert_eq!(g.node_label_count(nl(2)), 2);
     assert_eq!(g.node_label_count(nl(0)), 0);
     for extent in held {
-        g.label_bucket_lists.release(extent);
+        g.edges.lists_mut().release(extent);
     }
     check(&g);
 }

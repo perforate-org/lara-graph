@@ -73,7 +73,7 @@ impl<S: GraphMemories> Graph<S> {
         let Some(list) = self.label_bucket_list(v)? else {
             return Ok(None);
         };
-        let lists = self.label_bucket_lists.pages();
+        let lists = self.edges.store().pages();
         let edges = self.edge_view().pages();
         let mut visit = |label: EdgeLabel, slots: Descriptor| {
             slots::visit(
@@ -293,7 +293,7 @@ impl<S: GraphMemories> Graph<S> {
         key: LabelBucketKey,
     ) -> Result<Option<Descriptor>, Error> {
         let list = self.label_bucket_list(v)?;
-        let lists = self.label_bucket_lists.pages();
+        let lists = self.edges.store().pages();
         Ok(label_bucket_list::lookup_stored(&lists, list, key)
             .map(|stored| stored.slots(&self.edge_view().pages())))
     }

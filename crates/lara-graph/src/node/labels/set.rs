@@ -1,7 +1,7 @@
 //! A node's labels: a set of [`NodeLabel`]s in 5 bytes of the node labels memory, and beyond.
 //!
 //! Most nodes have one label or two, so the cell holds up to two inline. A larger set goes to the
-//! label bucket list store: up to [`MAX_LISTED`] as a sorted list in one extent, more as a bitmap
+//! page store: up to [`MAX_LISTED`] as a sorted list in one extent, more as a bitmap
 //! of every label (65,536 bits, two pages) behind a small header. Any set of labels fits, and a
 //! replacement copies at most two pages. The kind sits in the spare bits of an extent's last
 //! byte, so all zeros is a node without labels.

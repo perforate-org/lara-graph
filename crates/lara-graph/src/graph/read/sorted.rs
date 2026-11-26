@@ -195,7 +195,7 @@ impl<S: GraphMemories> Graph<S> {
     fn targets_of<'a>(
         &'a self,
         bucket: &'a LabelBucket,
-    ) -> BucketTargets<'a, S::EdgePages, S::EdgeDirectory> {
+    ) -> BucketTargets<'a, S::Pages, S::Directory> {
         BucketTargets {
             view: self.edge_view(),
             bucket,

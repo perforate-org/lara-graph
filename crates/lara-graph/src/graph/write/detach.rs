@@ -111,8 +111,8 @@ impl<S: GraphMemories> Graph<S> {
                 carried
             } else {
                 let list = self.label_bucket_list(v)?;
-                let Some((entry, key, stored)) = list
-                    .map(|list| label_bucket_list::first(&self.label_bucket_lists.pages(), list))
+                let Some((entry, key, stored)) =
+                    list.map(|list| label_bucket_list::first(&self.edges.store().pages(), list))
                 else {
                     break;
                 };

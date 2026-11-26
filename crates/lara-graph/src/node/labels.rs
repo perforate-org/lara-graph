@@ -1,7 +1,7 @@
 //! Node labels as one component: each node's set in the node labels memory (see `set`)
 //! and each label's nodes (see `postings`). [`LabelStore::set`] is the one writer of both,
 //! so the postings are always exactly the inverse of the sets. Larger sets and the postings live
-//! in the label bucket list store, which callers lend.
+//! in the page store, which callers lend.
 //!
 //! # Node labels memory
 //!

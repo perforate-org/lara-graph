@@ -50,7 +50,7 @@ impl<S: GraphMemories> Graph<S> {
             return Ok(());
         };
         out.clear();
-        label_bucket_list::for_each(&self.label_bucket_lists.pages(), Some(list), |key, _| {
+        label_bucket_list::for_each(&self.edges.store().pages(), Some(list), |key, _| {
             if key.direction == direction {
                 out.push(key.label);
             }
@@ -70,17 +70,15 @@ impl<S: GraphMemories> Graph<S> {
             return Ok(false);
         };
         let view = self.edge_view().pages();
-        Ok(label_bucket_list::for_each(
-            &self.label_bucket_lists.pages(),
-            Some(list),
-            |_, listed| {
+        Ok(
+            label_bucket_list::for_each(&self.edges.store().pages(), Some(list), |_, listed| {
                 if LabelBucket::resolve(&view, listed.stored()).slots.live() > 0 {
                     ControlFlow::Break(())
                 } else {
                     ControlFlow::<()>::Continue(())
                 }
-            },
+            })
+            .is_some(),
         )
-        .is_some())
     }
 }

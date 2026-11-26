@@ -20,7 +20,7 @@ impl<S: GraphMemories> Graph<S> {
         let had_header = bucket.header.is_some();
         let bucket = self.edges.seal(bucket);
         if !had_header || bucket.header.is_none() {
-            label_bucket_list::set(&self.label_bucket_lists, entry, &bucket.stored());
+            label_bucket_list::set(self.edges.store(), entry, &bucket.stored());
         }
         bucket
     }
@@ -40,7 +40,7 @@ impl<S: GraphMemories> Graph<S> {
     ) -> Result<Option<Found>, Error> {
         let list = self.label_bucket_list(v)?;
         Ok(
-            match label_bucket_list::lookup(&self.label_bucket_lists.pages(), list, key) {
+            match label_bucket_list::lookup(&self.edges.store().pages(), list, key) {
                 Lookup::Present { entry, stored } => Some(Found {
                     entry,
                     bucket: LabelBucket::resolve(&self.edge_view().pages(), stored),
@@ -59,7 +59,7 @@ impl<S: GraphMemories> Graph<S> {
     ) -> Result<Option<LabelBucket>, Error> {
         let list = self.label_bucket_list(v)?;
         Ok(
-            label_bucket_list::lookup_stored(&self.label_bucket_lists.pages(), list, key)
+            label_bucket_list::lookup_stored(&self.edges.store().pages(), list, key)
                 .map(|stored| LabelBucket::resolve(&self.edge_view().pages(), stored)),
         )
     }

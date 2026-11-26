@@ -19,8 +19,8 @@ use core::ops::ControlFlow;
 
 /// A batch read's view of the graph: its label bucket lists, its edge pages and its width table.
 pub(super) struct BatchView<'g, S: GraphMemories> {
-    lists: Pages<'g, S::LabelBucketListPages>,
-    edges: Pages<'g, S::EdgePages>,
+    lists: Pages<'g, S::Pages>,
+    edges: Pages<'g, S::Pages>,
     widths: &'g Widths,
 }
 
@@ -29,7 +29,7 @@ impl<S: GraphMemories> Graph<S> {
     #[inline]
     pub(super) fn view(&self) -> BatchView<'_, S> {
         BatchView {
-            lists: self.label_bucket_lists.pages(),
+            lists: self.edges.store().pages(),
             edges: self.edge_view().pages(),
             widths: &self.widths,
         }

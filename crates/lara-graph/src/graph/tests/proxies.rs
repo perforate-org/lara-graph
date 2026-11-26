@@ -220,14 +220,11 @@ fn a_graph_without_a_proxies_memory_takes_no_proxy() {
 #[test]
 fn each_memory_may_be_of_its_own_type() {
     use ic_stable_structures::VectorMemory;
-    type Mixed =
-        Memories<VecMemory, VectorMemory, VecMemory, VectorMemory, VecMemory, VectorMemory>;
+    type Mixed = Memories<VecMemory, VectorMemory, VecMemory, VectorMemory>;
     let memories: Mixed = Memories {
         nodes: VecMemory::new(),
-        edge_pages: VectorMemory::default(),
-        edge_directory: VecMemory::new(),
-        label_bucket_list_pages: VectorMemory::default(),
-        label_bucket_list_directory: VecMemory::new(),
+        pages: VectorMemory::default(),
+        directory: VecMemory::new(),
         node_labels: VectorMemory::default(),
         proxies: Some(VecMemory::new()),
     };

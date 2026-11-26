@@ -123,9 +123,8 @@ impl<S: GraphMemories> Graph<S> {
             width,
             count: n,
             batches: batch_pages,
+            lists: label_bucket_list::PAGES_PER_ADD * n,
         })?;
-        self.label_bucket_lists
-            .reserve(label_bucket_list::PAGES_PER_ADD * n)?;
         Ok(())
     }
 
@@ -168,7 +167,7 @@ impl<S: GraphMemories> Graph<S> {
             Err(gap) => {
                 let bucket = self.edges.seal(bucket);
                 let list = reserved(label_bucket_list::add(
-                    &mut self.label_bucket_lists,
+                    &mut self.edges.lists_mut(),
                     place.record.list,
                     gap,
                     half.key,

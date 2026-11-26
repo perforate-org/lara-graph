@@ -56,20 +56,15 @@ impl<S: GraphMemories> Graph<S> {
     pub fn try_format(memories: MemoriesOf<S>) -> Result<Self, InitError> {
         let Memories {
             nodes,
-            edge_pages,
-            edge_directory,
-            label_bucket_list_pages,
-            label_bucket_list_directory,
+            pages,
+            directory,
             node_labels,
             proxies,
         } = memories;
-        let edges = PageStore::format(edge_pages, edge_directory).map_err(init_error)?;
-        let label_bucket_lists =
-            PageStore::format(label_bucket_list_pages, label_bucket_list_directory)
-                .map_err(init_error)?;
+        let pages = PageStore::format(pages, directory).map_err(init_error)?;
         let nodes = NodeStore::format(nodes, proxies, VERSION).map_err(init_error)?;
         let labels = LabelStore::format(node_labels, VERSION).map_err(init_error)?;
-        Ok(Self::assemble(nodes, labels, (edges, label_bucket_lists)))
+        Ok(Self::assemble(nodes, labels, pages))
     }
 
     /// [`Self::load`], returning the error.
@@ -80,10 +75,8 @@ impl<S: GraphMemories> Graph<S> {
     pub fn try_load(memories: MemoriesOf<S>) -> Result<Self, InitError> {
         let Memories {
             nodes,
-            edge_pages,
-            edge_directory,
-            label_bucket_list_pages,
-            label_bucket_list_directory,
+            pages,
+            directory,
             node_labels,
             proxies,
         } = memories;
@@ -93,14 +86,11 @@ impl<S: GraphMemories> Graph<S> {
         }
         expect_header(&nodes, NODES_MAGIC)?;
         expect_header(&node_labels, LABELS_MAGIC)?;
-        let edges = PageStore::open(edge_pages, edge_directory).map_err(open_error)?;
-        let label_bucket_lists =
-            PageStore::open(label_bucket_list_pages, label_bucket_list_directory)
-                .map_err(open_error)?;
+        let pages = PageStore::open(pages, directory).map_err(open_error)?;
         Ok(Self::assemble(
             NodeStore::open(nodes, proxies, VERSION),
             LabelStore::open(node_labels),
-            (edges, label_bucket_lists),
+            pages,
         ))
     }
 
@@ -121,16 +111,12 @@ impl<S: GraphMemories> Graph<S> {
     /// The memories back, as they were given: the graph is as it was left in them.
     #[must_use]
     pub fn into_memories(self) -> MemoriesOf<S> {
-        let (edge_pages, edge_directory) = self.edges.into_memories();
-        let (label_bucket_list_pages, label_bucket_list_directory) =
-            self.label_bucket_lists.into_memories();
+        let (pages, directory) = self.edges.into_memories();
         let (nodes, proxies) = self.nodes.into_memories();
         Memories {
             nodes,
-            edge_pages,
-            edge_directory,
-            label_bucket_list_pages,
-            label_bucket_list_directory,
+            pages,
+            directory,
             node_labels: self.labels.into_memory(),
             proxies,
         }

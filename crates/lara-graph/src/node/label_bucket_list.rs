@@ -2,7 +2,7 @@
 //! descriptors.
 //!
 //! Entries are 12 bytes (label, direction, 9-byte listed descriptor), sorted by key. A list starts
-//! **flat**: one extent in its own page store, read whole and searched in memory; adding a bucket
+//! **flat**: one extent in the page store, read whole and searched in memory; adding a bucket
 //! shifts entries in place or moves the list to the next class. A flat list that would outgrow a
 //! page becomes **tiered** (`tiered`): a small top extent lists leaf pages with their first key and
 //! count, and each leaf holds a page of entries. Every update copies at most one page. Lists are

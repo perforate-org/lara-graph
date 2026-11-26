@@ -18,7 +18,9 @@
 //! Slots (chunk)                   ↕ 16 bytes      (a bitmap; for the 16 B class a slab's free
 //!                                                  list head, then its bump index)
 //! ----------------------------------------
-//! Reserved space                  ↕ 4 bytes
+//! Pool (chunk): 0 edges, 1 lists  ↕ 1 byte
+//! ----------------------------------------
+//! Reserved space                  ↕ 3 bytes
 //! ----------------------------------------
 //! ```
 
@@ -28,15 +30,49 @@ use crate::store::corrupt::corrupt;
 /// Bytes per directory record.
 pub(super) const RECORD_BYTES: u64 = 32;
 
+/// Which partial lists a chunk page is on: label bucket lists and node label sets keep their
+/// extents on pages of their own, so that the lists of nodes added together share pages, as they
+/// did in a store of their own (`labels_1024_batched` read 8 % more pages with them mixed in).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Pool {
+    /// Label buckets: edges, values, headers and target indexes.
+    Edges,
+    /// Label bucket lists, node label sets, the label postings and the width table.
+    Lists,
+}
+
+impl Pool {
+    /// How many pools there are.
+    pub(super) const COUNT: u64 = 2;
+
+    /// The pool's byte in a record, and its place among the partial list heads.
+    pub(super) const fn id(self) -> u8 {
+        match self {
+            Self::Edges => 0,
+            Self::Lists => 1,
+        }
+    }
+
+    fn from_id(id: u8) -> Self {
+        match id {
+            0 => Self::Edges,
+            1 => Self::Lists,
+            _ => corrupt("chunk pool"),
+        }
+    }
+}
+
 /// What a page is used for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PageRecord {
     /// On the free list.
     Free { next: Option<PageId> },
-    /// Split into extents of one class; `bitmap` marks the allocated ones. While it has both
-    /// used and free slots it is on its class's partial list (`prev`, `next`).
+    /// Split into extents of one class, for one pool; `bitmap` marks the allocated ones. While it
+    /// has both used and free slots it is on its pool's partial list of the class (`prev`,
+    /// `next`).
     Chunk {
         class: ByteClass,
+        pool: Pool,
         used: u16,
         prev: Option<PageId>,
         next: Option<PageId>,
@@ -63,16 +99,17 @@ pub(super) fn decode_link(bytes: [u8; 4]) -> Option<PageId> {
 impl PageRecord {
     // As the module's Record layout diagram shows.
     pub(super) fn encode(self) -> [u8; 32] {
-        let (kind, class, used, prev, next, bitmap) = match self {
-            Self::Free { next } => (KIND_FREE, 0, 0, None, next, 0),
+        let (kind, class, pool, used, prev, next, bitmap) = match self {
+            Self::Free { next } => (KIND_FREE, 0, 0, 0, None, next, 0),
             Self::Chunk {
                 class,
+                pool,
                 used,
                 prev,
                 next,
                 bitmap,
-            } => (KIND_CHUNK, class.id(), used, prev, next, bitmap),
-            Self::Whole => (KIND_WHOLE, 0, 0, None, None, 0),
+            } => (KIND_CHUNK, class.id(), pool.id(), used, prev, next, bitmap),
+            Self::Whole => (KIND_WHOLE, 0, 0, 0, None, None, 0),
         };
         // Laid out by hand: chaining the parts as iterators cost about 1,500 instructions a record
         // on the IC, a fifth of an insert into a hub (`hub_insert_1024`).
@@ -99,7 +136,7 @@ impl PageRecord {
         ] = bitmap.to_le_bytes();
         [
             kind, class, u0, u1, p0, p1, p2, p3, n0, n1, n2, n3, b0, b1, b2, b3, b4, b5, b6, b7,
-            b8, b9, b10, b11, b12, b13, b14, b15, 0, 0, 0, 0,
+            b8, b9, b10, b11, b12, b13, b14, b15, pool, 0, 0, 0,
         ]
     }
 
@@ -118,7 +155,7 @@ impl PageRecord {
             n2,
             n3,
             bitmap @ ..,
-            _,
+            pool,
             _,
             _,
             _,
@@ -131,6 +168,7 @@ impl PageRecord {
                 class: ByteClass::from_id(class)
                     .filter(|c| !c.is_page())
                     .unwrap_or_else(|| corrupt("chunk class")),
+                pool: Pool::from_id(pool),
                 used: u16::from_le_bytes([u0, u1]),
                 prev: decode_link([p0, p1, p2, p3]),
                 next,

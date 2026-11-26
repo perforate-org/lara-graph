@@ -199,7 +199,7 @@ fn too_many_buckets_is_an_error_and_changes_nothing() {
     let mut g = backing.create(4);
     let room = |g: &Graph<VecMemory>, x: u32, adding| {
         label_bucket_list::has_room(
-            &g.label_bucket_lists.pages(),
+            &g.edges.store().pages(),
             g.label_bucket_list(v(x)).unwrap(),
             adding,
         )

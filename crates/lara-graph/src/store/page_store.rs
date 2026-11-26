@@ -3,8 +3,12 @@
 //! - **pages** holds a header, then page data at `64 + page_id × 4096`, so an extent reads as one
 //!   contiguous range.
 //! - **directory** holds a header, then one 32-byte record per page, addressed by page id:
-//!   free-list links for free pages, and the class, use count and slot bitmap for pages split
-//!   into chunks (for the 16-byte class, a slab's free list instead: see [`Slots`]).
+//!   free-list links for free pages, and the class, pool, use count and slot bitmap for pages
+//!   split into chunks (for the 16-byte class, a slab's free list instead: see [`Slots`]).
+//!
+//! Label buckets and the label bucket lists share the store. Whole pages serve either, but a
+//! chunk page serves one [`Pool`]: list extents keep to pages of their own, so that the lists of
+//! nodes added together stay near each other.
 //!
 //! Each memory starts as ic-stable-structures' memories do: a 3-byte magic and a version byte.
 //!
@@ -33,12 +37,16 @@
 //! ----------------------------------------
 //! Free list head (page id)        ↕ 4 bytes
 //! ---------------------------------------- <- Address 12 (AT_PARTIAL_HEADS)
-//! Partial list head, 16 B class   ↕ 4 bytes
+//! Partial list head, edges, 16 B  ↕ 4 bytes
 //! ----------------------------------------
-//! ...
+//! ...                                             (thirteen heads, one per chunk class)
 //! ----------------------------------------
-//! Partial list head, 2 KiB class  ↕ 4 bytes       (thirteen heads, one per chunk class)
-//! ---------------------------------------- <- Address 64 (RECORDS_START)
+//! Partial list head, lists, 16 B  ↕ 4 bytes
+//! ----------------------------------------
+//! ...                                             (thirteen more, for the list pool)
+//! ----------------------------------------
+//! Reserved space                  ↕ 12 bytes
+//! ---------------------------------------- <- Address 128 (RECORDS_START)
 //! Record of page 0                ↕ 32 bytes
 //! ----------------------------------------
 //! ...
@@ -99,6 +107,7 @@ use alloc::vec::Vec;
 use class::Code;
 pub(crate) use class::{ByteClass, Slots};
 use class::{SLAB_LINK_BYTES, decode_slab_link, encode_slab_link};
+pub(crate) use record::Pool;
 use record::{PageRecord, RECORD_BYTES, decode_link, encode_link};
 
 /// Bytes per page.
@@ -114,10 +123,10 @@ const VERSION: u8 = 1;
 const AT_MINTED: u64 = 4;
 const AT_FREE_HEAD: u64 = 8;
 const AT_PARTIAL_HEADS: u64 = 12;
-/// Bytes each memory's header takes before its records or pages.
-const HEADER_BYTES: u64 = 64;
-const RECORDS_START: u64 = HEADER_BYTES;
-const PAGES_START: u64 = HEADER_BYTES;
+/// Bytes the directory's header takes before its records: the partial list heads of both pools.
+const RECORDS_START: u64 = 128;
+/// Bytes the pages memory's header takes before its pages.
+const PAGES_START: u64 = 64;
 
 /// One page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -264,6 +273,8 @@ pub(crate) struct PageStore<M: Memory, D: Memory = M> {
     minted: u32,
     /// Pages both memories hold at their current size: taking pages below this never grows.
     room: u32,
+    /// The pool new chunk extents come from ([`Self::lists`] lends the list pool).
+    pool: Pool,
 }
 
 impl<M: Memory, D: Memory> PageStore<M, D> {
@@ -275,7 +286,7 @@ impl<M: Memory, D: Memory> PageStore<M, D> {
         region.write(ByteOffset::new(0), &[d0, d1, d2, VERSION])?;
         region.overwrite(ByteOffset::new(AT_MINTED), &0u32.to_le_bytes());
         region.overwrite(ByteOffset::new(AT_FREE_HEAD), &encode_link(None));
-        for lane in 0..ByteClass::CHUNK_CLASSES {
+        for lane in 0..Pool::COUNT * ByteClass::CHUNK_CLASSES {
             region.overwrite(partial_head_at(lane), &encode_link(None));
         }
         let [p0, p1, p2] = PAGES_MAGIC;
@@ -308,6 +319,7 @@ impl<M: Memory, D: Memory> PageStore<M, D> {
             directory,
             minted,
             room: 0,
+            pool: Pool::Edges,
         };
         store.measure_room();
         store
@@ -344,7 +356,7 @@ impl<M: Memory, D: Memory> PageStore<M, D> {
         let index = self.take_slot(class, &mut chunk);
         self.store_chunk(class, &chunk);
         if chunk.used == class.per_page() {
-            self.unlink_partial(class, chunk.page);
+            self.unlink_partial(lane(chunk.pool, class), chunk.page);
         }
         Ok(Extent::at(chunk.page, index, class))
     }
@@ -386,7 +398,7 @@ impl<M: Memory, D: Memory> PageStore<M, D> {
         }
         self.store_chunk(class, &chunk);
         if chunk.used >= class.per_page() {
-            self.unlink_partial(class, page);
+            self.unlink_partial(lane(chunk.pool, class), page);
         }
         if taken == 0 {
             corrupt("chunk page without a free extent");
@@ -398,19 +410,21 @@ impl<M: Memory, D: Memory> PageStore<M, D> {
     /// record read.
     #[inline]
     fn open_chunk(&mut self, class: ByteClass) -> Result<OpenChunk, WriteError> {
-        let page = if let Some(page) = self.partial_head(class) {
+        let pool = self.pool;
+        let page = if let Some(page) = self.partial_head(lane(pool, class)) {
             page
         } else {
             let page = self.take_page()?;
             let fresh = OpenChunk {
                 page,
+                pool,
                 used: 0,
                 prev: None,
                 next: None,
                 slots: Slots::fresh(class),
             };
             self.store_chunk(class, &fresh);
-            self.push_partial(class, page);
+            self.push_partial(lane(pool, class), page);
             page
         };
         let PageRecord::Chunk {
@@ -425,6 +439,7 @@ impl<M: Memory, D: Memory> PageStore<M, D> {
         };
         Ok(OpenChunk {
             page,
+            pool,
             used,
             prev,
             next,
@@ -495,6 +510,7 @@ impl<M: Memory, D: Memory> PageStore<M, D> {
             chunk.page,
             PageRecord::Chunk {
                 class,
+                pool: chunk.pool,
                 used: chunk.used,
                 prev: chunk.prev,
                 next: chunk.next,
@@ -528,6 +544,7 @@ impl<M: Memory, D: Memory> PageStore<M, D> {
             PageRecord::Whole if class.is_page() => self.give_page(page),
             PageRecord::Chunk {
                 class: c,
+                pool,
                 used,
                 prev,
                 next,
@@ -535,6 +552,7 @@ impl<M: Memory, D: Memory> PageStore<M, D> {
             } if c == class => {
                 let mut chunk = OpenChunk {
                     page,
+                    pool,
                     used,
                     prev,
                     next,
@@ -546,11 +564,11 @@ impl<M: Memory, D: Memory> PageStore<M, D> {
                 let used = chunk.used;
                 if used == 0 {
                     if !was_full {
-                        self.unlink_partial(class, page);
+                        self.unlink_partial(lane(pool, class), page);
                     }
                     self.give_page(page);
                 } else if was_full {
-                    self.push_partial(class, page);
+                    self.push_partial(lane(pool, class), page);
                 }
             }
             PageRecord::Free { .. } | PageRecord::Whole | PageRecord::Chunk { .. } => {
@@ -592,17 +610,17 @@ impl<M: Memory, D: Memory> PageStore<M, D> {
 
     // --- partial chunk lists -----------------------------------------------------------------
 
-    fn partial_head(&self, class: ByteClass) -> Option<PageId> {
-        decode_link(self.directory().read_array(partial_head_at(class.lane())))
+    fn partial_head(&self, lane: u64) -> Option<PageId> {
+        decode_link(self.directory().read_array(partial_head_at(lane)))
     }
 
-    fn set_partial_head(&self, class: ByteClass, head: Option<PageId>) {
+    fn set_partial_head(&self, lane: u64, head: Option<PageId>) {
         self.directory()
-            .overwrite(partial_head_at(class.lane()), &encode_link(head));
+            .overwrite(partial_head_at(lane), &encode_link(head));
     }
 
-    fn push_partial(&self, class: ByteClass, page: PageId) {
-        let head = self.partial_head(class);
+    fn push_partial(&self, lane: u64, page: PageId) {
+        let head = self.partial_head(lane);
         if let Some(head) = head {
             self.relink(head, |prev, _| *prev = Some(page));
         }
@@ -610,16 +628,16 @@ impl<M: Memory, D: Memory> PageStore<M, D> {
             *prev = None;
             *next = head;
         });
-        self.set_partial_head(class, Some(page));
+        self.set_partial_head(lane, Some(page));
     }
 
-    fn unlink_partial(&self, class: ByteClass, page: PageId) {
+    fn unlink_partial(&self, lane: u64, page: PageId) {
         let PageRecord::Chunk { prev, next, .. } = self.record(page) else {
             corrupt("unlinking a page that is not a chunk")
         };
         match prev {
             Some(prev) => self.relink(prev, |_, n| *n = next),
-            None => self.set_partial_head(class, next),
+            None => self.set_partial_head(lane, next),
         }
         if let Some(next) = next {
             self.relink(next, |p, _| *p = prev);
@@ -633,6 +651,7 @@ impl<M: Memory, D: Memory> PageStore<M, D> {
     fn relink(&self, page: PageId, edit: impl FnOnce(&mut Option<PageId>, &mut Option<PageId>)) {
         let PageRecord::Chunk {
             class,
+            pool,
             used,
             mut prev,
             mut next,
@@ -646,6 +665,7 @@ impl<M: Memory, D: Memory> PageStore<M, D> {
             page,
             PageRecord::Chunk {
                 class,
+                pool,
                 used,
                 prev,
                 next,
@@ -726,6 +746,40 @@ impl<M: Memory> Pages<'_, M> {
     }
 }
 
+impl<M: Memory, D: Memory> PageStore<M, D> {
+    /// The store, allocating chunk extents from the list pool until the guard drops.
+    pub(crate) fn lists(&mut self) -> ListPool<'_, M, D> {
+        self.pool = Pool::Lists;
+        ListPool { store: self }
+    }
+}
+
+/// A page store lent for label bucket lists and node label data: its chunk extents come from
+/// pages of their own ([`Pool::Lists`]).
+pub(crate) struct ListPool<'a, M: Memory, D: Memory> {
+    store: &'a mut PageStore<M, D>,
+}
+
+impl<M: Memory, D: Memory> core::ops::Deref for ListPool<'_, M, D> {
+    type Target = PageStore<M, D>;
+
+    fn deref(&self) -> &Self::Target {
+        self.store
+    }
+}
+
+impl<M: Memory, D: Memory> core::ops::DerefMut for ListPool<'_, M, D> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.store
+    }
+}
+
+impl<M: Memory, D: Memory> Drop for ListPool<'_, M, D> {
+    fn drop(&mut self) {
+        self.store.pool = Pool::Edges;
+    }
+}
+
 impl<M: Memory, D: Memory> Allocator for PageStore<M, D> {
     type Request = ByteClass;
     type Extent = Extent;
@@ -795,6 +849,7 @@ fn record_at(page: PageId) -> ByteOffset {
 /// A chunk page's record while extents are taken from it.
 struct OpenChunk {
     page: PageId,
+    pool: Pool,
     used: u16,
     prev: Option<PageId>,
     next: Option<PageId>,
@@ -814,7 +869,13 @@ fn below(out: &[Extent], count: u32) -> bool {
     u32::try_from(out.len()).unwrap_or(u32::MAX) < count
 }
 
-const _: () = assert!(AT_PARTIAL_HEADS + 4 * ByteClass::CHUNK_CLASSES <= HEADER_BYTES);
+const _: () =
+    assert!(AT_PARTIAL_HEADS + 4 * Pool::COUNT * ByteClass::CHUNK_CLASSES <= RECORDS_START);
+
+/// The partial list of `pool`'s chunk pages of `class`.
+fn lane(pool: Pool, class: ByteClass) -> u64 {
+    u64::from(pool.id()) * ByteClass::CHUNK_CLASSES + class.lane()
+}
 
 fn partial_head_at(lane: u64) -> ByteOffset {
     ByteOffset::new(AT_PARTIAL_HEADS + 4 * lane)

@@ -11,7 +11,7 @@ use core::ops::ControlFlow;
 impl<S: GraphMemories> Graph<S> {
     /// Replaces `v`'s labels with `labels` (in any order; repeats count once), and updates each
     /// label's nodes for the labels gained and lost. Up to two are kept in the node's cell; more
-    /// go to the label bucket list store, so any set of labels fits.
+    /// go to the pages, so any set of labels fits.
     ///
     /// # Errors
     ///
@@ -22,7 +22,7 @@ impl<S: GraphMemories> Graph<S> {
         let mut set: Vec<NodeLabel> = labels.to_vec();
         set.sort_unstable();
         set.dedup();
-        Ok(self.labels.set(&mut self.label_bucket_lists, v, &set)?)
+        Ok(self.labels.set(&mut self.edges.lists_mut(), v, &set)?)
     }
 
     /// Gives `v` the label `label`; whether it lacked it.
@@ -68,7 +68,7 @@ impl<S: GraphMemories> Graph<S> {
         if !edit(&mut set) {
             return Ok(false);
         }
-        self.labels.set(&mut self.label_bucket_lists, v, &set)?;
+        self.labels.set(&mut self.edges.lists_mut(), v, &set)?;
         Ok(true)
     }
 
@@ -117,7 +117,7 @@ impl<S: GraphMemories> Graph<S> {
     ) -> Option<B> {
         let from = after.map_or(0, |v| v.index().saturating_add(1));
         self.labels.visit(
-            &self.label_bucket_lists.pages(),
+            &self.edges.store().pages(),
             (label, from, self.nodes.count()),
             &mut f,
         )
@@ -126,7 +126,7 @@ impl<S: GraphMemories> Graph<S> {
     /// How many nodes have `label`.
     #[must_use]
     pub fn node_label_count(&self, label: NodeLabel) -> u32 {
-        self.labels.count(&self.label_bucket_lists.pages(), label)
+        self.labels.count(&self.edges.store().pages(), label)
     }
 
     /// Drops `v`'s labels and postings as it is deleted. Cannot fail: removals never allocate.
@@ -134,7 +134,7 @@ impl<S: GraphMemories> Graph<S> {
         if v.is_proxy() {
             return;
         }
-        self.labels.clear(&mut self.label_bucket_lists, v);
+        self.labels.clear(&mut self.edges.lists_mut(), v);
     }
 
     /// `v`'s label cell, through a batch's line of cells. `v` is known.
@@ -149,11 +149,11 @@ impl<S: GraphMemories> Graph<S> {
 
     /// Whether the set `cell` holds `label`.
     pub(in crate::graph) fn set_has(&self, cell: LabelSet, label: NodeLabel) -> bool {
-        cell.contains(&self.label_bucket_lists.pages(), label)
+        cell.contains(&self.edges.store().pages(), label)
     }
 
     /// Appends the labels of the set `cell`, ascending, to `out`.
     pub(in crate::graph) fn extend_labels(&self, cell: LabelSet, out: &mut Vec<NodeLabel>) {
-        cell.extend_into(&self.label_bucket_lists.pages(), out);
+        cell.extend_into(&self.edges.store().pages(), out);
     }
 }

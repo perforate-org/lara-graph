@@ -53,7 +53,8 @@ impl<S: GraphMemories> Graph<S> {
         set.dedup();
         for index in range.clone() {
             let v = NodeId::new(index);
-            if let Err(error) = self.labels.set(&mut self.label_bucket_lists, v, &set) {
+            let labelled = self.labels.set(&mut self.edges.lists_mut(), v, &set);
+            if let Err(error) = labelled {
                 self.clear_new_labels(range.start..index);
                 return Err(error.into());
             }
@@ -65,7 +66,7 @@ impl<S: GraphMemories> Graph<S> {
     fn clear_new_labels(&mut self, range: Range<u32>) {
         for index in range {
             self.labels
-                .clear(&mut self.label_bucket_lists, NodeId::new(index));
+                .clear(&mut self.edges.lists_mut(), NodeId::new(index));
         }
     }
 

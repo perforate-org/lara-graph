@@ -30,6 +30,7 @@ use crate::bucket::values::PAGES_PER_WRITE;
 use crate::id::Width;
 use crate::store::memory::Memory;
 use crate::store::memory::WriteError;
+use crate::store::page_store::ListPool;
 use crate::store::page_store::{Extent, PageStore, Pages};
 
 /// The edge store: every bucket's slots, header, index and values in the edge pages.
@@ -60,11 +61,13 @@ impl<'a, M: Memory, D: Memory> EdgeView<'a, M, D> {
 /// The pages a write may take, reserved before it changes anything.
 #[derive(Clone, Copy)]
 pub(crate) enum Writes {
-    /// `count` halves of a label of `width`, and block batches of `batches` pages.
+    /// `count` halves of a label of `width`, block batches of `batches` pages, and `lists`
+    /// pages for the label bucket lists the halves may grow, which share the store.
     Halves {
         width: Option<Width>,
         count: u32,
         batches: u32,
+        lists: u32,
     },
     /// `count` values written into existing buckets.
     Values { count: u32 },
@@ -75,16 +78,21 @@ impl<M: Memory, D: Memory> EdgeStore<M, D> {
         Self { store }
     }
 
-    /// The edge pages' store (tests).
-    #[cfg(test)]
+    /// The page store, which the label bucket lists share.
     pub(crate) const fn store(&self) -> &PageStore<M, D> {
         &self.store
     }
 
-    /// The edge pages' store, to allocate from (tests).
+    /// The page store, to allocate edge extents from (tests).
     #[cfg(test)]
     pub(crate) const fn store_mut(&mut self) -> &mut PageStore<M, D> {
         &mut self.store
+    }
+
+    /// The page store, lent to label bucket lists and node label data: their chunk extents come
+    /// from pages of their own.
+    pub(crate) fn lists_mut(&mut self) -> ListPool<'_, M, D> {
+        self.store.lists()
     }
 
     pub(crate) fn into_memories(self) -> (M, D) {
@@ -98,7 +106,8 @@ impl<M: Memory, D: Memory> EdgeStore<M, D> {
                 width,
                 count,
                 batches,
-            } => pages_per_half(width) * count + batches,
+                lists,
+            } => pages_per_half(width) * count + batches + lists,
             // A header, a value plane for a bucket that had none, and the value's write.
             Writes::Values { count } => (2 + PAGES_PER_WRITE) * count,
         };

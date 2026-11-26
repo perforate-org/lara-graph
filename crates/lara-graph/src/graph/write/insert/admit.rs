@@ -70,14 +70,11 @@ impl<S: GraphMemories> Graph<S> {
     }
 
     fn place_in(&self, record: Record, half: Half) -> Place {
-        let target = match label_bucket_list::lookup(
-            &self.label_bucket_lists.pages(),
-            record.list,
-            half.key,
-        ) {
-            Lookup::Present { entry, stored } => Target::Present(entry, stored),
-            Lookup::Absent { gap } => Target::Absent(gap),
-        };
+        let target =
+            match label_bucket_list::lookup(&self.edges.store().pages(), record.list, half.key) {
+                Lookup::Present { entry, stored } => Target::Present(entry, stored),
+                Lookup::Absent { gap } => Target::Absent(gap),
+            };
         Place { record, target }
     }
 
@@ -99,7 +96,7 @@ impl<S: GraphMemories> Graph<S> {
     /// Fails when new buckets would not fit a node's label bucket list. `fresh` lists each new
     /// bucket's node with its current list.
     fn check_room(&self, fresh: &[Option<(NodeId, Option<LabelBucketList>)>]) -> Result<(), Error> {
-        let pages = self.label_bucket_lists.pages();
+        let pages = self.edges.store().pages();
         for &(v, list) in fresh.iter().flatten() {
             let adding = fresh.iter().flatten().filter(|(w, _)| *w == v).count();
             if !label_bucket_list::has_room(&pages, list, adding) {

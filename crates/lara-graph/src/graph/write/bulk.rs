@@ -96,14 +96,14 @@ impl<S: GraphMemories> Graph<S> {
                 let stored = self.build_bucket(node_halves, edges)?;
                 singles.push((head.node, head.key, stored));
                 if singles.len() == SINGLES_PER_BATCH {
-                    flush_singles(&mut self.label_bucket_lists, &mut singles, &mut records)?;
+                    flush_singles(&mut self.edges.lists_mut(), &mut singles, &mut records)?;
                 }
             } else {
                 let list = self.build_list(head.node, node_halves, edges)?;
                 set_record(&mut records, head.node, list);
             }
         }
-        flush_singles(&mut self.label_bucket_lists, &mut singles, &mut records)?;
+        flush_singles(&mut self.edges.lists_mut(), &mut singles, &mut records)?;
         Ok(records)
     }
 
@@ -120,15 +120,16 @@ impl<S: GraphMemories> Graph<S> {
                 continue;
             };
             let stored = self.build_bucket(bucket, edges)?;
-            let pages = self.label_bucket_lists.pages();
+            let pages = self.edges.store().pages();
             let gap = match label_bucket_list::lookup(&pages, list, key) {
                 Lookup::Present { .. } => return Err(Error::TooManyLabelBuckets(node)),
                 Lookup::Absent { gap } => gap,
             };
-            self.label_bucket_lists
+            self.edges
+                .lists_mut()
                 .reserve(label_bucket_list::PAGES_PER_ADD)?;
             list = Some(label_bucket_list::add(
-                &mut self.label_bucket_lists,
+                &mut self.edges.lists_mut(),
                 list,
                 gap,
                 key,

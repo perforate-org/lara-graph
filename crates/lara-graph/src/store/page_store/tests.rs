@@ -32,13 +32,17 @@ fn check<M: Memory>(store: &PageStore<M>, live: &[Extent]) {
         cursor = next;
     }
     let mut partial = BTreeSet::new();
-    for lane in 0..ByteClass::CHUNK_CLASSES {
-        let class = ByteClass(u8::try_from(lane).unwrap());
+    for (pool, at) in [Pool::Edges, Pool::Lists]
+        .into_iter()
+        .flat_map(|pool| (0..ByteClass::CHUNK_CLASSES).map(move |at| (pool, at)))
+    {
+        let class = ByteClass(u8::try_from(at).unwrap());
         let mut prev = None;
-        let mut cursor = store.partial_head(class);
+        let mut cursor = store.partial_head(lane(pool, class));
         while let Some(page) = cursor {
             let PageRecord::Chunk {
                 class: c,
+                pool: p,
                 used,
                 prev: back,
                 next,
@@ -47,7 +51,11 @@ fn check<M: Memory>(store: &PageStore<M>, live: &[Extent]) {
             else {
                 panic!("non-chunk on partial list")
             };
-            assert_eq!((c, back), (class, prev), "partial list class and back link");
+            assert_eq!(
+                (c, p, back),
+                (class, pool, prev),
+                "partial list class, pool and back link"
+            );
             assert!(
                 used > 0 && used < class.per_page(),
                 "only partially used chunks are listed"
@@ -114,6 +122,38 @@ fn chunks_share_a_page_and_free_it_when_empty() {
     let whole = store.allocate(ByteClass::PAGE).unwrap();
     assert!(whole.page.get() < 2, "a freed page is reused");
     assert_eq!(store.minted(), 2);
+}
+
+#[test]
+fn each_pool_fills_chunk_pages_of_its_own() {
+    let backing = Backing::default();
+    let mut store = backing.create();
+    let edges: Vec<_> = (0..3).map(|_| store.allocate(class(64)).unwrap()).collect();
+    let lists: Vec<_> = (0..3)
+        .map(|_| store.lists().allocate(class(64)).unwrap())
+        .collect();
+    let edge = store.allocate(class(64)).unwrap();
+    assert!(edges.iter().chain([&edge]).all(|e| e.page == PageId(0)));
+    assert!(
+        lists.iter().all(|e| e.page == PageId(1)),
+        "lists keep to their page"
+    );
+    let all: Vec<_> = edges.iter().chain(&lists).chain([&edge]).copied().collect();
+    check(&store, &all);
+    // A release finds its pool from the page, whichever pool is lent.
+    store.lists().release(edge);
+    for e in edges {
+        store.release(e);
+    }
+    assert_eq!(
+        store.allocate(class(64)).unwrap().page,
+        PageId(0),
+        "the edge page is free again"
+    );
+    for e in lists {
+        store.release(e);
+    }
+    check(&store, &[Extent::at(PageId(0), 0, class(64))]);
 }
 
 #[test]

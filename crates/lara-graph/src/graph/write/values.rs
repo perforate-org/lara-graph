@@ -294,7 +294,7 @@ impl<S: GraphMemories> Graph<S> {
     pub fn change_width(&mut self, label: EdgeLabel, width: Width) -> Result<ValueVersion, Error> {
         let (version, root) = self
             .widths
-            .change(&mut self.label_bucket_lists, label, width)?;
+            .change(&mut self.edges.lists_mut(), label, width)?;
         self.nodes.set_widths_root(root);
         Ok(version)
     }
@@ -338,7 +338,7 @@ impl<S: GraphMemories> Graph<S> {
     fn declare(&mut self, label: EdgeLabel, width: Width) -> Result<(), Error> {
         if let Some(root) = self
             .widths
-            .declare(&mut self.label_bucket_lists, label, width)?
+            .declare(&mut self.edges.lists_mut(), label, width)?
         {
             self.nodes.set_widths_root(root);
         }

@@ -5,7 +5,7 @@ use crate::node::labels::set::LabelSet;
 
 /// Every structural invariant: sorted bucket keys, consistent counts, per-page tombstone counts,
 /// paired halves, and exactly the extents the label buckets and label bucket lists own are
-/// allocated, each once.
+/// allocated in the pages they share, each once.
 pub(super) fn check<M: Memory>(g: &Graph<M>) {
     let mut seen = Seen::default();
     for i in 0..g.node_count() {
@@ -15,25 +15,15 @@ pub(super) fn check<M: Memory>(g: &Graph<M>) {
     for ordinal in 0..g.proxy_count() {
         check_node(g, NodeId::proxy(ordinal).index(), &mut seen);
     }
-    for extent in values::extents(&g.label_bucket_lists.pages(), g.widths.plane()) {
-        assert!(
-            seen.label_bucket_lists.insert(key(extent)),
-            "width table shared"
-        );
+    for extent in values::extents(&g.edges.store().pages(), g.widths.plane()) {
+        assert!(seen.extents.insert(key(extent)), "width table shared");
     }
     check_postings(g, &mut seen);
     check_pairs(&seen.halves);
     let allocated: BTreeSet<_> = g.edges.store().allocated().into_iter().map(key).collect();
-    assert_eq!(allocated, seen.edges, "edge extents: none leaked or shared");
-    let allocated: BTreeSet<_> = g
-        .label_bucket_lists
-        .allocated()
-        .into_iter()
-        .map(key)
-        .collect();
     assert_eq!(
-        allocated, seen.label_bucket_lists,
-        "label bucket list extents: none leaked or shared"
+        allocated, seen.extents,
+        "page extents: none leaked or shared"
     );
 }
 
@@ -53,11 +43,8 @@ fn check_node_labels<M: Memory>(g: &Graph<M>, i: u32, seen: &mut Seen) {
     if matches!(cell, LabelSet::Spilled(_)) {
         assert!(labels.len() > 2, "node {i} spills two labels or fewer");
     }
-    for extent in cell.extents(&g.label_bucket_lists.pages()) {
-        assert!(
-            seen.label_bucket_lists.insert(key(extent)),
-            "node label extent shared"
-        );
+    for extent in cell.extents(&g.edges.store().pages()) {
+        assert!(seen.extents.insert(key(extent)), "node label extent shared");
     }
 }
 
@@ -72,7 +59,7 @@ fn check_postings<M: Memory>(g: &Graph<M>, seen: &mut Seen) {
             want.entry(label).or_default().push(v(i));
         }
     }
-    let view = g.label_bucket_lists.pages();
+    let view = g.edges.store().pages();
     let listed: Vec<(NodeLabel, u32)> =
         crate::node::labels::postings::labels(&view, g.labels.postings());
     let counts: Vec<(NodeLabel, u32)> = want
@@ -91,7 +78,7 @@ fn check_postings<M: Memory>(g: &Graph<M>, seen: &mut Seen) {
     for extent in crate::node::labels::postings::extents(&view, g.labels.postings(), g.node_count())
     {
         assert!(
-            seen.label_bucket_lists.insert(key(extent)),
+            seen.extents.insert(key(extent)),
             "label postings extent shared"
         );
     }
@@ -100,8 +87,8 @@ fn check_postings<M: Memory>(g: &Graph<M>, seen: &mut Seen) {
 /// What [`check`] has seen so far.
 #[derive(Default)]
 struct Seen {
-    edges: BTreeSet<(u32, u64, u8)>,
-    label_bucket_lists: BTreeSet<(u32, u64, u8)>,
+    /// The extents of the pages, the label buckets' and the label bucket lists' alike.
+    extents: BTreeSet<(u32, u64, u8)>,
     /// (owner, label, side, other end) → live halves.
     halves: BTreeMap<(u32, EdgeLabel, Direction, u32), usize>,
 }
@@ -109,15 +96,15 @@ struct Seen {
 fn check_node<M: Memory>(g: &Graph<M>, i: u32, seen: &mut Seen) {
     let list = g.label_bucket_list(v(i)).unwrap();
     if let Some(list) = list {
-        label_bucket_list::check_shape(&g.label_bucket_lists.pages(), list);
-        for extent in label_bucket_list::extents(&g.label_bucket_lists.pages(), list) {
+        label_bucket_list::check_shape(&g.edges.store().pages(), list);
+        for extent in label_bucket_list::extents(&g.edges.store().pages(), list) {
             assert!(
-                seen.label_bucket_lists.insert(key(extent)),
+                seen.extents.insert(key(extent)),
                 "label bucket list extent shared"
             );
         }
     }
-    let buckets = label_bucket_list::buckets(&g.label_bucket_lists.pages(), list);
+    let buckets = label_bucket_list::buckets(&g.edges.store().pages(), list);
     assert!(
         buckets.windows(2).all(|w| w[0].0 < w[1].0),
         "bucket keys sorted and unique"
@@ -125,8 +112,8 @@ fn check_node<M: Memory>(g: &Graph<M>, i: u32, seen: &mut Seen) {
     for (bucket_key, stored) in buckets {
         let bucket = LabelBucket::resolve(&g.edges.store().pages(), stored);
         let state = g.record(v(i)).unwrap().state;
-        check_values(g, &bucket, state, &mut seen.edges);
-        for target in check_bucket(g, &bucket.slots, &mut seen.edges) {
+        check_values(g, &bucket, state, &mut seen.extents);
+        for target in check_bucket(g, &bucket.slots, &mut seen.extents) {
             let entry = (i, bucket_key.label, bucket_key.direction, target);
             *seen.halves.entry(entry).or_default() += 1;
         }

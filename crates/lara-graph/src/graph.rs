@@ -1,4 +1,4 @@
-//! The graph: label buckets of edge halves per node and direction, over seven memories.
+//! The graph: label buckets of edge halves per node and direction, over five memories.
 //!
 //! The nodes memory is laid out in `node::store`, the node labels memory in `node::labels`.
 
@@ -30,7 +30,7 @@ const VERSION: u8 = 1;
 /// past 1024 edges). An insert or removal copies at most one run of under 1024 edges or one page of
 /// index.
 ///
-/// `S` is the memories' type: one [`Memory`](crate::Memory) type for all seven, or a
+/// `S` is the memories' type: one [`Memory`](crate::Memory) type for all five, or a
 /// [`Memories`] naming one per role.
 ///
 /// # The everyday operations
@@ -61,37 +61,30 @@ const VERSION: u8 = 1;
 pub struct Graph<S: GraphMemories> {
     nodes: NodeStore<S::Nodes, S::Proxies>,
     labels: LabelStore<S::NodeLabels>,
-    edges: EdgeStore<S::EdgePages, S::EdgeDirectory>,
-    label_bucket_lists: Lists<S>,
-    /// Mirrors the label width table, which the label bucket list store holds.
+    /// The page store: label buckets, and the label bucket lists beside them.
+    edges: EdgeStore<S::Pages, S::Directory>,
+    /// Mirrors the label width table, which the label bucket lists' pages hold.
     widths: Widths,
 }
-
-/// The label bucket list store of a graph of memory types `S`.
-type Lists<S> = PageStore<
-    <S as GraphMemories>::LabelBucketListPages,
-    <S as GraphMemories>::LabelBucketListDirectory,
->;
 
 impl<S: GraphMemories> Graph<S> {
     /// A graph over formatted memories, with its header mirrors loaded.
     fn assemble(
         nodes: NodeStore<S::Nodes, S::Proxies>,
         labels: LabelStore<S::NodeLabels>,
-        (edges, label_bucket_lists): (PageStore<S::EdgePages, S::EdgeDirectory>, Lists<S>),
+        pages: PageStore<S::Pages, S::Directory>,
     ) -> Self {
-        let widths = Widths::load(nodes.widths_root(), &label_bucket_lists);
+        let widths = Widths::load(nodes.widths_root(), &pages);
         Self {
             nodes,
             labels,
-            edges: EdgeStore::new(edges),
-            label_bucket_lists,
+            edges: EdgeStore::new(pages),
             widths,
         }
     }
 
     /// The edge store as reads see it.
-    fn edge_view(&self) -> EdgeView<'_, S::EdgePages, S::EdgeDirectory> {
+    fn edge_view(&self) -> EdgeView<'_, S::Pages, S::Directory> {
         EdgeView::new(&self.edges, &self.widths)
     }
 

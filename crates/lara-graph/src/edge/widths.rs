@@ -1,6 +1,6 @@
 //! The label width table: which labels' edges carry a value, and how wide it is.
 //!
-//! The table is a value plane in the label bucket list store with a four-byte cell per label: the
+//! The table is a value plane in the pages with a four-byte cell per label: the
 //! label's width (two bytes, zero for none), its current value version (one byte, see
 //! [`ValueVersion`]) and a reserved byte. Its root is in the nodes header (see `node::store`). Any of
 //! the 65,536 labels can have a width, and a plane takes pages only where labels have one. The
