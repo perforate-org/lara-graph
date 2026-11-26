@@ -84,7 +84,7 @@ Placement::Append)` always appends, so that position order is insertion order.
 A node's labels are a set of `NodeLabel`s, kept apart from its edges' `EdgeLabel`s. `add_node`
 and `add_nodes` give new nodes theirs; `add_node_label` and `remove_node_label` change one, and
 `set_node_labels` replaces the set. `node_labels` lists it and `has_node_label` checks one label,
-with one 5-byte read for a node with at most two labels, so filtering neighbours by a label
+with one 6-byte read for a node with at most two labels, so filtering neighbours by a label
 during a traversal stays cheap. `visit_nodes_with_label` gives a label's nodes in ascending id
 order, resuming after any node and stopping when the callback breaks, and `node_label_count`
 their number. A deleted node loses its labels.
@@ -138,10 +138,10 @@ Each memory starts, as ic-stable-structures' do, with a 3-byte magic and a versi
 
 | Role | Holds |
 | --- | --- |
-| `Nodes` | one 6-byte record per node |
+| `Nodes` | one 7-byte record per node |
 | `Pages` | label buckets (edges, their values and target indexes), each node's label bucket list, the width table, larger node label sets and each label's nodes; before every 128 of them, a page of 32-byte allocation records |
-| `NodeLabels` | one 5-byte label cell per node, and the root of the label postings |
-| `Proxies` | one 6-byte record per proxy; optional, and empty until the first proxy |
+| `NodeLabels` | one 6-byte label cell per node, and the root of the label postings |
+| `Proxies` | one 7-byte record per proxy; optional, and empty until the first proxy |
 
 ## Where things are written down
 

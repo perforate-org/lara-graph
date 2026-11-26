@@ -3,13 +3,13 @@
 //! Positions count tombstones: a bucket's `stored` positions are `0..stored`, `live` of them hold
 //! an edge. The three modes are exclusive, so they are one enum.
 //!
-//! A descriptor has two encodings. In a label bucket list entry it is **listed** (9 bytes): only a
+//! A descriptor has two encodings. In a label bucket list entry it is **listed** (10 bytes): only a
 //! tiny or run bucket's, since a paged bucket always has a header (see `stored`). In a header it is
-//! **full** (13 bytes), which a paged bucket takes all of. Entries are most of a sparse graph's
+//! **full** (14 bytes), which a paged bucket takes all of. Entries are most of a sparse graph's
 //! memory once it has many labels, so they are the encoding kept short.
 //!
 //! In both, the kind is the top two bits of the last byte, where an extent's spare bits fall, and
-//! every extent sits in the last five bytes. A slot is a node id's complement (`!index`), 0 for a
+//! every extent sits in the last six bytes. A slot is a node id's complement (`!index`), 0 for a
 //! tombstone; all zeros is an empty tiny bucket.
 //!
 //! # Listed layouts
@@ -17,6 +17,8 @@
 //! ```text
 //! ---------------------------------------- <- Tiny (kind 0)
 //! Slot 0, 1                       ↕ 2 × 4 bytes
+//! ----------------------------------------
+//! Reserved                        ↕ 1 byte
 //! ----------------------------------------
 //! Reserved                        ↕ 4 bits
 //! Slots in use (0 to 2)           ↕ 2 bits
@@ -27,7 +29,7 @@
 //! Value width beside the slots    ↕ 7 bits        (0 for none; at most 124, see `beside`)
 //! Their value version, low bits   ↕ 3 bits        (see `crate::ValueVersion`)
 //! ----------------------------------------
-//! Extent, kind in its spare bits  ↕ 5 bytes
+//! Extent, kind in its spare bits  ↕ 6 bytes
 //! ----------------------------------------
 //! ```
 //!
@@ -39,7 +41,7 @@
 //! ---------------------------------------- <- Tiny (kind 0)
 //! Slot 0, 1                       ↕ 2 × 4 bytes
 //! ----------------------------------------
-//! Reserved                        ↕ 4 bytes
+//! Reserved                        ↕ 5 bytes
 //! ----------------------------------------
 //! Reserved                        ↕ 4 bits
 //! Slots in use (0 to 2)           ↕ 2 bits
@@ -51,13 +53,13 @@
 //! Their value version, low bits   ↕ 3 bits
 //! Reserved                        ↕ 26 bits
 //! ----------------------------------------
-//! Extent, kind in its spare bits  ↕ 5 bytes
+//! Extent, kind in its spare bits  ↕ 6 bytes
 //! ---------------------------------------- <- Paged (kind 2): 1024 slots per data page
 //! Stored positions                ↕ 4 bytes
 //! ----------------------------------------
 //! Live positions                  ↕ 4 bytes
 //! ----------------------------------------
-//! Page index top extent, kind     ↕ 5 bytes
+//! Page index top extent, kind     ↕ 6 bytes
 //! ----------------------------------------
 //! ```
 
@@ -69,9 +71,9 @@ use crate::store::units::ByteOffset;
 use core::num::NonZeroU32;
 
 /// Bytes per full descriptor, as a header holds it.
-pub(crate) const DESCRIPTOR_BYTES: usize = 13;
+pub(crate) const DESCRIPTOR_BYTES: usize = 14;
 /// Bytes per listed descriptor, as a label bucket list entry holds it.
-pub(crate) const LISTED_BYTES: usize = 9;
+pub(crate) const LISTED_BYTES: usize = 10;
 /// Slots stored inline in a tiny descriptor. Most of a sparse graph's buckets hold one or two
 /// edges, so per-bucket descriptors dominate its memory: a bucket's third edge moves it to a run
 /// once (about 3.5K instructions), while a third inline slot would widen every list entry by four
@@ -355,11 +357,11 @@ impl Descriptor {
             Self::Tiny(tiny) => {
                 let [[s0, s1, s2, s3], [s4, s5, s6, s7]] = tiny.slots.map(Slot::encode);
                 let last = (tiny.len << 4) | (KIND_TINY << KIND_SHIFT);
-                [s0, s1, s2, s3, s4, s5, s6, s7, 0, 0, 0, 0, last]
+                [s0, s1, s2, s3, s4, s5, s6, s7, 0, 0, 0, 0, 0, last]
             }
             Self::Run(run) => {
                 let [c0, c1, c2, c3, c4, ..] = run_counts(run, RUN_WIDTH_BITS).to_le_bytes();
-                let [e0, e1, e2, e3, e4] = run.extent.encode();
+                let [e0, e1, e2, e3, e4, e5] = run.extent.encode();
                 [
                     c0,
                     c1,
@@ -373,13 +375,14 @@ impl Descriptor {
                     e1,
                     e2,
                     e3,
-                    e4 | (KIND_RUN << KIND_SHIFT),
+                    e4,
+                    e5 | (KIND_RUN << KIND_SHIFT),
                 ]
             }
             Self::Paged(paged) => {
                 let [s0, s1, s2, s3] = paged.stored.to_le_bytes();
                 let [l0, l1, l2, l3] = paged.live.to_le_bytes();
-                let [e0, e1, e2, e3, e4] = paged.index.encode();
+                let [e0, e1, e2, e3, e4, e5] = paged.index.encode();
                 [
                     s0,
                     s1,
@@ -393,7 +396,8 @@ impl Descriptor {
                     e1,
                     e2,
                     e3,
-                    e4 | (KIND_PAGED << KIND_SHIFT),
+                    e4,
+                    e5 | (KIND_PAGED << KIND_SHIFT),
                 ]
             }
         }
@@ -401,21 +405,21 @@ impl Descriptor {
 
     /// Shifts and masks only, as every bucket lookup goes through here.
     pub(crate) fn decode(bytes: [u8; DESCRIPTOR_BYTES]) -> Self {
-        let [b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12] = bytes;
-        match b12 >> KIND_SHIFT {
+        let [b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13] = bytes;
+        match b13 >> KIND_SHIFT {
             KIND_TINY => Self::Tiny(Tiny {
-                len: tiny_len(b12),
+                len: tiny_len(b13),
                 slots: [[b0, b1, b2, b3], [b4, b5, b6, b7]].map(Slot::decode),
             }),
             KIND_RUN => Self::Run(run_of(
                 u64::from_le_bytes([b0, b1, b2, b3, b4, 0, 0, 0]),
                 RUN_WIDTH_BITS,
-                Extent::decode([b8, b9, b10, b11, b12]),
+                Extent::decode([b8, b9, b10, b11, b12, b13]),
             )),
             KIND_PAGED => Self::Paged(Paged {
                 stored: u32::from_le_bytes([b0, b1, b2, b3]),
                 live: u32::from_le_bytes([b4, b5, b6, b7]),
-                index: Extent::decode([b8, b9, b10, b11, b12]),
+                index: Extent::decode([b8, b9, b10, b11, b12, b13]),
             }),
             _ => corrupt("a header reference where a descriptor belongs"),
         }
@@ -435,12 +439,13 @@ impl Descriptor {
                     s5,
                     s6,
                     s7,
+                    0,
                     (tiny.len << 4) | (KIND_TINY << KIND_SHIFT),
                 ]
             }
             Self::Run(run) => {
                 let [c0, c1, c2, c3, ..] = run_counts(run, LISTED_WIDTH_BITS).to_le_bytes();
-                let [e0, e1, e2, e3, e4] = run.extent.encode();
+                let [e0, e1, e2, e3, e4, e5] = run.extent.encode();
                 [
                     c0,
                     c1,
@@ -450,7 +455,8 @@ impl Descriptor {
                     e1,
                     e2,
                     e3,
-                    e4 | (KIND_RUN << KIND_SHIFT),
+                    e4,
+                    e5 | (KIND_RUN << KIND_SHIFT),
                 ]
             }
             Self::Paged(_) => corrupt("a paged bucket listed without its header"),
@@ -459,16 +465,16 @@ impl Descriptor {
 
     /// Shifts and masks only, as every bucket lookup goes through here.
     pub(crate) fn decode_listed(bytes: [u8; LISTED_BYTES]) -> Self {
-        let [b0, b1, b2, b3, b4, b5, b6, b7, b8] = bytes;
-        match b8 >> KIND_SHIFT {
+        let [b0, b1, b2, b3, b4, b5, b6, b7, b8, b9] = bytes;
+        match b9 >> KIND_SHIFT {
             KIND_TINY => Self::Tiny(Tiny {
-                len: tiny_len(b8),
+                len: tiny_len(b9),
                 slots: [[b0, b1, b2, b3], [b4, b5, b6, b7]].map(Slot::decode),
             }),
             KIND_RUN => Self::Run(run_of(
                 u64::from(u32::from_le_bytes([b0, b1, b2, b3])),
                 LISTED_WIDTH_BITS,
-                Extent::decode([b4, b5, b6, b7, b8]),
+                Extent::decode([b4, b5, b6, b7, b8, b9]),
             )),
             _ => corrupt("a listed descriptor of a paged bucket or a header"),
         }

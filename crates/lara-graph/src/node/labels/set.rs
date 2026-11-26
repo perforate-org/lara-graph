@@ -1,4 +1,4 @@
-//! A node's labels: a set of [`NodeLabel`]s in 5 bytes of the node labels memory, and beyond.
+//! A node's labels: a set of [`NodeLabel`]s in 6 bytes of the node labels memory, and beyond.
 //!
 //! Most nodes have one label or two, so the cell holds up to two inline. A larger set goes to the
 //! page store: up to [`MAX_LISTED`] as a sorted list in one extent, more as a bitmap
@@ -10,11 +10,11 @@
 //!
 //! ```text
 //! ---------------------------------------- <- Bit 0
-//! Kind 0: nothing                 ↕ 38 bits
+//! Kind 0: nothing                 ↕ 46 bits
 //! Kind 1: a label                 ↕ 16 bits, then zeros
 //! Kind 2: two labels, ascending   ↕ 2 × 16 bits, then zeros
-//! Kind 3: an extent               ↕ 38 bits
-//! ---------------------------------------- <- Bit 38
+//! Kind 3: an extent               ↕ 46 bits
+//! ---------------------------------------- <- Bit 46
 //! Kind                            ↕ 2 bits
 //! ----------------------------------------
 //! ```
@@ -94,23 +94,23 @@ impl LabelSet {
             Self::None => [0; CELL_BYTES],
             Self::One(a) => {
                 let [a0, a1] = a.get().to_le_bytes();
-                [a0, a1, 0, 0, ONE << KIND_SHIFT]
+                [a0, a1, 0, 0, 0, ONE << KIND_SHIFT]
             }
             Self::Two(a, b) => {
                 let ([a0, a1], [b0, b1]) = (a.get().to_le_bytes(), b.get().to_le_bytes());
-                [a0, a1, b0, b1, TWO << KIND_SHIFT]
+                [a0, a1, b0, b1, 0, TWO << KIND_SHIFT]
             }
             Self::Spilled(extent) => {
-                let [e0, e1, e2, e3, e4] = extent.encode();
-                [e0, e1, e2, e3, e4 | (0b11 << KIND_SHIFT)]
+                let [e0, e1, e2, e3, e4, e5] = extent.encode();
+                [e0, e1, e2, e3, e4, e5 | (0b11 << KIND_SHIFT)]
             }
         }
     }
 
     /// Shifts and masks only: every label check goes through here.
     pub(crate) fn decode(bytes: [u8; CELL_BYTES]) -> Self {
-        let [b0, b1, b2, b3, b4] = bytes;
-        match b4 >> KIND_SHIFT {
+        let [b0, b1, b2, b3, _, b5] = bytes;
+        match b5 >> KIND_SHIFT {
             NONE => Self::None,
             ONE => Self::One(NodeLabel::new(u16::from_le_bytes([b0, b1]))),
             TWO => Self::Two(
@@ -335,7 +335,7 @@ mod tests {
 mod proofs {
     use super::*;
 
-    /// Any five bytes decode to a label cell that encodes back to itself.
+    /// Any six bytes decode to a label cell that encodes back to itself.
     #[kani::proof]
     fn label_cells_round_trip() {
         let cell = LabelSet::decode(kani::any());

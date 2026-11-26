@@ -31,8 +31,10 @@ impl ByteClass {
     pub(crate) const PAGE: Self = Self(Self::PAGE_ID);
     /// The smallest class: 16 bytes.
     pub(crate) const SMALLEST: Self = Self(0);
-    /// 32 bytes: headers.
+    /// 32 bytes.
     pub(crate) const B32: Self = Self(1);
+    /// 48 bytes: bucket headers.
+    pub(crate) const B48: Self = Self(2);
 
     /// The smallest class holding `bytes`; `None` past a page.
     pub(crate) fn for_bytes(bytes: u32) -> Option<Self> {

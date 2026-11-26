@@ -190,6 +190,25 @@ fn directory_pages_lead_each_group_of_data_pages() {
 }
 
 #[test]
+fn page_ids_past_the_old_limit_round_trip() {
+    // 27 bits named 512 GiB of pages; 30 name 4 TiB, and the holder's bits stay apart.
+    for page in [1 << 27, (1 << 29) + 12_345, MAX_PAGES - 1] {
+        for class in [ByteClass::SMALLEST, class(48), class(2048), ByteClass::PAGE] {
+            let last = class.per_page() - 1;
+            let extent = Extent::new(PageId(page), last, class);
+            let mut bytes = extent.encode();
+            assert_eq!(
+                bytes[5] & EXTENT_SPARE_BITS,
+                0,
+                "the holder's bits are left zero"
+            );
+            bytes[5] |= EXTENT_SPARE_BITS;
+            assert_eq!(Extent::decode(bytes), extent, "page {page}, {class:?}");
+        }
+    }
+}
+
+#[test]
 fn extents_do_not_overlap_and_round_trip() {
     let backing = Backing::default();
     let mut store = backing.create();

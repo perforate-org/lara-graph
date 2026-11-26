@@ -71,18 +71,19 @@
 //! # Extent
 //!
 //! Extent `index` of a class of `b` bytes in a page starts at `index × b` past its page's start
-//! ([`PageId::offset`]). It encodes in 40 bits, little-endian:
+//! ([`PageId::offset`]). It encodes in 48 bits, little-endian:
 //!
 //! ```text
 //! ---------------------------------------- <- Bit 0
-//! Page id                         ↕ 27 bits       (512 GiB of pages per memory, past the IC's
-//!                                                  stable memory)
-//! ---------------------------------------- <- Bit 27
+//! Page id                         ↕ 30 bits       (4 TiB of pages per memory)
+//! ---------------------------------------- <- Bit 30
 //! Index in the page, low 7 bits   ↕ 7 bits        (below the class's extents per page)
-//! ---------------------------------------- <- Bit 34
+//! ---------------------------------------- <- Bit 37
 //! Class code                      ↕ 4 bits        (0 and 1: 16 B, the code being the index's
 //!                                                  8th bit; 2 to 14: the 32 B to 4 KiB classes)
-//! ---------------------------------------- <- Bit 38
+//! ---------------------------------------- <- Bit 41
+//! Free, zero                      ↕ 5 bits
+//! ---------------------------------------- <- Bit 46
 //! Spare, for the holder           ↕ 2 bits
 //! ----------------------------------------
 //! ```
@@ -151,21 +152,25 @@ pub(crate) struct Extent {
     class: ByteClass,
 }
 
-/// Bytes an encoded [`Extent`] takes: 40 bits, of which the extent uses the low 38.
-pub(crate) const EXTENT_BYTES: usize = 5;
-/// Bits of a page id in an encoded extent.
-pub(crate) const PAGE_BITS: u32 = 27;
+/// Bytes an encoded [`Extent`] takes: 48 bits, of which the extent uses the low 41.
+pub(crate) const EXTENT_BYTES: usize = 6;
+/// Bits of a page id in an encoded extent, and wherever else a page id is packed: a label bucket
+/// list's leaf reference keeps a direction above them in four bytes.
+pub(crate) const PAGE_BITS: u32 = 30;
 /// Bits of the index within the page: 128 extents of the 32-byte class. The 16-byte class's 256
 /// take an eighth bit from the class code.
 const INDEX_BITS: u32 = 7;
 /// Bits of the class code.
 const CLASS_BITS: u32 = 4;
-/// Page ids an encoded extent can name: 512 GiB of pages per memory.
+/// Page ids an encoded extent can name: 4 TiB of pages per memory.
 pub(crate) const MAX_PAGES: u32 = 1 << PAGE_BITS;
 /// The top bits of an encoded extent's last byte, which the extent leaves zero for its holder (a
 /// node record keeps the node's state there).
 pub(crate) const EXTENT_SPARE_BITS: u8 = 0b1100_0000;
-const _: () = assert!(PAGE_BITS + INDEX_BITS + CLASS_BITS + 2 == 40 && EXTENT_BYTES == 5);
+/// Bits between the class code and the holder's: free, left zero.
+const FREE_BITS: u32 = 5;
+const _: () =
+    assert!(PAGE_BITS + INDEX_BITS + CLASS_BITS + FREE_BITS + 2 == 48 && EXTENT_BYTES == 6);
 
 impl Extent {
     /// The `index`-th extent of `class` in `page`.
@@ -229,16 +234,16 @@ impl Extent {
         let word = u64::from(self.page.0)
             | (u64::from(self.index() & ((1 << INDEX_BITS) - 1)) << PAGE_BITS)
             | (code << (PAGE_BITS + INDEX_BITS));
-        let [b0, b1, b2, b3, b4, ..] = word.to_le_bytes();
-        [b0, b1, b2, b3, b4]
+        let [b0, b1, b2, b3, b4, b5, ..] = word.to_le_bytes();
+        [b0, b1, b2, b3, b4, b5]
     }
 
-    /// Ignores the spare bits ([`EXTENT_SPARE_BITS`]). One table load, a minimum and a product,
-    /// as every extent read goes through here; any 38 bits name a valid extent, so there is
-    /// nothing to check.
+    /// Ignores the free and spare bits ([`EXTENT_SPARE_BITS`]). One table load, a minimum and a
+    /// product, as every extent read goes through here; any 41 bits name a valid extent, so there
+    /// is nothing to check.
     pub(crate) fn decode(bytes: [u8; EXTENT_BYTES]) -> Self {
-        let [b0, b1, b2, b3, b4] = bytes;
-        let word = u64::from_le_bytes([b0, b1, b2, b3, b4, 0, 0, 0]);
+        let [b0, b1, b2, b3, b4, b5] = bytes;
+        let word = u64::from_le_bytes([b0, b1, b2, b3, b4, b5, 0, 0]);
         let field = |at: u32, bits: u32| (word >> at) & ((1 << bits) - 1);
         let code = Code::of(field(PAGE_BITS + INDEX_BITS, CLASS_BITS));
         // An index past its class's last extent is no extent's: it clamps.
@@ -896,7 +901,7 @@ mod tests;
 mod proofs {
     use super::*;
 
-    /// Any five bytes decode to an extent, and it lies within its page.
+    /// Any six bytes decode to an extent, and it lies within its page.
     #[kani::proof]
     fn any_bytes_decode_to_an_extent_within_its_page() {
         let extent = Extent::decode(kani::any());

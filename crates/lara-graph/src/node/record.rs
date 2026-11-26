@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! ---------------------------------------- <- Offset 0
-//! Label bucket list extent        ↕ 5 bytes
+//! Label bucket list extent        ↕ 6 bytes
 //!   (the extent's two spare bits, bits 6-7 of its last byte, carry the
 //!    state: 0 live, 1 deleting, 2 deleted)
 //! ----------------------------------------
@@ -97,7 +97,7 @@ mod tests {
 mod proofs {
     use super::*;
 
-    /// Any six bytes with a known state decode to a record that encodes back to itself.
+    /// Any seven bytes with a known state decode to a record that encodes back to itself.
     #[kani::proof]
     fn records_round_trip() {
         let bytes: [u8; RECORD_BYTES] = kani::any();

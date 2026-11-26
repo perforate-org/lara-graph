@@ -41,7 +41,7 @@ impl Chunk {
         match kind {
             EMPTY => Self::Empty,
             LISTED => Self::Listed {
-                extent: Extent::decode([p0, p1, p2, p3, p4]),
+                extent: Extent::decode([p0, p1, p2, p3, p4, p5]),
                 members,
             },
             BITMAP => Self::Bitmap {
@@ -61,8 +61,8 @@ impl Chunk {
             Self::Empty => [0; CHUNK_CELL],
             Self::Listed { extent, members } => {
                 let [m0, m1] = less(members);
-                let [e0, e1, e2, e3, e4] = extent.encode();
-                [m0, m1, LISTED, e0, e1, e2, e3, e4, 0, 0, 0]
+                let [e0, e1, e2, e3, e4, e5] = extent.encode();
+                [m0, m1, LISTED, e0, e1, e2, e3, e4, e5, 0, 0]
             }
             Self::Bitmap { pages, members } => {
                 let [m0, m1] = less(members);

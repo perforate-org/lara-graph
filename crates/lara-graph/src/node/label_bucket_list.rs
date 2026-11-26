@@ -1,7 +1,7 @@
 //! Per-node label bucket lists: which `(label, direction)` label buckets a node has, and their
 //! descriptors.
 //!
-//! Entries are 12 bytes (label, direction, 9-byte listed descriptor), sorted by key. A list starts
+//! Entries are 13 bytes (label, direction, 10-byte listed descriptor), sorted by key. A list starts
 //! **flat**: one extent in the page store, read whole and searched in memory; adding a bucket
 //! shifts entries in place or moves the list to the next class. A flat list that would outgrow a
 //! page becomes **tiered** (`tiered`): a small top extent lists leaf pages with their first key and
@@ -14,7 +14,7 @@
 //!
 //! ```text
 //! ---------------------------------------- <- Offset 0
-//! Extent: the flat list or the top↕ 5 bytes
+//! Extent: the flat list or the top↕ 6 bytes
 //! ----------------------------------------
 //! Entry count; 0xFF if tiered     ↕ 1 byte
 //! ----------------------------------------
@@ -24,11 +24,11 @@
 //!
 //! ```text
 //! ---------------------------------------- <- Extent start
-//! Entry 0                         ↕ 12 bytes
+//! Entry 0                         ↕ 13 bytes
 //! ----------------------------------------
 //! ...
 //! ----------------------------------------
-//! Entry count - 1                 ↕ 12 bytes
+//! Entry count - 1                 ↕ 13 bytes
 //! ----------------------------------------
 //! Unused space
 //! ```
@@ -43,7 +43,7 @@
 //! ----------------------------------------
 //! Direction: 0 out, 1 in, 2 undir.↕ 1 byte
 //! ----------------------------------------
-//! Stored: listed descriptor or    ↕ 9 bytes
+//! Stored: listed descriptor or    ↕ 10 bytes
 //!   header ref
 //! ----------------------------------------
 //! ```
@@ -64,7 +64,7 @@ use core::ops::ControlFlow;
 /// Bytes per list entry.
 const ENTRY_BYTES: usize = 3 + LISTED_BYTES;
 /// Entries a flat list or a leaf holds: as many as a count byte can take but for 255 ([`TIERED`]),
-/// 254 of the 341 a page has room for. Tests use a handful so that lists tier early.
+/// 254 of the 315 a page has room for. Tests use a handful so that lists tier early.
 const LEAF_ENTRIES: usize = crate::store::scale::Scale::pick(8, 254);
 const _: () = assert!(LEAF_ENTRIES * ENTRY_BYTES <= 4096);
 const _: () = assert!(crate::store::page_store::PAGE_BYTES == 4096);
@@ -150,15 +150,15 @@ pub(crate) fn encode_ref(list: Option<LabelBucketList>) -> [u8; LABEL_BUCKET_LIS
         Shape::Tiered { top } => (top, TIERED),
     });
     encoded.map_or([0; LABEL_BUCKET_LIST_REF_BYTES], |(extent, count)| {
-        let [e0, e1, e2, e3, e4] = extent.encode();
-        [e0, e1, e2, e3, e4, count]
+        let [e0, e1, e2, e3, e4, e5] = extent.encode();
+        [e0, e1, e2, e3, e4, e5, count]
     })
 }
 
 pub(crate) fn decode_ref(bytes: [u8; LABEL_BUCKET_LIST_REF_BYTES]) -> Option<LabelBucketList> {
-    let [e0, e1, e2, e3, e4, count] = bytes;
+    let [e0, e1, e2, e3, e4, e5, count] = bytes;
     (count != 0).then(|| {
-        let extent = Extent::decode([e0, e1, e2, e3, e4]);
+        let extent = Extent::decode([e0, e1, e2, e3, e4, e5]);
         LabelBucketList(match count {
             TIERED => Shape::Tiered { top: extent },
             count => Shape::Flat { extent, count },
@@ -504,8 +504,8 @@ fn decode_entry(entry: [u8; ENTRY_BYTES]) -> (LabelBucketKey, Stored) {
 /// slow code on the IC (a 32-byte directory record cost about 1,500 instructions that way).
 fn encode_entry(key: LabelBucketKey, d: &Stored) -> [u8; ENTRY_BYTES] {
     let [k0, k1, k2] = key.encode();
-    let [s0, s1, s2, s3, s4, s5, s6, s7, s8] = d.encode();
-    [k0, k1, k2, s0, s1, s2, s3, s4, s5, s6, s7, s8]
+    let [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9] = d.encode();
+    [k0, k1, k2, s0, s1, s2, s3, s4, s5, s6, s7, s8, s9]
 }
 
 /// Publishes a bucket's new descriptor in place. Cannot fail.
@@ -655,7 +655,7 @@ mod proofs {
         assert_eq!(a.rank().cmp(&b.rank()), a.cmp(&b));
     }
 
-    /// Any six bytes decode to a list reference that encodes back to itself.
+    /// Any seven bytes decode to a list reference that encodes back to itself.
     #[kani::proof]
     fn references_round_trip() {
         let list = decode_ref(kani::any());
