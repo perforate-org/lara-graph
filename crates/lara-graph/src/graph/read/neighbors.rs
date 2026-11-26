@@ -286,7 +286,11 @@ impl<S: GraphMemories> Graph<S> {
     }
 
     /// A bucket's slot descriptor, without building the bucket's values or index: a read that
-    /// only scans slots does not pay for the rest of an extended header.
+    /// only scans slots does not pay for the rest of an extended header. Inlined into its
+    /// callers: as a call, a node's degree cost about 50 instructions more (`degree_1024`,
+    /// built as one codegen unit).
+    #[expect(clippy::inline_always, reason = "measured: see the doc")]
+    #[inline(always)]
     pub(in crate::graph) fn bucket(
         &self,
         v: NodeId,

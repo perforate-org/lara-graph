@@ -122,6 +122,10 @@ impl<S: GraphMemories> Graph<S> {
         lines.bytes_of(&self.nodes, v)
     }
 
+    /// `v`'s label bucket list. Always inlined: every bucket lookup starts here, and as a call it
+    /// cost a node's degree about 50 instructions (`degree_1024`).
+    #[expect(clippy::inline_always, reason = "measured: see the doc")]
+    #[inline(always)]
     fn label_bucket_list(&self, v: NodeId) -> Result<Option<LabelBucketList>, Error> {
         Ok(self.record(v)?.list)
     }
