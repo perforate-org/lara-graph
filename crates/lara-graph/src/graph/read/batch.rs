@@ -28,6 +28,10 @@ use view::BatchView;
 /// A read-only batch over a list of nodes. The node-record line and flat-list page buffers
 /// live as long as the batch, so several reads in one query share them. Drop it before mutating
 /// the graph.
+///
+/// As [`Graph`]'s reads, a batch read that gives a list replaces what `out` held, one entry per
+/// input in its order, and checks every input before it writes, so that an error leaves `out` as
+/// it was.
 pub struct ReadBatch<'g, S: GraphMemories> {
     graph: &'g Graph<S>,
     records: RecordLines,

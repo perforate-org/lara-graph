@@ -37,7 +37,7 @@ use target_set::Targets;
 const PROBE_RATIO: u32 = 128;
 
 impl<S: GraphMemories> Graph<S> {
-    /// Replaces the contents of `out` with the targets of the live edges of `v`'s
+    /// Replaces `out` with the targets of the live edges of `v`'s
     /// `adjacency` bucket in ascending node order, once per edge: parallel edges repeat.
     ///
     /// Nothing is stored for it: the bucket is read and sorted in the heap, at about 3 to 6 times
@@ -53,15 +53,16 @@ impl<S: GraphMemories> Graph<S> {
         out: &mut Vec<NodeId>,
     ) -> Result<(), Error> {
         let (label, direction) = (adjacency.label(), adjacency.direction());
+        let bucket = self.read_label_bucket(v, LabelBucketKey { label, direction })?;
         out.clear();
-        if let Some(bucket) = self.read_label_bucket(v, LabelBucketKey { label, direction })? {
+        if let Some(bucket) = bucket {
             self.sorted_into(&bucket, out);
         }
         Ok(())
     }
 
-    /// Replaces the contents of `out` with the nodes that every one of `nodes`' `(label,
-    /// direction)` buckets holds a live edge to, ascending, each once; empty for no nodes.
+    /// Replaces `out` with the nodes that every one of `nodes`' `adjacency` buckets holds a live
+    /// edge to, ascending, each once; empty for no nodes.
     ///
     /// The smallest bucket's targets make a [`NeighborSet`]; each larger bucket, smallest first,
     /// keeps in it those it holds (see [`Self::common_with`]), the set narrowed in place.
@@ -76,8 +77,9 @@ impl<S: GraphMemories> Graph<S> {
         out: &mut Vec<NodeId>,
     ) -> Result<(), Error> {
         let (label, direction) = (adjacency.label(), adjacency.direction());
+        let buckets = self.buckets_of(nodes, LabelBucketKey { label, direction })?;
         out.clear();
-        let Some(mut buckets) = self.buckets_of(nodes, LabelBucketKey { label, direction })? else {
+        let Some(mut buckets) = buckets else {
             return Ok(());
         };
         buckets.sort_by_key(|b| b.slots.live());
@@ -129,7 +131,7 @@ impl<S: GraphMemories> Graph<S> {
         Ok(())
     }
 
-    /// Replaces the contents of `out` with the nodes both `set` and `w`'s `adjacency`
+    /// Replaces `out` with the nodes both `set` and `w`'s `adjacency`
     /// bucket hold, ascending, each once, and only those past `above` when it is given: listing
     /// each triangle once, as `u < w < x`, wants those past `w`. `set` is left as it was, ready
     /// for the next bucket; [`ReadBatch::common_with_each`](crate::ReadBatch::common_with_each)
@@ -151,8 +153,8 @@ impl<S: GraphMemories> Graph<S> {
         out: &mut Vec<NodeId>,
     ) -> Result<(), Error> {
         let (label, direction) = (adjacency.label(), adjacency.direction());
-        out.clear();
         let bucket = self.read_label_bucket(w, LabelBucketKey { label, direction })?;
+        out.clear();
         let Some(bucket) = bucket.filter(|_| !set.is_empty()) else {
             return Ok(());
         };

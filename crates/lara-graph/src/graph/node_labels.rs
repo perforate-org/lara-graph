@@ -83,7 +83,7 @@ impl<S: GraphMemories> Graph<S> {
         Ok(())
     }
 
-    /// Appends `v`'s labels, ascending, to `out` after clearing it; a proxy has none.
+    /// Replaces `out` with `v`'s labels, ascending; a proxy has none.
     ///
     /// # Errors
     ///

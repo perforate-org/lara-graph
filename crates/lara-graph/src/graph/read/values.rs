@@ -88,8 +88,8 @@ impl<S: GraphMemories> Graph<S> {
         )
     }
 
-    /// Appends the values at `positions` of `v`'s `adjacency` bucket to `out`, one width
-    /// each, in the order given: zeros for a hole, a position past the end or no write yet.
+    /// Replaces `out` with the values at `positions` of `v`'s `adjacency` bucket, one width each,
+    /// in the order given: zeros for a hole, a position past the end or no write yet.
     ///
     /// # Errors
     ///
@@ -102,9 +102,9 @@ impl<S: GraphMemories> Graph<S> {
         out: &mut Vec<u8>,
     ) -> Result<(), Error> {
         let (label, direction) = (adjacency.label(), adjacency.direction());
-        out.clear();
         let width = self.widths.get(label).map_or(0, |w| usize::from(w.get()));
         let found = self.find_label_bucket(v, LabelBucketKey { label, direction })?;
+        out.clear();
         for &p in positions {
             match &found {
                 Some(found) => out.extend(self.edge_view().read_value(&found.bucket, label, p)),

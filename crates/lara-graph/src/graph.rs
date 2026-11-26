@@ -33,6 +33,10 @@ const VERSION: u8 = 1;
 /// `S` is the memories' type: one [`Memory`](crate::Memory) type for all four, or a
 /// [`Memories`] naming one per role.
 ///
+/// A read that gives a list fills a `Vec` the caller passes last, `out`, so that a traversal
+/// reuses one buffer: it replaces what `out` held, and on error leaves it as it was. A read that
+/// stops early takes a callback (`visit_*`) and returns its break value.
+///
 /// # The everyday operations
 ///
 /// - Opening: [`Graph::init`], or [`Graph::format`] and [`Graph::load`] apart.

@@ -159,7 +159,7 @@ impl<S: GraphMemories> Graph<S> {
         Ok(next.map(|at| Cursor::at(cursor.order(), Position::new(at), cursor.span())))
     }
 
-    /// Replaces the contents of `out` with the targets at `positions` of `v`'s `adjacency`
+    /// Replaces `out` with the targets at `positions` of `v`'s `adjacency`
     /// bucket, in the order given: `None` for a hole or a position past the end. Reads each
     /// touched run or page once.
     ///
@@ -174,8 +174,9 @@ impl<S: GraphMemories> Graph<S> {
         out: &mut Vec<Option<NodeId>>,
     ) -> Result<(), Error> {
         let (label, direction) = (adjacency.label(), adjacency.direction());
+        let bucket = self.bucket(v, LabelBucketKey { label, direction })?;
         out.clear();
-        let Some(d) = self.bucket(v, LabelBucketKey { label, direction })? else {
+        let Some(d) = bucket else {
             out.resize(positions.len(), None);
             return Ok(());
         };
@@ -239,7 +240,7 @@ impl<S: GraphMemories> Graph<S> {
             .map_or(0, |d| d.live()))
     }
 
-    /// Replaces the contents of `out` with the live edges of `v`'s `adjacency` bucket, in
+    /// Replaces `out` with the live edges of `v`'s `adjacency` bucket, in
     /// position order. Each edge's target is the node at its other end.
     /// [`Self::visit_neighbors`] reads the same edges in about half the instructions when they
     /// need not be kept.
@@ -254,8 +255,9 @@ impl<S: GraphMemories> Graph<S> {
         out: &mut Vec<Neighbor>,
     ) -> Result<(), Error> {
         let (label, direction) = (adjacency.label(), adjacency.direction());
+        let bucket = self.bucket(v, LabelBucketKey { label, direction })?;
         out.clear();
-        if let Some(d) = self.bucket(v, LabelBucketKey { label, direction })? {
+        if let Some(d) = bucket {
             slots::read(&d, &self.edge_view().pages(), out);
         }
         Ok(())

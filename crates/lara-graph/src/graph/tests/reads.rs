@@ -313,3 +313,57 @@ fn batched_every_label_reads_match_single_reads() {
         }
     }
 }
+
+#[test]
+fn a_read_that_fails_leaves_its_output_as_it_was() {
+    let backing = Backing::default();
+    let mut g = backing.create(2);
+    insert(&mut g, v(0), l(0), v(1));
+    let missing = v(9);
+    let adjacency = l(0).outgoing();
+    let mut neighbors = vec![Neighbor::new(p(7), v(7))];
+    assert_eq!(
+        g.neighbors(missing, adjacency, &mut neighbors),
+        Err(Error::UnknownNode(missing))
+    );
+    assert_eq!(neighbors, [Neighbor::new(p(7), v(7))]);
+    let mut nodes = vec![v(7)];
+    for result in [
+        g.sorted_neighbors(missing, adjacency, &mut nodes),
+        g.common_neighbors(&[v(0), missing], adjacency, &mut nodes),
+        g.common_with(
+            &mut g.neighbor_set(v(0), adjacency).unwrap(),
+            missing,
+            None,
+            adjacency,
+            &mut nodes,
+        ),
+    ] {
+        assert_eq!(result, Err(Error::UnknownNode(missing)));
+        assert_eq!(nodes, [v(7)]);
+    }
+    let mut at = vec![Some(v(7))];
+    assert!(
+        g.neighbors_at(missing, adjacency, &[p(0)], &mut at)
+            .is_err()
+    );
+    assert_eq!(at, [Some(v(7))]);
+    let mut bytes = vec![7];
+    assert!(
+        g.values_at(missing, adjacency, &[p(0)], &mut bytes)
+            .is_err()
+    );
+    assert_eq!(bytes, [7]);
+    let mut labels = vec![l(7)];
+    assert!(
+        g.edge_labels(missing, Direction::Outgoing, &mut labels)
+            .is_err()
+    );
+    assert_eq!(labels, [l(7)]);
+    let mut node_labels = vec![nl(7)];
+    assert!(g.node_labels(missing, &mut node_labels).is_err());
+    assert_eq!(node_labels, [nl(7)]);
+    // And a read that succeeds replaces it.
+    g.neighbors(v(0), adjacency, &mut neighbors).unwrap();
+    assert_eq!(neighbors, [Neighbor::new(p(0), v(1))]);
+}

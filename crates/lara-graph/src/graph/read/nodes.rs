@@ -33,8 +33,8 @@ impl<S: GraphMemories> Graph<S> {
         self.state(v)
     }
 
-    /// The labels of `v`'s edges on `direction`: those it has buckets under, in order. A node's own
-    /// labels are [`Self::node_labels`].
+    /// Replaces `out` with the labels of `v`'s edges on `direction`: those it has buckets under,
+    /// in order. A node's own labels are [`Self::node_labels`].
     ///
     /// # Errors
     ///
