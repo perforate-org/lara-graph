@@ -95,7 +95,7 @@ impl<S: GraphMemories> Graph<S> {
         Ok(())
     }
 
-    /// Whether `v` has `label`: one 5-byte read for a node with at most two labels; false for a
+    /// Whether `v` has `label`: one 6-byte read for a node with at most two labels; false for a
     /// proxy.
     ///
     /// # Errors

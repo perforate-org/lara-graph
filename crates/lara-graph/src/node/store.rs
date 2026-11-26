@@ -263,13 +263,9 @@ fn extend_records<M: Memory>(memory: &M, first: u32, next: u32) -> Result<(), Wr
         return region.write(record_at(first), &Record::NEW.encode());
     }
     region.reserve(record_at(next))?;
-    let line: [u8; LINE_BYTES] = core::array::from_fn(|i| {
-        Record::NEW
-            .encode()
-            .get(i % RECORD_BYTES)
-            .copied()
-            .unwrap_or(0)
-    });
+    let new = Record::NEW.encode();
+    let line: [u8; LINE_BYTES] =
+        core::array::from_fn(|i| new.get(i % RECORD_BYTES).copied().unwrap_or(0));
     let mut index = first;
     while index < next {
         let count = (next - index).min(RECORDS_PER_LINE);

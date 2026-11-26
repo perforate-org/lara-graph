@@ -44,7 +44,7 @@ impl<S: GraphMemories> ReadBatch<'_, S> {
     }
 
     /// Replaces `out` with whether each node has `label`: [`Graph::has_node_label`] over many
-    /// nodes, one 5-byte cell each for a node with at most two labels. Validates all nodes before
+    /// nodes, one 6-byte cell each for a node with at most two labels. Validates all nodes before
     /// it writes `out`.
     ///
     /// # Errors

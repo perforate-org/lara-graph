@@ -17,11 +17,11 @@
 //! ----------------------------------------
 //! Reserved space                  ↕ 6 bytes
 //! ---------------------------------------- <- Address 16 (CELLS_START)
-//! Labels of node 0                ↕ 5 bytes       (see `set`)
+//! Labels of node 0                ↕ 6 bytes       (see `set`)
 //! ----------------------------------------
 //! ...
 //! ----------------------------------------
-//! Labels of node N - 1            ↕ 5 bytes
+//! Labels of node N - 1            ↕ 6 bytes
 //! ----------------------------------------
 //! Unallocated space
 //! ```

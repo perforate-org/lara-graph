@@ -15,11 +15,11 @@
 //! ---------------------------------------- <- Empty
 //! Kind (0)                        ↕ 1 byte
 //! ----------------------------------------
-//! Reserved space                  ↕ 5 bytes
+//! Reserved space                  ↕ 6 bytes
 //! ---------------------------------------- <- Run: cells 0, 1, … of `width` bytes
 //! Kind (1)                        ↕ 1 byte
 //! ----------------------------------------
-//! Extent                          ↕ 5 bytes
+//! Extent                          ↕ 6 bytes
 //! ---------------------------------------- <- Table
 //! Kind (2)                        ↕ 1 byte
 //! ----------------------------------------
@@ -78,7 +78,7 @@ pub(crate) fn pages_per_moves(width: Width) -> u32 {
 }
 
 /// Bytes of a plane's root.
-pub(crate) const ROOT_BYTES: usize = 6;
+pub(crate) const ROOT_BYTES: usize = 7;
 
 const KIND_EMPTY: u8 = 0;
 const KIND_RUN: u8 = 1;
@@ -110,24 +110,24 @@ impl Plane {
     /// As the module's Plane root diagram shows.
     pub(crate) fn encode(self) -> [u8; ROOT_BYTES] {
         match self {
-            Self::Empty => [KIND_EMPTY, 0, 0, 0, 0, 0],
+            Self::Empty => [KIND_EMPTY, 0, 0, 0, 0, 0, 0],
             Self::Run(extent) => {
-                let [e0, e1, e2, e3, e4] = extent.encode();
-                [KIND_RUN, e0, e1, e2, e3, e4]
+                let [e0, e1, e2, e3, e4, e5] = extent.encode();
+                [KIND_RUN, e0, e1, e2, e3, e4, e5]
             }
             Self::Table { root, depth } => {
                 let [r0, r1, r2, r3] = root.get().to_le_bytes();
-                [KIND_TABLE, r0, r1, r2, r3, depth]
+                [KIND_TABLE, r0, r1, r2, r3, depth, 0]
             }
             Self::Beside { .. } => corrupt("values beside slots in a header"),
         }
     }
 
     pub(crate) fn decode(bytes: [u8; ROOT_BYTES]) -> Self {
-        let [kind, b1, b2, b3, b4, b5] = bytes;
+        let [kind, b1, b2, b3, b4, b5, b6] = bytes;
         match kind {
             KIND_EMPTY => Self::Empty,
-            KIND_RUN => Self::Run(Extent::decode([b1, b2, b3, b4, b5])),
+            KIND_RUN => Self::Run(Extent::decode([b1, b2, b3, b4, b5, b6])),
             KIND_TABLE if (1..=MAX_DEPTH).contains(&b5) => Self::Table {
                 root: PageId::new(u32::from_le_bytes([b1, b2, b3, b4])),
                 depth: b5,
@@ -495,11 +495,11 @@ mod tests;
 mod proofs {
     use super::*;
 
-    /// Any six bytes of a known kind decode to a plane root that encodes back to itself.
+    /// Any seven bytes of a known kind decode to a plane root that encodes back to itself.
     #[kani::proof]
     fn plane_roots_round_trip() {
         let bytes: [u8; ROOT_BYTES] = kani::any();
-        let [kind, .., depth] = bytes;
+        let [kind, _, _, _, _, depth, _] = bytes;
         kani::assume(
             kind == KIND_EMPTY
                 || kind == KIND_RUN

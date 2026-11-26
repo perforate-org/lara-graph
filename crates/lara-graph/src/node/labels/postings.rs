@@ -80,17 +80,17 @@ impl LabelCell {
             u32::from(label.get()),
             &mut bytes,
         );
-        let [r0, r1, r2, r3, r4, r5, c0, c1, c2, c3] = bytes;
+        let [r0, r1, r2, r3, r4, r5, r6, c0, c1, c2, c3] = bytes;
         Self {
-            chunks: Plane::decode([r0, r1, r2, r3, r4, r5]),
+            chunks: Plane::decode([r0, r1, r2, r3, r4, r5, r6]),
             count: u32::from_le_bytes([c0, c1, c2, c3]),
         }
     }
 
     fn encode(self) -> [u8; LABEL_CELL] {
-        let [r0, r1, r2, r3, r4, r5] = self.chunks.encode();
+        let [r0, r1, r2, r3, r4, r5, r6] = self.chunks.encode();
         let [c0, c1, c2, c3] = self.count.to_le_bytes();
-        [r0, r1, r2, r3, r4, r5, c0, c1, c2, c3]
+        [r0, r1, r2, r3, r4, r5, r6, c0, c1, c2, c3]
     }
 
     /// Writes the cell back with its chunk `chunk_no` now `chunk` and its count moved by one.

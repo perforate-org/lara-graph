@@ -233,6 +233,12 @@ impl<S: GraphMemories> Graph<S> {
     /// # Errors
     ///
     /// [`Error::UnknownNode`].
+    #[expect(
+        clippy::inline_always,
+        reason = "a lookup and a count: called from more than one place it became a call, about \
+                  50 instructions a degree (`degree_1024`)"
+    )]
+    #[inline(always)]
     pub fn degree(&self, v: NodeId, adjacency: Adjacency) -> Result<u32, Error> {
         let (label, direction) = (adjacency.label(), adjacency.direction());
         Ok(self

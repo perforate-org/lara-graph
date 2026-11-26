@@ -1,11 +1,11 @@
 //! How a [`LabelBucket`] is stored in its label bucket list entry: a plain descriptor, or a
 //! header for a bucket with more to it.
 //!
-//! A list entry's 9 bytes after its key hold a listed [`Descriptor`] for a plain bucket: a tiny one,
+//! A list entry's 10 bytes after its key hold a listed [`Descriptor`] for a plain bucket: a tiny one,
 //! or a run, including one that keeps its values beside its slots (see `descriptor`). A paged
 //! bucket, and one whose values are in a value plane (a run too large for its values beside it,
 //! or one of a label with wide values; never tiny: two inline slots leave no room for them), holds
-//! `Extended`: the extent of a 32-byte header in the edge store with the full slot descriptor, the
+//! `Extended`: the extent of a 48-byte header in the page store with the full slot descriptor, the
 //! value plane's root and width, and the target index's root (or a mark that it was dropped while
 //! the node is deleted). Plain buckets pay nothing; an extended one costs one more 32-byte read,
 //! which a paged bucket's scan of at least a page of slots does not notice.
@@ -16,7 +16,7 @@
 //! ---------------------------------------- <- Offset 0
 //! Reserved space                  ↕ 4 bytes
 //! ----------------------------------------
-//! Header extent, kind 3 in its    ↕ 5 bytes
+//! Header extent, kind 3 in its    ↕ 6 bytes
 //!   spare bits
 //! ----------------------------------------
 //! ```
@@ -27,7 +27,7 @@
 //!
 //! ```text
 //! ---------------------------------------- <- Offset 0
-//! Full slot descriptor            ↕ 13 bytes
+//! Full slot descriptor            ↕ 14 bytes
 //! ---------------------------------------- <- Offset 13
 //! Value plane root                ↕ 6 bytes
 //! ---------------------------------------- <- Offset 19
@@ -39,7 +39,7 @@
 //! ----------------------------------------
 //! Value version                   ↕ 1 byte        (see `crate::ValueVersion`)
 //! ----------------------------------------
-//! Migration record extent         ↕ 5 bytes       (top bit set while a `migrate_values` runs;
+//! Migration record extent         ↕ 6 bytes       (top bit set while a `migrate_values` runs;
 //!                                                  zeros for none)
 //! ----------------------------------------
 //! ```
@@ -78,8 +78,8 @@ pub(crate) fn set_migration_record<M: Memory>(
     record: Option<Extent>,
 ) {
     let bytes = record.map_or([0; EXTENT_BYTES], |r| {
-        let [r0, r1, r2, r3, r4] = r.encode();
-        [r0, r1, r2, r3, r4 | MIGRATING]
+        let [r0, r1, r2, r3, r4, r5] = r.encode();
+        [r0, r1, r2, r3, r4, r5 | MIGRATING]
     });
     store.write(migration_at(header), &bytes);
 }
@@ -91,10 +91,10 @@ fn migration_at(header: Extent) -> ByteOffset {
 const NO_INDEX: u32 = u32::MAX;
 const DROPPED_INDEX: u32 = u32::MAX - 1;
 /// The class headers are allocated in.
-pub(crate) const HEADER_CLASS: ByteClass = ByteClass::B32;
-const _: () = assert!(HEADER_BYTES <= 32);
+pub(crate) const HEADER_CLASS: ByteClass = ByteClass::B48;
+const _: () = assert!(HEADER_BYTES <= 48 && HEADER_BYTES > 32);
 
-/// A list entry's 9 bytes after its key.
+/// A list entry's 10 bytes after its key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Stored {
     Plain(Descriptor),
@@ -106,9 +106,9 @@ impl Stored {
         match self {
             Self::Plain(d) => d.encode_listed(),
             Self::Extended(header) => {
-                let [e0, e1, e2, e3, e4] = header.encode();
-                let last = e4 | (KIND_HEADER << KIND_SHIFT);
-                [0, 0, 0, 0, e0, e1, e2, e3, last]
+                let [e0, e1, e2, e3, e4, e5] = header.encode();
+                let last = e5 | (KIND_HEADER << KIND_SHIFT);
+                [0, 0, 0, 0, e0, e1, e2, e3, e4, last]
             }
         }
     }
@@ -124,8 +124,8 @@ impl Stored {
 
     pub(crate) fn decode(bytes: [u8; LISTED_BYTES]) -> Self {
         if listed_kind(&bytes) == KIND_HEADER {
-            let [.., e0, e1, e2, e3, e4] = bytes;
-            Self::Extended(Extent::decode([e0, e1, e2, e3, e4]))
+            let [.., e0, e1, e2, e3, e4, e5] = bytes;
+            Self::Extended(Extent::decode([e0, e1, e2, e3, e4, e5]))
         } else {
             Self::Plain(Descriptor::decode_listed(bytes))
         }
@@ -134,7 +134,7 @@ impl Stored {
 
 /// The bucket as its list entry and header store it.
 impl LabelBucket {
-    /// Reads an extended bucket's header (one 32-byte read); a plain one needs nothing.
+    /// Reads an extended bucket's header (one read of its bytes); a plain one needs nothing.
     pub(crate) fn resolve<M: Memory>(view: &Pages<'_, M>, stored: Stored) -> Self {
         let header = match stored {
             Stored::Plain(slots) => return Self::plain(slots),
@@ -143,13 +143,27 @@ impl LabelBucket {
         let bytes: [u8; HEADER_BYTES] = view.read_array(header.offset());
         let (d, rest) = bytes.split_at(DESCRIPTOR_BYTES);
         let (root, rest) = rest.split_at(ROOT_BYTES);
-        let [w0, w1, i0, i1, i2, i3, depth, version, m0, m1, m2, m3, m4] =
-            <[u8; 13]>::try_from(rest).unwrap_or_else(|_| corrupt("header"));
+        let [
+            w0,
+            w1,
+            i0,
+            i1,
+            i2,
+            i3,
+            depth,
+            version,
+            m0,
+            m1,
+            m2,
+            m3,
+            m4,
+            m5,
+        ] = <[u8; 8 + EXTENT_BYTES]>::try_from(rest).unwrap_or_else(|_| corrupt("header"));
         let slots = Descriptor::decode(d.try_into().unwrap_or_else(|_| corrupt("header")));
         let plane = Plane::decode(root.try_into().unwrap_or_else(|_| corrupt("header")));
         // The record's extent stays in the header (see `migration_record`).
-        let _ = (m0, m1, m2, m3);
-        let migration = if m4 & MIGRATING == 0 {
+        let _ = (m0, m1, m2, m3, m4);
+        let migration = if m5 & MIGRATING == 0 {
             Migration::Idle
         } else {
             Migration::UnderWay
