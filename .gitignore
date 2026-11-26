@@ -2,11 +2,11 @@
 target/
 Cargo.lock
 
-# Implementation checkpoints
-plans/
-
 # OS
 .DS_Store
 
 # canbench downloads its runtime here
 .canbench/
+
+# Paper build output
+paper/*.pdf

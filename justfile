@@ -41,6 +41,11 @@ smells:
         exit 1
     fi
 
+# Paper parts (`paper/`): numbers, tables and listings are read from the repository, so the root
+# is the repository. `just paper watch` recompiles on every change, including a new canbench run.
+paper mode="compile":
+    typst {{mode}} --root . paper/main.typ paper/main.pdf
+
 # Use the repository's git hooks (`.githooks`): format and lints before a commit, the gate before a
 # push. Once per clone.
 hooks:
