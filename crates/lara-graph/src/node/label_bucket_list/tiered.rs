@@ -56,7 +56,7 @@ const TOP_HEADER_BYTES: usize = 2;
 /// 74,168 buckets, past the 65,536 of a schema whose every label is directed (out and in).
 const TOP_ENTRY_BYTES: usize = 7;
 /// Leaves one list can have: one page of top entries. Tests use a handful.
-const TOP_ENTRIES: usize =
+pub(super) const TOP_ENTRIES: usize =
     crate::store::scale::Scale::pick(6, (4096 - TOP_HEADER_BYTES) / TOP_ENTRY_BYTES);
 
 /// One leaf page as the top lists it.
@@ -247,7 +247,7 @@ pub(super) fn add<M: Memory>(
     d: &Stored,
 ) -> Result<LabelBucketList, WriteError> {
     let mut leaves = read_top(&store.pages(), top);
-    let l = usize::from(gap.leaf);
+    let l = usize::from(gap.leaf());
     let target = leaf(&leaves, l);
     if target.entries() < LEAF_ENTRIES {
         shift_in(
@@ -301,7 +301,7 @@ pub(super) fn remove<M: Memory>(
     entry: EntryAt,
 ) -> LabelBucketList {
     let mut leaves = read_top(&store.pages(), top);
-    let l = usize::from(entry.leaf);
+    let l = usize::from(entry.leaf());
     let target = leaf(&leaves, l);
     if target.count > 1 {
         shift_out(store, target.page.offset(), target.entries(), entry.index);

@@ -20,7 +20,8 @@
 //! ----------------------------------------
 //! Reserved                        ↕ 1 byte
 //! ----------------------------------------
-//! Reserved                        ↕ 4 bits
+//! Reserved; bits 1-2 the entry's  ↕ 4 bits
+//!   (see `LISTED_FREE_BITS`)
 //! Slots in use (0 to 2)           ↕ 2 bits
 //! Kind                            ↕ 2 bits
 //! ---------------------------------------- <- Run (kind 1)
@@ -29,7 +30,7 @@
 //! Value width beside the slots    ↕ 7 bits        (0 for none; at most 124, see `beside`)
 //! Their value version, low bits   ↕ 3 bits        (see `crate::ValueVersion`)
 //! ----------------------------------------
-//! Extent, kind in its spare bits  ↕ 6 bytes
+//! Extent, kind in its spare bits  ↕ 6 bytes       (bits 1-2 of its last byte the entry's)
 //! ----------------------------------------
 //! ```
 //!
@@ -66,7 +67,7 @@
 use crate::bucket::target_index::BLOCK;
 use crate::id::{NodeId, Width};
 use crate::store::corrupt::corrupt;
-use crate::store::page_store::{ByteClass, EXTENT_BYTES, Extent, PAGE_BYTES};
+use crate::store::page_store::{ByteClass, EXTENT_BYTES, EXTENT_FREE_BITS, Extent, PAGE_BYTES};
 use crate::store::units::ByteOffset;
 use core::num::NonZeroU32;
 
@@ -74,6 +75,11 @@ use core::num::NonZeroU32;
 pub(crate) const DESCRIPTOR_BYTES: usize = 14;
 /// Bytes per listed descriptor, as a label bucket list entry holds it.
 pub(crate) const LISTED_BYTES: usize = 10;
+/// Bits of a listed descriptor's last byte that every listed kind leaves free (a tiny one's
+/// reserved bits, an extent's free bits): written zero, ignored when decoded. A list entry keeps
+/// its key's direction there.
+pub(crate) const LISTED_FREE_BITS: u8 = 0b0000_0110;
+const _: () = assert!(LISTED_FREE_BITS & !EXTENT_FREE_BITS == 0 && LISTED_FREE_BITS < 1 << 4);
 /// Slots stored inline in a tiny descriptor. Most of a sparse graph's buckets hold one or two
 /// edges, so per-bucket descriptors dominate its memory: a bucket's third edge moves it to a run
 /// once (about 3.5K instructions), while a third inline slot would widen every list entry by four

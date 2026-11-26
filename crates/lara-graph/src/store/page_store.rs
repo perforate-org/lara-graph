@@ -169,6 +169,16 @@ pub(crate) const MAX_PAGES: u32 = 1 << PAGE_BITS;
 pub(crate) const EXTENT_SPARE_BITS: u8 = 0b1100_0000;
 /// Bits between the class code and the holder's: free, left zero.
 const FREE_BITS: u32 = 5;
+/// The free bits as they fall in an encoded extent's last byte: zero from [`Extent::encode`],
+/// ignored by [`Extent::decode`], so whoever holds the extent may keep something there.
+pub(crate) const EXTENT_FREE_BITS: u8 = 0b0011_1110;
+// The free bits are bits 41-45 of the extent: bits 1-5 of its last byte.
+const _: () = assert!(
+    PAGE_BITS + INDEX_BITS + CLASS_BITS == 41
+        && FREE_BITS == 5
+        && EXTENT_FREE_BITS.trailing_zeros() == 1
+        && EXTENT_FREE_BITS.count_ones() == FREE_BITS
+);
 const _: () =
     assert!(PAGE_BITS + INDEX_BITS + CLASS_BITS + FREE_BITS + 2 == 48 && EXTENT_BYTES == 6);
 
