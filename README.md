@@ -66,6 +66,11 @@ Each memory may be of its own type: `Graph<Memories<N, EP, ED, ..>>` takes them 
 graph that never adds a proxy may leave `proxies` as `None`. Where nothing else names the graph's
 type, name it at the call: `Graph::<VecMemory>::format(..)`.
 
+The costs in `crates/lara-graph-bench/canbench_results.yml` are measured with
+`codegen-units = 1` in the release profile, as a canister's wasm is often built. With the default
+of sixteen, how rustc splits the crate follows its symbol hashes, and the split decides what is
+inlined: costs then move by a few percent with unrelated code, or with where the build runs.
+
 ## Edges
 
 An edge names its ends, its label and its kind: `Edge::directed(a, FOLLOWS, b)`, with

@@ -74,3 +74,8 @@ allow_attributes_without_reason = "deny"
 # `unreachable_pub` already governs visibility; `pub(crate)` would contradict it.
 redundant_pub_crate = "allow"
 module_name_repetitions = "allow"
+
+# One codegen unit: how rustc splits a crate into units follows its symbol hashes, which change
+# with the build's location, and the split decides inlining; canbench counts must not follow it.
+[profile.release]
+codegen-units = 1
