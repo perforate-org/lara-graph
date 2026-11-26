@@ -146,7 +146,11 @@ fn width_len(width: Width) -> usize {
     usize::from(width.get())
 }
 
-/// Where the cell of `position` is, if its storage exists.
+/// Where the cell of `position` is, if its storage exists. Always inlined: each of its three
+/// page offsets steps past the directory pages, and the longer body made it a call in every value
+/// read, about 60 instructions a node (`visit_values_many_1024_loop`).
+#[expect(clippy::inline_always, reason = "measured: see the doc")]
+#[inline(always)]
 fn cell_at<M: Memory>(
     view: &Pages<'_, M>,
     plane: Plane,
@@ -217,7 +221,10 @@ pub(crate) fn visit<M: Memory, B>(
 }
 
 /// The values of positions `a..b`, all on one value page (or in the run), read into `buf`;
-/// missing storage comes as zeros.
+/// missing storage comes as zeros. Always inlined into [`visit`], as [`cell_at`] is into it: as
+/// a call, a value visit cost about 60 instructions a node more (`visit_values_many_1024_loop`).
+#[expect(clippy::inline_always, reason = "measured: see the doc")]
+#[inline(always)]
 fn read_chunk<'b, M: Memory>(
     view: &Pages<'_, M>,
     plane: Plane,

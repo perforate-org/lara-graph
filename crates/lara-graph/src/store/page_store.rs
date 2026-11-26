@@ -315,7 +315,10 @@ impl<M: Memory> PageStore<M> {
     }
 
     /// Recomputes [`Self::room`] from the memory's size: the data pages it holds with their
-    /// groups' directory pages.
+    /// groups' directory pages. Out of line, as it runs only when the memory grows: folded into
+    /// [`Self::reserve`] it kept that from inlining into every insert (`hub_insert_1024`).
+    #[cold]
+    #[inline(never)]
     fn measure_room(&mut self) {
         let bytes = self
             .memory
@@ -675,6 +678,10 @@ impl<M: Memory> PageStore<M> {
         Region::new(&self.memory)
     }
 
+    /// `page`'s record. Always inlined: every allocation and release reads one or more, and as a
+    /// call it cost each insert about 2 % (`small_insert_*`).
+    #[expect(clippy::inline_always, reason = "measured: see the doc")]
+    #[inline(always)]
     fn record(&self, page: PageId) -> PageRecord {
         if page.0 >= self.minted() {
             corrupt("page beyond the minted range");
