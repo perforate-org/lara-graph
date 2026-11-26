@@ -403,8 +403,8 @@ pub(crate) fn entries<M: Memory>(
     clippy::indexing_slicing,
     reason = "entry offsets stay inside the page"
 )]
-pub(crate) fn one_batch<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+pub(crate) fn one_batch<M: Memory>(
+    store: &mut PageStore<M>,
     entries: &[(LabelBucketKey, Stored)],
 ) -> Result<Vec<LabelBucketList>, WriteError> {
     let class = ByteClass::for_bytes(u32::try_from(ENTRY_BYTES).unwrap_or(u32::MAX))
@@ -509,14 +509,14 @@ fn encode_entry(key: LabelBucketKey, d: &Stored) -> [u8; ENTRY_BYTES] {
 }
 
 /// Publishes a bucket's new descriptor in place. Cannot fail.
-pub(crate) fn set<M: Memory, D: Memory>(store: &PageStore<M, D>, entry: EntryAt, d: &Stored) {
+pub(crate) fn set<M: Memory>(store: &PageStore<M>, entry: EntryAt, d: &Stored) {
     store.write(ByteOffset::new(entry.at.get() + 3), &d.encode());
 }
 
 /// Adds a bucket for `key` at `gap`. Returns the list's new reference; on error the old list is
 /// unchanged. The caller checks [`has_room`] first.
-pub(crate) fn add<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+pub(crate) fn add<M: Memory>(
+    store: &mut PageStore<M>,
     list: Option<LabelBucketList>,
     gap: EntryAt,
     key: LabelBucketKey,
@@ -538,8 +538,8 @@ pub(crate) fn add<M: Memory, D: Memory>(
     }
 }
 
-fn add_flat<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+fn add_flat<M: Memory>(
+    store: &mut PageStore<M>,
     list: Option<(Extent, u8)>,
     index: usize,
     key: LabelBucketKey,
@@ -573,8 +573,8 @@ fn add_flat<M: Memory, D: Memory>(
 
 /// Removes `entry`. Returns the list's new reference, or `None` when it is now empty (its
 /// extents are released). Never fails.
-pub(crate) fn remove<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+pub(crate) fn remove<M: Memory>(
+    store: &mut PageStore<M>,
     list: LabelBucketList,
     entry: EntryAt,
 ) -> Option<LabelBucketList> {
@@ -592,12 +592,7 @@ pub(crate) fn remove<M: Memory, D: Memory>(
 }
 
 /// Closes the gap entry `index` leaves among `count` entries at `base`.
-fn shift_out<M: Memory, D: Memory>(
-    store: &PageStore<M, D>,
-    base: ByteOffset,
-    count: usize,
-    index: usize,
-) {
+fn shift_out<M: Memory>(store: &PageStore<M>, base: ByteOffset, count: usize, index: usize) {
     let view = store.pages();
     let len = (count - index - 1) * ENTRY_BYTES;
     view.with_read(entry_offset(base, index + 1), len, |tail| {
@@ -606,8 +601,8 @@ fn shift_out<M: Memory, D: Memory>(
 }
 
 /// Opens a gap at entry `index` among `count` entries at `base` and writes the new entry there.
-fn shift_in<M: Memory, D: Memory>(
-    store: &PageStore<M, D>,
+fn shift_in<M: Memory>(
+    store: &PageStore<M>,
     base: ByteOffset,
     count: usize,
     index: usize,
@@ -622,12 +617,7 @@ fn shift_in<M: Memory, D: Memory>(
 }
 
 /// Writes one entry at `at`.
-fn write_entry<M: Memory, D: Memory>(
-    store: &PageStore<M, D>,
-    at: ByteOffset,
-    key: LabelBucketKey,
-    d: &Stored,
-) {
+fn write_entry<M: Memory>(store: &PageStore<M>, at: ByteOffset, key: LabelBucketKey, d: &Stored) {
     store.write(at, &encode_entry(key, d));
 }
 

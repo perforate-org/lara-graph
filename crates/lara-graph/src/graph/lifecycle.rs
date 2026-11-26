@@ -57,11 +57,10 @@ impl<S: GraphMemories> Graph<S> {
         let Memories {
             nodes,
             pages,
-            directory,
             node_labels,
             proxies,
         } = memories;
-        let pages = PageStore::format(pages, directory).map_err(init_error)?;
+        let pages = PageStore::format(pages).map_err(init_error)?;
         let nodes = NodeStore::format(nodes, proxies, VERSION).map_err(init_error)?;
         let labels = LabelStore::format(node_labels, VERSION).map_err(init_error)?;
         Ok(Self::assemble(nodes, labels, pages))
@@ -76,7 +75,6 @@ impl<S: GraphMemories> Graph<S> {
         let Memories {
             nodes,
             pages,
-            directory,
             node_labels,
             proxies,
         } = memories;
@@ -86,7 +84,7 @@ impl<S: GraphMemories> Graph<S> {
         }
         expect_header(&nodes, NODES_MAGIC)?;
         expect_header(&node_labels, LABELS_MAGIC)?;
-        let pages = PageStore::open(pages, directory).map_err(open_error)?;
+        let pages = PageStore::open(pages).map_err(open_error)?;
         Ok(Self::assemble(
             NodeStore::open(nodes, proxies, VERSION),
             LabelStore::open(node_labels),
@@ -111,12 +109,11 @@ impl<S: GraphMemories> Graph<S> {
     /// The memories back, as they were given: the graph is as it was left in them.
     #[must_use]
     pub fn into_memories(self) -> MemoriesOf<S> {
-        let (pages, directory) = self.edges.into_memories();
+        let pages = self.edges.into_memory();
         let (nodes, proxies) = self.nodes.into_memories();
         Memories {
             nodes,
             pages,
-            directory,
             node_labels: self.labels.into_memory(),
             proxies,
         }

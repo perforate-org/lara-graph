@@ -29,7 +29,7 @@ pub(crate) enum Merged {
 /// child with the fewest edges per child of its own. A root left with one child then gives way
 /// to it. Bounded: it reads one node per level with its children's lengths, and the pair; it
 /// rewrites one of the pair and its parent, and only releases pages.
-pub(crate) fn merge_step<M: Memory, D: Memory>(store: &mut PageStore<M, D>, root: Root) -> Merged {
+pub(crate) fn merge_step<M: Memory>(store: &mut PageStore<M>, root: Root) -> Merged {
     let (mut node, mut level) = (root.page, root.depth);
     while level > 0 {
         if merge_pair(store, node, level) {
@@ -49,7 +49,7 @@ pub(crate) fn merge_step<M: Memory, D: Memory>(store: &mut PageStore<M, D>, root
 
 /// Merges the pair of `node`'s children with the smallest counts when it is sparse enough;
 /// whether it did. `level` is the node's: 1 for a parent of leaves.
-fn merge_pair<M: Memory, D: Memory>(store: &mut PageStore<M, D>, node: PageId, level: u8) -> bool {
+fn merge_pair<M: Memory>(store: &mut PageStore<M>, node: PageId, level: u8) -> bool {
     let view = store.pages();
     let sums = counts(&view, node, node_len(&view, node));
     let Some((i, sum)) = sparsest_pair(&sums) else {
@@ -103,7 +103,7 @@ fn sparsest_child<M: Memory>(view: &Pages<'_, M>, node: PageId) -> Option<PageId
 
 /// Writes the postings of leaves `a` and `b` into `a`'s page, when they fit one leaf. With no
 /// counts left, `a` stays as it is: a leaf is never empty.
-fn merge_leaves<M: Memory, D: Memory>(store: &PageStore<M, D>, a: Child, b: Child) -> bool {
+fn merge_leaves<M: Memory>(store: &PageStore<M>, a: Child, b: Child) -> bool {
     let view = store.pages();
     let postings: Vec<Posting> = [a, b]
         .iter()
@@ -123,7 +123,7 @@ fn merge_leaves<M: Memory, D: Memory>(store: &PageStore<M, D>, a: Child, b: Chil
 }
 
 /// Writes the children of nodes `a` and `b` into `a`'s page, when together they fit one node.
-fn merge_nodes<M: Memory, D: Memory>(store: &PageStore<M, D>, a: Child, b: Child) -> bool {
+fn merge_nodes<M: Memory>(store: &PageStore<M>, a: Child, b: Child) -> bool {
     let view = store.pages();
     if node_len(&view, a.page) + node_len(&view, b.page) > FANOUT {
         return false;
@@ -135,7 +135,7 @@ fn merge_nodes<M: Memory, D: Memory>(store: &PageStore<M, D>, a: Child, b: Child
 }
 
 /// The root, after a root with a single child gives way to it.
-fn collapsed<M: Memory, D: Memory>(store: &mut PageStore<M, D>, mut root: Root) -> Root {
+fn collapsed<M: Memory>(store: &mut PageStore<M>, mut root: Root) -> Root {
     while root.depth > 0 && node_len(&store.pages(), root.page) == 1 {
         let child = page_at(&store.pages(), root.page, 0);
         store.release(Extent::whole(root.page));

@@ -18,7 +18,7 @@ and each label lists its nodes. The crate is `no_std` + `alloc`.
 
 ## Use in a canister
 
-Enable the `ic-stable-structures` feature, give the graph five memories from a `MemoryManager`,
+Enable the `ic-stable-structures` feature, give the graph four memories from a `MemoryManager`,
 and open it with `init`, as ic-stable-structures' own structures are opened. `init` formats empty
 memories and reopens a graph written before an upgrade, so one call serves `#[init]` and
 `#[post_upgrade]`.
@@ -36,7 +36,7 @@ thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
         RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()));
 
-    // Memory ids 0 to 4, one per role. The proxies memory (4) stays empty until a proxy is added.
+    // Memory ids 0 to 3, one per role. The proxies memory (3) stays empty until a proxy is added.
     static GRAPH: RefCell<Graph<Memory>> = RefCell::new(Graph::init(Memories::from_fn(|role| {
         MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(role.index())))
     })));
@@ -139,8 +139,7 @@ Each memory starts, as ic-stable-structures' do, with a 3-byte magic and a versi
 | Role | Holds |
 | --- | --- |
 | `Nodes` | one 6-byte record per node |
-| `Pages` | label buckets (edges, their values and target indexes), each node's label bucket list, the width table, larger node label sets and each label's nodes |
-| `Directory` | one 32-byte record per page: how it is allocated |
+| `Pages` | label buckets (edges, their values and target indexes), each node's label bucket list, the width table, larger node label sets and each label's nodes; before every 128 of them, a page of 32-byte allocation records |
 | `NodeLabels` | one 5-byte label cell per node, and the root of the label postings |
 | `Proxies` | one 6-byte record per proxy; optional, and empty until the first proxy |
 

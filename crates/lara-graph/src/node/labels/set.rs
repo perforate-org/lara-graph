@@ -123,8 +123,8 @@ impl LabelSet {
 
     /// The cell for `set` (sorted, distinct), writing a larger set to `store`. On error nothing
     /// was allocated.
-    pub(crate) fn store<M: Memory, D: Memory>(
-        store: &mut PageStore<M, D>,
+    pub(crate) fn store<M: Memory>(
+        store: &mut PageStore<M>,
         set: &[NodeLabel],
     ) -> Result<Self, WriteError> {
         Ok(match *set {
@@ -137,7 +137,7 @@ impl LabelSet {
     }
 
     /// Gives back what [`Self::store`] took. Cannot fail.
-    pub(crate) fn release<M: Memory, D: Memory>(self, store: &mut PageStore<M, D>) {
+    pub(crate) fn release<M: Memory>(self, store: &mut PageStore<M>) {
         let Self::Spilled(extent) = self else { return };
         if let Spill::Bitmap(pages) = spill(&store.pages(), extent) {
             for page in pages {
@@ -267,10 +267,7 @@ fn bit_of(label: NodeLabel) -> (usize, u64, u32) {
 }
 
 /// A listed set's extent: its count, then its labels.
-fn listed<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
-    set: &[NodeLabel],
-) -> Result<Extent, WriteError> {
+fn listed<M: Memory>(store: &mut PageStore<M>, set: &[NodeLabel]) -> Result<Extent, WriteError> {
     let count = u16::try_from(set.len()).unwrap_or(u16::MAX);
     let bytes: Vec<u8> = count
         .to_le_bytes()
@@ -284,10 +281,7 @@ fn listed<M: Memory, D: Memory>(
 }
 
 /// A bitmap set: its header, then two pages of bits.
-fn bitmap<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
-    set: &[NodeLabel],
-) -> Result<Extent, WriteError> {
+fn bitmap<M: Memory>(store: &mut PageStore<M>, set: &[NodeLabel]) -> Result<Extent, WriteError> {
     let mut txn = SpanTxn::begin(store);
     let header = txn.allocate(ByteClass::B32)?;
     let low = txn.allocate(ByteClass::PAGE)?.page();

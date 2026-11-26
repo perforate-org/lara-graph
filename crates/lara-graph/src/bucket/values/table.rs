@@ -48,8 +48,8 @@ pub(super) fn data_page<M: Memory>(
 }
 
 /// A new table holding `first` (a run's cells, as value page 0) and value page `number`.
-pub(super) fn table_with<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+pub(super) fn table_with<M: Memory>(
+    store: &mut PageStore<M>,
     first: Option<Extent>,
     number: u64,
 ) -> Result<Plane, WriteError> {
@@ -76,8 +76,8 @@ pub(super) fn depth_for(number: u64) -> u8 {
 }
 
 /// The table, deepened as needed, with value page `number` present (zeroed if new).
-pub(super) fn grow_table<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+pub(super) fn grow_table<M: Memory>(
+    store: &mut PageStore<M>,
     (root, depth): (PageId, u8),
     number: u64,
 ) -> Result<Plane, WriteError> {
@@ -104,8 +104,8 @@ pub(super) fn grow_table<M: Memory, D: Memory>(
 
 /// Makes value page `number` present under `(root, depth)`: `page` if given, else a new zeroed
 /// page. Missing nodes on the way are created.
-pub(super) fn link<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+pub(super) fn link<M: Memory>(
+    store: &mut PageStore<M>,
     (root, depth): (PageId, u8),
     number: u64,
     page: Option<PageId>,
@@ -156,15 +156,11 @@ pub(super) fn link<M: Memory, D: Memory>(
 }
 
 /// Fills a node page with "no page" entries.
-pub(super) fn write_node<M: Memory, D: Memory>(store: &PageStore<M, D>, node: PageId) {
+pub(super) fn write_node<M: Memory>(store: &PageStore<M>, node: PageId) {
     store.write(node.offset(), &vec![0xFFu8; page_len()]);
 }
 
-pub(super) fn release_node<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
-    node: PageId,
-    level: u8,
-) {
+pub(super) fn release_node<M: Memory>(store: &mut PageStore<M>, node: PageId, level: u8) {
     if level > 0 {
         let bytes = store.pages().read(node.offset(), page_len());
         let children: Vec<PageId> = bytes
@@ -185,8 +181,8 @@ pub(super) fn release_node<M: Memory, D: Memory>(
 /// Releases the value pages numbered `first..end` under `node` (at `level`, its subtree starting
 /// at page `base`), and every node they leave empty. Returns whether `node` is now empty; the
 /// caller releases it then.
-pub(super) fn release_pages<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+pub(super) fn release_pages<M: Memory>(
+    store: &mut PageStore<M>,
     (node, level, base): (PageId, u8, u64),
     range: (u64, u64),
 ) -> bool {
@@ -210,8 +206,8 @@ pub(super) fn release_pages<M: Memory, D: Memory>(
 }
 
 /// [`release_pages`] for one child covering pages `lo..hi`; returns whether it is gone.
-fn release_child<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+fn release_child<M: Memory>(
+    store: &mut PageStore<M>,
     (child, level, lo): (PageId, u8, u64),
     (hi, (first, end)): (u64, (u64, u64)),
 ) -> bool {

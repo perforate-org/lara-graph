@@ -1,5 +1,5 @@
 //! Instruction counts of lara-graph operations on the Internet Computer, measured with canbench.
-//! Every bench runs on the memory a canister gives a graph: five virtual memories of a
+//! Every bench runs on the memory a canister gives a graph: four virtual memories of a
 //! `MemoryManager` over `DefaultMemoryImpl` (stable memory on wasm32), through [`graph`].
 //!
 //! Scenarios mirror ic-stable-lara's `canbench_results.yml` where one exists, so the two can be
@@ -39,7 +39,7 @@ type BenchMemory = VirtualMemory<DefaultMemoryImpl>;
 /// The graph every bench measures.
 type Bench = Graph<BenchMemory>;
 
-/// A graph in five virtual stable memories (ids 0..5), as a canister wires it.
+/// A graph in four virtual stable memories (ids 0..4), as a canister wires it.
 fn graph() -> Bench {
     let manager = MemoryManager::init(DefaultMemoryImpl::default());
     Graph::init(Memories::from_fn(|role| {

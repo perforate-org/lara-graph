@@ -94,9 +94,9 @@ impl LabelCell {
     }
 
     /// Writes the cell back with its chunk `chunk_no` now `chunk` and its count moved by one.
-    fn write<M: Memory, D: Memory>(
+    fn write<M: Memory>(
         self,
-        store: &mut PageStore<M, D>,
+        store: &mut PageStore<M>,
         (dir, label): (Plane, NodeLabel),
         (chunk_no, chunk, change): (u32, Chunk, Change),
     ) -> Result<Plane, WriteError> {
@@ -132,8 +132,8 @@ fn split(node: NodeId) -> (u32, u16) {
 
 /// Adds `node` to `label`'s postings, within [`PAGES_PER_ADD`] reserved pages, and returns the
 /// directory's new root. `node` must not have `label` yet.
-pub(crate) fn add<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+pub(crate) fn add<M: Memory>(
+    store: &mut PageStore<M>,
     dir: Plane,
     label: NodeLabel,
     node: NodeId,
@@ -146,8 +146,8 @@ pub(crate) fn add<M: Memory, D: Memory>(
 
 /// Removes `node` from `label`'s postings, in place: the directory's root does not change.
 /// `node` must have `label`. Never allocates.
-pub(crate) fn remove<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+pub(crate) fn remove<M: Memory>(
+    store: &mut PageStore<M>,
     dir: Plane,
     label: NodeLabel,
     node: NodeId,

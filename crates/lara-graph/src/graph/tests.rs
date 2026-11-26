@@ -27,7 +27,7 @@ use core::ops::ControlFlow;
 /// The backing memories of a test graph; graphs borrow them so they can be reopened.
 #[derive(Default)]
 struct Backing {
-    memories: [VecMemory; 5],
+    memories: [VecMemory; 4],
 }
 
 impl Backing {

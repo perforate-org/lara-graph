@@ -1,4 +1,4 @@
-//! The graph: label buckets of edge halves per node and direction, over five memories.
+//! The graph: label buckets of edge halves per node and direction, over four memories.
 //!
 //! The nodes memory is laid out in `node::store`, the node labels memory in `node::labels`.
 
@@ -30,7 +30,7 @@ const VERSION: u8 = 1;
 /// past 1024 edges). An insert or removal copies at most one run of under 1024 edges or one page of
 /// index.
 ///
-/// `S` is the memories' type: one [`Memory`](crate::Memory) type for all five, or a
+/// `S` is the memories' type: one [`Memory`](crate::Memory) type for all four, or a
 /// [`Memories`] naming one per role.
 ///
 /// # The everyday operations
@@ -62,7 +62,7 @@ pub struct Graph<S: GraphMemories> {
     nodes: NodeStore<S::Nodes, S::Proxies>,
     labels: LabelStore<S::NodeLabels>,
     /// The page store: label buckets, and the label bucket lists beside them.
-    edges: EdgeStore<S::Pages, S::Directory>,
+    edges: EdgeStore<S::Pages>,
     /// Mirrors the label width table, which the label bucket lists' pages hold.
     widths: Widths,
 }
@@ -72,7 +72,7 @@ impl<S: GraphMemories> Graph<S> {
     fn assemble(
         nodes: NodeStore<S::Nodes, S::Proxies>,
         labels: LabelStore<S::NodeLabels>,
-        pages: PageStore<S::Pages, S::Directory>,
+        pages: PageStore<S::Pages>,
     ) -> Self {
         let widths = Widths::load(nodes.widths_root(), &pages);
         Self {
@@ -84,7 +84,7 @@ impl<S: GraphMemories> Graph<S> {
     }
 
     /// The edge store as reads see it.
-    fn edge_view(&self) -> EdgeView<'_, S::Pages, S::Directory> {
+    fn edge_view(&self) -> EdgeView<'_, S::Pages> {
         EdgeView::new(&self.edges, &self.widths)
     }
 

@@ -23,7 +23,7 @@ pub(crate) enum Compacted {
     Emptied,
 }
 
-impl<M: Memory, D: Memory> EdgeStore<M, D> {
+impl<M: Memory> EdgeStore<M> {
     /// One bounded compaction step of `bucket`. Plans everything that allocates before it changes
     /// anything, so on error nothing changed.
     pub(crate) fn compact(

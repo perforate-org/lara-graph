@@ -140,8 +140,8 @@ impl<S: GraphMemories> Graph<S> {
     }
 }
 
-fn flush_singles<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+fn flush_singles<M: Memory>(
+    store: &mut PageStore<M>,
     singles: &mut Singles,
     records: &mut [[u8; RECORD_BYTES]],
 ) -> Result<(), Error> {

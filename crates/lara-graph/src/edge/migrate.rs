@@ -75,11 +75,7 @@ impl Record {
         }
     }
 
-    fn write<M: Memory, D: Memory>(
-        self,
-        store: &crate::store::page_store::PageStore<M, D>,
-        at: Extent,
-    ) {
+    fn write<M: Memory>(self, store: &crate::store::page_store::PageStore<M>, at: Extent) {
         let mut bytes = [0u8; RECORD_BYTES];
         let (root, rest) = bytes.split_at_mut(ROOT_BYTES);
         root.copy_from_slice(&self.plane.encode());
@@ -90,7 +86,7 @@ impl Record {
     }
 }
 
-impl<M: Memory, D: Memory> EdgeStore<M, D> {
+impl<M: Memory> EdgeStore<M> {
     /// One step of rewriting `bucket`'s values in `schema`, the label's current layout, through
     /// `transform` (from an old value to a new one, given zeroed): moving values beside a run's
     /// slots into a plane, or rewriting one value page of the new plane, the last step putting it

@@ -66,10 +66,7 @@ impl Widths {
     }
 
     /// Reads the table whose root the nodes header holds.
-    pub(crate) fn load<M: Memory, D: Memory>(
-        plane: Plane,
-        label_bucket_lists: &PageStore<M, D>,
-    ) -> Self {
+    pub(crate) fn load<M: Memory>(plane: Plane, label_bucket_lists: &PageStore<M>) -> Self {
         let mut sorted = Vec::new();
         values::visit(
             &label_bucket_lists.pages(),
@@ -102,9 +99,9 @@ impl Widths {
 
     /// Gives `label` values of `width` bytes and returns the table's new root, for the nodes
     /// header; `None` when `label` already has `width`. On error nothing changes.
-    pub(crate) fn declare<M: Memory, D: Memory>(
+    pub(crate) fn declare<M: Memory>(
         &mut self,
-        lists: &mut PageStore<M, D>,
+        lists: &mut PageStore<M>,
         label: EdgeLabel,
         width: Width,
     ) -> Result<Option<Plane>, Error> {
@@ -133,9 +130,9 @@ impl Widths {
     /// Gives `label` values of `width` bytes in a new layout: its next value version, or the
     /// first when it had no width. Returns the version and the table's new root. On error
     /// nothing changes.
-    pub(crate) fn change<M: Memory, D: Memory>(
+    pub(crate) fn change<M: Memory>(
         &mut self,
-        lists: &mut PageStore<M, D>,
+        lists: &mut PageStore<M>,
         label: EdgeLabel,
         width: Width,
     ) -> Result<(ValueVersion, Plane), Error> {
@@ -158,9 +155,9 @@ impl Widths {
     }
 
     /// Writes `label`'s cell. On error nothing changes.
-    fn write<M: Memory, D: Memory>(
+    fn write<M: Memory>(
         &mut self,
-        lists: &mut PageStore<M, D>,
+        lists: &mut PageStore<M>,
         label: EdgeLabel,
         schema: Schema,
     ) -> Result<(), Error> {

@@ -34,20 +34,20 @@ use crate::store::page_store::ListPool;
 use crate::store::page_store::{Extent, PageStore, Pages};
 
 /// The edge store: every bucket's slots, header, index and values in the edge pages.
-pub(crate) struct EdgeStore<M: Memory, D: Memory = M> {
-    store: PageStore<M, D>,
+pub(crate) struct EdgeStore<M: Memory> {
+    store: PageStore<M>,
 }
 
 /// What reads see of the edge store: lookups by position and by target, values, and where an
 /// insert would go. Nothing through it writes.
-pub(crate) struct EdgeView<'a, M: Memory, D: Memory = M> {
-    edges: &'a EdgeStore<M, D>,
+pub(crate) struct EdgeView<'a, M: Memory> {
+    edges: &'a EdgeStore<M>,
     /// How wide each label's values are.
     widths: &'a Widths,
 }
 
-impl<'a, M: Memory, D: Memory> EdgeView<'a, M, D> {
-    pub(crate) const fn new(edges: &'a EdgeStore<M, D>, widths: &'a Widths) -> Self {
+impl<'a, M: Memory> EdgeView<'a, M> {
+    pub(crate) const fn new(edges: &'a EdgeStore<M>, widths: &'a Widths) -> Self {
         Self { edges, widths }
     }
 
@@ -73,30 +73,30 @@ pub(crate) enum Writes {
     Values { count: u32 },
 }
 
-impl<M: Memory, D: Memory> EdgeStore<M, D> {
-    pub(crate) const fn new(store: PageStore<M, D>) -> Self {
+impl<M: Memory> EdgeStore<M> {
+    pub(crate) const fn new(store: PageStore<M>) -> Self {
         Self { store }
     }
 
     /// The page store, which the label bucket lists share.
-    pub(crate) const fn store(&self) -> &PageStore<M, D> {
+    pub(crate) const fn store(&self) -> &PageStore<M> {
         &self.store
     }
 
     /// The page store, to allocate edge extents from (tests).
     #[cfg(test)]
-    pub(crate) const fn store_mut(&mut self) -> &mut PageStore<M, D> {
+    pub(crate) const fn store_mut(&mut self) -> &mut PageStore<M> {
         &mut self.store
     }
 
     /// The page store, lent to label bucket lists and node label data: their chunk extents come
     /// from pages of their own.
-    pub(crate) fn lists_mut(&mut self) -> ListPool<'_, M, D> {
+    pub(crate) fn lists_mut(&mut self) -> ListPool<'_, M> {
         self.store.lists()
     }
 
-    pub(crate) fn into_memories(self) -> (M, D) {
-        self.store.into_memories()
+    pub(crate) fn into_memory(self) -> M {
+        self.store.into_memory()
     }
 
     /// Reserves the pages `writes` can take.

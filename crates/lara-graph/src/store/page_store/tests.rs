@@ -2,16 +2,16 @@ use super::class::{CLASS_BYTES, CLASS_PER_PAGE, CODES};
 use super::*;
 use crate::store::memory::VecMemory;
 use alloc::collections::BTreeSet;
+use alloc::vec;
 
 #[derive(Default)]
 struct Backing {
-    pages: VecMemory,
-    directory: VecMemory,
+    memory: VecMemory,
 }
 
 impl Backing {
     fn create(&self) -> PageStore<VecMemory> {
-        PageStore::format(self.pages.clone(), self.directory.clone()).unwrap()
+        PageStore::format(self.memory.clone()).unwrap()
     }
 }
 
@@ -157,6 +157,39 @@ fn each_pool_fills_chunk_pages_of_its_own() {
 }
 
 #[test]
+fn directory_pages_lead_each_group_of_data_pages() {
+    // Page 0's data follows the header and the first group's directory page; page 128's, the
+    // second group's directory page, after the first group's 128 data pages.
+    let page = u64::from(PAGE_BYTES);
+    assert_eq!(PageId(0).offset().get(), HEADER_BYTES + page);
+    assert_eq!(PageId(127).offset().get(), HEADER_BYTES + 128 * page);
+    assert_eq!(PageId(128).offset().get(), HEADER_BYTES + 130 * page);
+    assert_eq!(record_at(PageId(0)).get(), HEADER_BYTES);
+    assert_eq!(
+        record_at(PageId(127)).get(),
+        HEADER_BYTES + 127 * RECORD_BYTES
+    );
+    assert_eq!(record_at(PageId(128)).get(), HEADER_BYTES + 129 * page);
+    // Taking pages across a group keeps every record and every page apart.
+    let backing = Backing::default();
+    let mut store = backing.create();
+    let pages: Vec<_> = (0..300)
+        .map(|_| store.allocate(ByteClass::PAGE).unwrap())
+        .collect();
+    for (i, e) in pages.iter().enumerate() {
+        store.write(e.offset(), &[u8::try_from(i % 251).unwrap(); 4096]);
+    }
+    check(&store, &pages);
+    let view = store.pages();
+    for (i, e) in pages.iter().enumerate() {
+        assert_eq!(
+            view.read(e.offset(), 4096),
+            vec![u8::try_from(i % 251).unwrap(); 4096]
+        );
+    }
+}
+
+#[test]
 fn extents_do_not_overlap_and_round_trip() {
     let backing = Backing::default();
     let mut store = backing.create();
@@ -180,7 +213,7 @@ fn reopen_reads_the_same_store() {
         check(&store, &live);
         live
     };
-    let mut store = PageStore::open(backing.pages.clone(), backing.directory.clone()).unwrap();
+    let mut store = PageStore::open(backing.memory.clone()).unwrap();
     check(&store, &live);
     for e in live {
         store.release(e);
@@ -188,7 +221,7 @@ fn reopen_reads_the_same_store() {
     check(&store, &[]);
     let foreign = VecMemory::new();
     assert!(matches!(
-        PageStore::open(foreign.clone(), foreign.clone()),
+        PageStore::open(foreign.clone()),
         Err(OpenError::NotAPageStore)
     ));
 }

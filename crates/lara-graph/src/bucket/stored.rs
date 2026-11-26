@@ -72,8 +72,8 @@ pub(crate) fn migration_record<M: Memory>(view: &Pages<'_, M>, header: Extent) -
 }
 
 /// Points `header` at `record`, or at none: what a new header starts with.
-pub(crate) fn set_migration_record<M: Memory, D: Memory>(
-    store: &PageStore<M, D>,
+pub(crate) fn set_migration_record<M: Memory>(
+    store: &PageStore<M>,
     header: Extent,
     record: Option<Extent>,
 ) {
@@ -185,7 +185,7 @@ impl LabelBucket {
     }
 
     /// Writes the header, if the bucket has one.
-    pub(crate) fn write_header<M: Memory, D: Memory>(&self, store: &PageStore<M, D>) {
+    pub(crate) fn write_header<M: Memory>(&self, store: &PageStore<M>) {
         let Some(header) = self.header else { return };
         let (plane, width, version) = self.values.map_or((Plane::Empty, 0, 0), |v| {
             (v.plane, v.width.get(), v.version.get())

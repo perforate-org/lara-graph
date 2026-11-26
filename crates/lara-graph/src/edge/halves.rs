@@ -14,7 +14,7 @@ use crate::store::corrupt::corrupt;
 use crate::store::memory::Memory;
 use crate::store::page_store::Pages;
 
-impl<M: Memory, D: Memory> EdgeStore<M, D> {
+impl<M: Memory> EdgeStore<M> {
     /// Takes both halves of an edge out of their buckets, `half` from `own` and `other` from
     /// `theirs`, and reports the edge with its value as the canonical half held it (empty for a
     /// label without a width). The buckets are left as they are after, not yet published; an
@@ -77,7 +77,7 @@ fn fill(bucket: &LabelBucket) -> BucketFill {
     BucketFill::new(live, bucket.slots.stored() - live)
 }
 
-impl<M: Memory, D: Memory> EdgeView<'_, M, D> {
+impl<M: Memory> EdgeView<'_, M> {
     /// The other half of `half`, an edge to `other`, whose own bucket is `own`; `theirs` is
     /// `other`'s bucket `key`, which holds it.
     pub(crate) fn other_half(
@@ -123,7 +123,7 @@ fn only_entry_to<M: Memory>(
     first.filter(|_| seen == 1)
 }
 
-impl<M: Memory, D: Memory> EdgeView<'_, M, D> {
+impl<M: Memory> EdgeView<'_, M> {
     /// The other half of `half`, `v`'s first live edge in its bucket, in `theirs`, `other`'s
     /// opposite bucket: its first live entry to `v`, scanned from `from` when the bucket has no
     /// index.

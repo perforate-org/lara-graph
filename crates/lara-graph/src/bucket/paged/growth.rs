@@ -66,8 +66,8 @@ fn plan(paged: &Paged) -> Growth {
 }
 
 /// Adds a data page after the last (full) one. Returns the index's new top and the new page.
-pub(crate) fn append_page<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+pub(crate) fn append_page<M: Memory>(
+    store: &mut PageStore<M>,
     paged: &Paged,
 ) -> Result<(Extent, PageId), WriteError> {
     let growth = plan(paged);
@@ -104,8 +104,8 @@ pub(crate) fn append_page<M: Memory, D: Memory>(
 }
 
 /// Allocates the data page, fresh nodes and new top together: all or nothing.
-fn allocate<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+fn allocate<M: Memory>(
+    store: &mut PageStore<M>,
     growth: &Growth,
     old_top: Extent,
 ) -> Result<Grown, WriteError> {
@@ -125,7 +125,7 @@ fn allocate<M: Memory, D: Memory>(
 }
 
 /// Walks the new page's path from the top, linking fresh nodes and writing its entry.
-fn link_path<M: Memory, D: Memory>(store: &PageStore<M, D>, growth: &Growth, grown: &Grown) {
+fn link_path<M: Memory>(store: &PageStore<M>, growth: &Growth, grown: &Grown) {
     let number = u64::from(growth.number);
     let mut node = grown.top.offset();
     for level in (2..=growth.depth).rev() {

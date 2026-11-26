@@ -183,8 +183,8 @@ impl<S: GraphMemories> Graph<S> {
 /// Half `i`'s spot and the block batch its append completes, if any; the cursor, when it is
 /// half `i`'s, finds holes for a run of fresh targets.
 #[inline]
-fn plan<M: Memory, D: Memory, const N: usize>(
-    edges: &EdgeView<'_, M, D>,
+fn plan<M: Memory, const N: usize>(
+    edges: &EdgeView<'_, M>,
     halves: &[Half; N],
     places: &[Place; N],
     i: usize,

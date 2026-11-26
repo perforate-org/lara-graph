@@ -83,7 +83,7 @@ fn check_visits(
 fn random_writes_and_copies_match_a_map_through_run_and_table() {
     for bytes in [1, 8, 24, 1000, 4096] {
         let width = width(bytes);
-        let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
+        let mut store = PageStore::format(VecMemory::new()).unwrap();
         let mut plane = Plane::Empty;
         let mut model: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
         let mut state = 0x2545_F491_4F6C_DD1Du64 ^ u64::from(bytes);
@@ -126,7 +126,7 @@ fn a_write_takes_at_most_its_reserved_pages() {
     // The far positions force the deepest tables; a fresh store mints every page it takes.
     let width = width(4096);
     for first in [None, Some(0u32)] {
-        let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
+        let mut store = PageStore::format(VecMemory::new()).unwrap();
         let mut plane = Plane::Empty;
         if let Some(p) = first {
             plane = write(&mut store, plane, width, p, &value(width, 1)).unwrap();
@@ -148,7 +148,7 @@ fn a_write_takes_at_most_its_reserved_pages() {
 #[test]
 fn copying_a_zero_onto_missing_storage_writes_nothing() {
     let width = width(8);
-    let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
+    let mut store = PageStore::format(VecMemory::new()).unwrap();
     let plane = copy(&mut store, Plane::Empty, width, (3, 9000)).unwrap();
     assert_eq!(plane, Plane::Empty);
     assert_eq!(store.allocated().len(), 0);
@@ -184,7 +184,7 @@ fn releasing_ranges_frees_whole_pages_and_keeps_the_rest() {
     for bytes in [8, 300, 4096] {
         let width = width(bytes);
         let cpp = PAGE_BYTES / u32::from(bytes);
-        let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
+        let mut store = PageStore::format(VecMemory::new()).unwrap();
         let mut plane = Plane::Empty;
         let mut model: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
         let mut rng = Positions(0x9E37_79B9_7F4A_7C15u64 ^ u64::from(bytes));

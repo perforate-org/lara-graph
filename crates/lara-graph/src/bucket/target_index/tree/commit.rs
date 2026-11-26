@@ -112,8 +112,8 @@ fn fresh_pages(fresh: &Fresh) -> u32 {
 
 /// Writes `plan` within memory the caller reserved ([`Plan::pages`]); an allocation failure
 /// means the reservation was too small.
-pub(crate) fn commit<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+pub(crate) fn commit<M: Memory>(
+    store: &mut PageStore<M>,
     plan: Plan,
 ) -> Result<Option<Root>, WriteError> {
     let root = match plan.top {
@@ -130,7 +130,7 @@ pub(crate) fn commit<M: Memory, D: Memory>(
     Ok(root)
 }
 
-fn write_kept<M: Memory, D: Memory>(store: &PageStore<M, D>, kept: &Kept) {
+fn write_kept<M: Memory>(store: &PageStore<M>, kept: &Kept) {
     match &kept.work {
         Work::Leaf(writes) => {
             for (offset, bytes) in writes {
@@ -147,10 +147,7 @@ fn write_kept<M: Memory, D: Memory>(store: &PageStore<M, D>, kept: &Kept) {
     }
 }
 
-fn write_fresh<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
-    fresh: Fresh,
-) -> Result<Child, WriteError> {
+fn write_fresh<M: Memory>(store: &mut PageStore<M>, fresh: Fresh) -> Result<Child, WriteError> {
     let page = match fresh.page {
         Some(page) => page,
         None => store.allocate(ByteClass::PAGE)?.page(),

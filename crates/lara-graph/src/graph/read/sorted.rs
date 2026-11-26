@@ -192,10 +192,7 @@ impl<S: GraphMemories> Graph<S> {
     }
 
     /// `bucket`'s targets, to fill or intersect a [`NeighborSet`] with.
-    fn targets_of<'a>(
-        &'a self,
-        bucket: &'a LabelBucket,
-    ) -> BucketTargets<'a, S::Pages, S::Directory> {
+    fn targets_of<'a>(&'a self, bucket: &'a LabelBucket) -> BucketTargets<'a, S::Pages> {
         BucketTargets {
             view: self.edge_view(),
             bucket,
@@ -223,12 +220,12 @@ impl<S: GraphMemories> Graph<S> {
 
 /// The live targets of a bucket: read whole, or, for a paged bucket [`PROBE_RATIO`] times larger
 /// than the candidates, each candidate looked up in its target index.
-struct BucketTargets<'a, M: Memory, D: Memory> {
-    view: EdgeView<'a, M, D>,
+struct BucketTargets<'a, M: Memory> {
+    view: EdgeView<'a, M>,
     bucket: &'a LabelBucket,
 }
 
-impl<M: Memory, D: Memory> Targets for BucketTargets<'_, M, D> {
+impl<M: Memory> Targets for BucketTargets<'_, M> {
     fn count(&self) -> usize {
         usize::try_from(self.bucket.slots.live()).unwrap_or(0)
     }

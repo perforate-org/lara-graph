@@ -103,7 +103,7 @@ impl Planned {
 }
 
 /// Plans the next bounded compaction step of `d`.
-pub(crate) fn plan<M: Memory, D: Memory>(d: Descriptor, store: &PageStore<M, D>) -> Planned {
+pub(crate) fn plan<M: Memory>(d: Descriptor, store: &PageStore<M>) -> Planned {
     let (action, base) = if d.live() == d.stored() {
         (Action::Unchanged(d), 0)
     } else {
@@ -135,9 +135,9 @@ pub(crate) fn plan<M: Memory, D: Memory>(d: Descriptor, store: &PageStore<M, D>)
 }
 
 /// Applies a planned step. On error nothing changed.
-pub(crate) fn apply<M: Memory, D: Memory>(
+pub(crate) fn apply<M: Memory>(
     planned: Planned,
-    store: &mut PageStore<M, D>,
+    store: &mut PageStore<M>,
     inline: Inline,
 ) -> Result<Step, WriteError> {
     let Planned { action, moves } = planned;
@@ -166,10 +166,10 @@ pub(crate) fn apply<M: Memory, D: Memory>(
 
 /// Packs a tiny or run bucket's live `edges` into the smallest form that holds them. Values
 /// beside a run's slots are packed with them.
-fn pack_small<M: Memory, D: Memory>(
+fn pack_small<M: Memory>(
     d: Descriptor,
     edges: &[Neighbor],
-    store: &mut PageStore<M, D>,
+    store: &mut PageStore<M>,
     inline: Inline,
 ) -> Result<Outcome, WriteError> {
     let Descriptor::Run(run) = d else {
@@ -196,10 +196,10 @@ fn pack_small<M: Memory, D: Memory>(
 }
 
 /// The cells of `edges` (live edges of `run`, in position order), packed in that order.
-fn packed_cells<M: Memory, D: Memory>(
+fn packed_cells<M: Memory>(
     run: &Run,
     edges: &[Neighbor],
-    store: &PageStore<M, D>,
+    store: &PageStore<M>,
     width: Width,
 ) -> Vec<u8> {
     let w = usize::from(width.get());
@@ -216,10 +216,10 @@ fn packed_cells<M: Memory, D: Memory>(
 }
 
 /// Packs a paged bucket's few live `edges` into a run or tiny bucket, releasing its pages.
-fn demote<M: Memory, D: Memory>(
+fn demote<M: Memory>(
     paged: Paged,
     edges: &[Neighbor],
-    store: &mut PageStore<M, D>,
+    store: &mut PageStore<M>,
     inline: Inline,
 ) -> Result<Outcome, WriteError> {
     // Allocate first: if that fails, the paged bucket is untouched. Its values stay in their
@@ -249,7 +249,7 @@ enum PageAction {
 }
 
 /// The page-level action for `paged`, read-only.
-fn choose<M: Memory, D: Memory>(paged: &Paged, store: &PageStore<M, D>) -> PageAction {
+fn choose<M: Memory>(paged: &Paged, store: &PageStore<M>) -> PageAction {
     let leaves = paged::leaves(&store.pages(), paged);
     let last = stored_u32(leaves.len()) - 1;
     let full = narrow(PAGE_SLOTS);
@@ -271,11 +271,11 @@ fn choose<M: Memory, D: Memory>(paged: &Paged, store: &PageStore<M, D>) -> PageA
 
 /// Applies a page-level action; returns the data page it released (its entry left hollow), or
 /// `None` when there was nothing to do.
-fn page_step<M: Memory, D: Memory>(
+fn page_step<M: Memory>(
     paged: Paged,
     action: PageAction,
     edges: &[Neighbor],
-    store: &mut PageStore<M, D>,
+    store: &mut PageStore<M>,
 ) -> Option<u32> {
     match action {
         PageAction::Hollow(number) => {
@@ -291,8 +291,8 @@ fn page_step<M: Memory, D: Memory>(
 }
 
 /// The live edges of two pages, in position order.
-fn merged_edges<M: Memory, D: Memory>(
-    store: &PageStore<M, D>,
+fn merged_edges<M: Memory>(
+    store: &PageStore<M>,
     first: (u32, Leaf),
     second: (u32, Leaf),
 ) -> Vec<Neighbor> {
@@ -304,8 +304,8 @@ fn merged_edges<M: Memory, D: Memory>(
 
 /// Packs data page `second` into data page `first` (their live `edges` fit one page), then
 /// releases `second` and leaves its entry hollow. Pages between them are hollow, so order holds.
-fn merge<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+fn merge<M: Memory>(
+    store: &mut PageStore<M>,
     paged: &Paged,
     (first, second): ((u32, Leaf), (u32, Leaf)),
     edges: &[Neighbor],
@@ -324,11 +324,7 @@ fn merge<M: Memory, D: Memory>(
 }
 
 /// The live edges of data page `number`, with their bucket positions.
-fn page_edges<M: Memory, D: Memory>(
-    store: &PageStore<M, D>,
-    number: u32,
-    page: PageId,
-) -> Vec<Neighbor> {
+fn page_edges<M: Memory>(store: &PageStore<M>, number: u32, page: PageId) -> Vec<Neighbor> {
     let bytes = store.pages().read(page.offset(), byte_len(PAGE_SLOTS));
     let base = number * PAGE_SLOTS;
     (base..)
@@ -342,10 +338,10 @@ fn page_edges<M: Memory, D: Memory>(
 
 /// A tiny bucket for up to three edges where allowed, a run for more (in `reuse` if given, else
 /// a new extent; with room for values of `values` beside its slots if set), or nothing for none.
-fn rebuild<M: Memory, D: Memory>(
+fn rebuild<M: Memory>(
     edges: &[Neighbor],
     (reuse, values): (Option<Extent>, Option<Beside>),
-    store: &mut PageStore<M, D>,
+    store: &mut PageStore<M>,
     inline: Inline,
 ) -> Result<Outcome, WriteError> {
     let count = stored_u32(edges.len());
@@ -376,7 +372,7 @@ fn rebuild<M: Memory, D: Memory>(
     })))
 }
 
-fn live_edges<M: Memory, D: Memory>(d: &Descriptor, store: &PageStore<M, D>) -> Vec<Neighbor> {
+fn live_edges<M: Memory>(d: &Descriptor, store: &PageStore<M>) -> Vec<Neighbor> {
     let mut edges = Vec::new();
     slots::read(d, &store.pages(), &mut edges);
     edges

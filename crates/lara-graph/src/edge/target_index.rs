@@ -59,7 +59,7 @@ impl Batch {
     }
 }
 
-impl<M: Memory, D: Memory> EdgeStore<M, D> {
+impl<M: Memory> EdgeStore<M> {
     /// The bucket's index after an edge to `target` went in at `at`, the slots having been
     /// `was` before: a bucket that just became paged gets one built from its slots; an append
     /// that completes a block brings the block's live entries in. Within reserved memory.
@@ -260,7 +260,7 @@ impl<M: Memory, D: Memory> EdgeStore<M, D> {
     }
 }
 
-impl<M: Memory, D: Memory> EdgeView<'_, M, D> {
+impl<M: Memory> EdgeView<'_, M> {
     /// The position ranges of an indexed bucket that can hold entries to `t`, ascending: the
     /// blocks its index lists for `t`, adjacent ones merged so that each range is read in one
     /// pass, and the unindexed last block; `None` for a bucket without an index.

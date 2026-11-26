@@ -259,8 +259,8 @@ fn stored_cells(plane: Plane, width: Width, cell: Option<ByteOffset>, (a, b): (u
 
 /// Writes `value` (one width long) at `position`, allocating at most [`PAGES_PER_WRITE`] pages,
 /// and returns the plane's new root. Callers reserve those pages first; then it cannot fail.
-pub(crate) fn write<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+pub(crate) fn write<M: Memory>(
+    store: &mut PageStore<M>,
     plane: Plane,
     width: Width,
     position: u32,
@@ -298,8 +298,8 @@ pub(crate) fn write<M: Memory, D: Memory>(
 }
 
 /// A run covering `position`: the old run's cells copied, the rest zero.
-fn grow_run<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+fn grow_run<M: Memory>(
+    store: &mut PageStore<M>,
     old: Option<Extent>,
     width: Width,
     position: u32,
@@ -328,8 +328,8 @@ pub(super) fn page_len() -> usize {
 /// Writes `cells`, whole values of `width` for the positions from `first`, all in one value page
 /// (or the run), and returns the plane's new root: one allocation path and one write. Callers
 /// reserve [`PAGES_PER_WRITE`] pages first.
-pub(crate) fn write_cells<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+pub(crate) fn write_cells<M: Memory>(
+    store: &mut PageStore<M>,
     plane: Plane,
     width: Width,
     first: u32,
@@ -365,8 +365,8 @@ pub(crate) fn read_cells<M: Memory>(
 }
 
 /// Copies the value at `from` to `to`; a zero value onto missing storage writes nothing.
-pub(crate) fn copy<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+pub(crate) fn copy<M: Memory>(
+    store: &mut PageStore<M>,
     plane: Plane,
     width: Width,
     (from, to): (u32, u32),
@@ -382,8 +382,8 @@ pub(crate) fn copy<M: Memory, D: Memory>(
 /// Releases the storage of positions `low..high` that no longer hold edges: every value page
 /// wholly inside the range, nodes left empty, and the whole plane when nothing is left. Values
 /// there read as zeros afterwards. A run is released only when the range covers it.
-pub(crate) fn release_range<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+pub(crate) fn release_range<M: Memory>(
+    store: &mut PageStore<M>,
     plane: Plane,
     width: Width,
     (low, high): (u32, u32),
@@ -401,8 +401,8 @@ pub(crate) fn release_range<M: Memory, D: Memory>(
 }
 
 /// [`release_range`] for a table: the pages wholly inside the range.
-fn release_table_range<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+fn release_table_range<M: Memory>(
+    store: &mut PageStore<M>,
     (root, depth): (PageId, u8),
     width: Width,
     (low, high): (u32, u32),
@@ -424,7 +424,7 @@ fn release_table_range<M: Memory, D: Memory>(
 }
 
 /// Releases every page and extent of a plane.
-pub(crate) fn release<M: Memory, D: Memory>(store: &mut PageStore<M, D>, plane: Plane) {
+pub(crate) fn release<M: Memory>(store: &mut PageStore<M>, plane: Plane) {
     match plane {
         Plane::Empty | Plane::Beside { .. } => {}
         Plane::Run(extent) => store.release(extent),
@@ -433,8 +433,8 @@ pub(crate) fn release<M: Memory, D: Memory>(store: &mut PageStore<M, D>, plane: 
 }
 
 /// A plane holding `cells` (whole values, at most a page of them) from position 0.
-pub(crate) fn run_of<M: Memory, D: Memory>(
-    store: &mut PageStore<M, D>,
+pub(crate) fn run_of<M: Memory>(
+    store: &mut PageStore<M>,
     cells: &[u8],
 ) -> Result<Plane, WriteError> {
     if cells.is_empty() {

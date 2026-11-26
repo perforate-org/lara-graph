@@ -16,7 +16,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
-impl<M: Memory, D: Memory> EdgeStore<M, D> {
+impl<M: Memory> EdgeStore<M> {
     /// `bucket` with `value` at `position`, given a value plane if it has none. Within reserved
     /// memory.
     pub(crate) fn put_value(
@@ -76,7 +76,7 @@ impl<M: Memory, D: Memory> EdgeStore<M, D> {
     }
 }
 
-impl<M: Memory, D: Memory> EdgeView<'_, M, D> {
+impl<M: Memory> EdgeView<'_, M> {
     /// The value at `position` of `bucket` (a bucket of `label`), whether or not an edge is live
     /// there: its cell, zeros before any write, empty for a label without a width.
     pub(crate) fn read_value(

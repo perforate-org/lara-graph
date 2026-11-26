@@ -64,7 +64,7 @@ fn assert_matches(
 
 #[test]
 fn random_adds_and_removes_match_a_sorted_map_through_both_shapes() {
-    let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
+    let mut store = PageStore::format(VecMemory::new()).unwrap();
     let mut list = None;
     let mut model = BTreeSet::new();
     let mut state = 0x9E37_79B9_7F4A_7C15u64;
@@ -102,7 +102,7 @@ fn random_adds_and_removes_match_a_sorted_map_through_both_shapes() {
 
 #[test]
 fn a_full_top_refuses_more_and_a_one_leaf_list_turns_flat() {
-    let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
+    let mut store = PageStore::format(VecMemory::new()).unwrap();
     let mut list = None;
     let mut added = 0u32;
     // Ascending keys always land in the last leaf, which splits in half when full.

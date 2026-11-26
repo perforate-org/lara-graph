@@ -47,11 +47,11 @@ pub(crate) enum Spot {
 
 /// Adds an edge to `target` at `spot`. Returns the bucket's next descriptor and the edge's
 /// position. Filling a hole never fails: it writes in place.
-pub(crate) fn insert<M: Memory, D: Memory>(
+pub(crate) fn insert<M: Memory>(
     d: Descriptor,
     target: NodeId,
     spot: Spot,
-    store: &mut PageStore<M, D>,
+    store: &mut PageStore<M>,
 ) -> Result<(Descriptor, Position), WriteError> {
     let edge = Slot::Live(target);
     if let Spot::Hole(at) = spot {
@@ -171,12 +171,7 @@ fn first_tombstone<M: Memory>(
 }
 
 /// Writes `edge` into the hole at `at`, which [`hole`] found. Never fails.
-fn fill<M: Memory, D: Memory>(
-    d: Descriptor,
-    at: Position,
-    edge: Slot,
-    store: &PageStore<M, D>,
-) -> Descriptor {
+fn fill<M: Memory>(d: Descriptor, at: Position, edge: Slot, store: &PageStore<M>) -> Descriptor {
     match d {
         Descriptor::Tiny(tiny) => {
             let i = usize::try_from(at.index()).unwrap_or_else(|_| corrupt("tiny slot"));
@@ -208,10 +203,10 @@ fn fill<M: Memory, D: Memory>(
 
 /// Removes the edge at `at`. Returns the next descriptor and the removed edge's target, or
 /// `None` when no live edge is there. Never fails: it writes in place.
-pub(crate) fn remove<M: Memory, D: Memory>(
+pub(crate) fn remove<M: Memory>(
     d: Descriptor,
     at: Position,
-    store: &PageStore<M, D>,
+    store: &PageStore<M>,
 ) -> Option<(Descriptor, NodeId)> {
     if at.index() >= d.stored() {
         return None;
@@ -286,9 +281,9 @@ pub(crate) fn target_at<M: Memory>(view: &Pages<'_, M>, at: ByteOffset) -> Optio
 
 /// The same slots, never tiny: a tiny bucket becomes a run of the smallest class (a bucket with
 /// values in a plane needs one); a run or paged bucket is unchanged.
-pub(crate) fn without_tiny<M: Memory, D: Memory>(
+pub(crate) fn without_tiny<M: Memory>(
     d: Descriptor,
-    store: &mut PageStore<M, D>,
+    store: &mut PageStore<M>,
 ) -> Result<Descriptor, WriteError> {
     let Descriptor::Tiny(tiny) = d else {
         return Ok(d);
@@ -306,10 +301,10 @@ pub(crate) fn without_tiny<M: Memory, D: Memory>(
 
 /// A tiny bucket or a run without values as a run with `beside` values next to its slots, all
 /// zero, in the smallest class that holds one more slot. Within one page of copying.
-pub(crate) fn with_values_beside<M: Memory, D: Memory>(
+pub(crate) fn with_values_beside<M: Memory>(
     d: Descriptor,
     beside: Beside,
-    store: &mut PageStore<M, D>,
+    store: &mut PageStore<M>,
 ) -> Result<Descriptor, WriteError> {
     let width = beside.width;
     let (slots, old) = match d {
@@ -350,9 +345,9 @@ pub(crate) fn full_beside(d: &Descriptor) -> bool {
 
 /// A run with values beside its slots as a run of its slots alone, with room for one more, and
 /// a value plane of its cells. Copies at most a page of each.
-pub(crate) fn values_out<M: Memory, D: Memory>(
+pub(crate) fn values_out<M: Memory>(
     run: Run,
-    store: &mut PageStore<M, D>,
+    store: &mut PageStore<M>,
 ) -> Result<(Descriptor, Plane), WriteError> {
     let width = run
         .width()
@@ -460,7 +455,7 @@ mod tests {
     /// Short windows read a span in either order, across pages and with holes.
     #[test]
     fn short_windows_read_spans_both_ways() {
-        let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
+        let mut store = PageStore::format(VecMemory::new()).unwrap();
         let mut d = Descriptor::EMPTY;
         let total = PAGE_SLOTS + 300;
         for i in 0..total {
@@ -496,7 +491,7 @@ mod tests {
     /// two levels deep, and the index's hole counts follow every fill and removal.
     #[test]
     fn holes_are_found_through_a_deep_page_index() {
-        let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
+        let mut store = PageStore::format(VecMemory::new()).unwrap();
         let mut d = Descriptor::EMPTY;
         let page_count = paged::FANOUT + 3;
         let total = page_count * PAGE_SLOTS - 5;
@@ -560,7 +555,7 @@ mod tests {
     /// `find` and `visit` start at `from` in every bucket form, including past a page boundary.
     #[test]
     fn searches_start_at_their_position() {
-        let mut store = PageStore::format(VecMemory::new(), VecMemory::new()).unwrap();
+        let mut store = PageStore::format(VecMemory::new()).unwrap();
         for total in [3, 10, PAGE_SLOTS * 2 + 7] {
             let mut d = Descriptor::EMPTY;
             for _ in 0..total {

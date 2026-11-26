@@ -107,9 +107,9 @@ impl<M: Memory> LabelStore<M> {
 
     /// Replaces `v`'s labels with `set` (sorted, distinct) and updates each label's nodes for the
     /// labels gained and lost. On error the labels and postings are unchanged.
-    pub(crate) fn set<P: Memory, D: Memory>(
+    pub(crate) fn set<P: Memory>(
         &mut self,
-        lists: &mut PageStore<P, D>,
+        lists: &mut PageStore<P>,
         v: NodeId,
         set: &[NodeLabel],
     ) -> Result<(), WriteError> {
@@ -141,7 +141,7 @@ impl<M: Memory> LabelStore<M> {
     }
 
     /// Drops `v`'s labels and postings. Cannot fail: removals never allocate.
-    pub(crate) fn clear<P: Memory, D: Memory>(&mut self, lists: &mut PageStore<P, D>, v: NodeId) {
+    pub(crate) fn clear<P: Memory>(&mut self, lists: &mut PageStore<P>, v: NodeId) {
         let old = self.cell(v);
         if old == LabelSet::None {
             return;

@@ -31,7 +31,7 @@ impl Default for HoleCursor {
     }
 }
 
-impl<M: Memory, D: Memory> EdgeStore<M, D> {
+impl<M: Memory> EdgeStore<M> {
     /// The next hole `cursor` finds in `b`, the bucket `key` names.
     fn next_hole(
         &self,
@@ -141,7 +141,7 @@ impl<M: Memory, D: Memory> EdgeStore<M, D> {
     }
 }
 
-impl<M: Memory, D: Memory> EdgeView<'_, M, D> {
+impl<M: Memory> EdgeView<'_, M> {
     /// Where an edge to `target` goes in the bucket `stored`, and the block batch its append
     /// completes, if any; fails for a bucket without a free position. `bucket` names the bucket
     /// for `cursor`, which a run of fresh targets into one bucket shares.
