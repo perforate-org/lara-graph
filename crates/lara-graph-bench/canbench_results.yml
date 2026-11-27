@@ -135,28 +135,28 @@ benches:
   churn_fresh_1024:
     total:
       calls: 1
-      instructions: 17051238
+      instructions: 17049190
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   churn_fresh_compacting_1024:
     total:
       calls: 1
-      instructions: 17123862
+      instructions: 17126855
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   churn_turned_1024:
     total:
       calls: 1
-      instructions: 17960952
+      instructions: 17958904
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   churn_turned_compacting_1024:
     total:
       calls: 1
-      instructions: 19340313
+      instructions: 19342506
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -366,84 +366,84 @@ benches:
   detach_1024_of_hub_65536:
     total:
       calls: 1
-      instructions: 33485379
+      instructions: 33480259
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   detach_1024_of_hub_65536_swept:
     total:
       calls: 1
-      instructions: 25312484
+      instructions: 25307364
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   detach_4096_of_hub_65536:
     total:
       calls: 1
-      instructions: 136245752
+      instructions: 136225272
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   detach_4096_of_hub_65536_swept:
     total:
       calls: 1
-      instructions: 81974588
+      instructions: 81954108
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   detach_hub_1024:
     total:
       calls: 1
-      instructions: 4088441
+      instructions: 4088436
       heap_increase: 1
       stable_memory_increase: 0
     scopes: {}
   detach_hub_4096:
     total:
       calls: 1
-      instructions: 24521017
+      instructions: 24521006
       heap_increase: 4
       stable_memory_increase: 0
     scopes: {}
   detach_hub_4096_step_64:
     total:
       calls: 1
-      instructions: 25522773
+      instructions: 25522762
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   detach_hub_65536:
     total:
       calls: 1
-      instructions: 407642979
+      instructions: 407642968
       heap_increase: 57
       stable_memory_increase: 0
     scopes: {}
   detach_parallel_1024:
     total:
       calls: 1
-      instructions: 3710068
+      instructions: 3710063
       heap_increase: 1
       stable_memory_increase: 0
     scopes: {}
   detach_satellite_1024:
     total:
       calls: 1
-      instructions: 20728
+      instructions: 20723
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   detach_satellite_4096:
     total:
       calls: 1
-      instructions: 21222
+      instructions: 21217
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   detach_satellite_65536:
     total:
       calls: 1
-      instructions: 21974
+      instructions: 21969
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -674,13 +674,13 @@ benches:
   hub_remove_half_compact_4096:
     total:
       calls: 1
-      instructions: 32884505
+      instructions: 35937177
       heap_increase: 1
       stable_memory_increase: 0
     scopes:
       compaction:
         calls: 1
-        instructions: 2863964
+        instructions: 5916636
         heap_increase: 1
         stable_memory_increase: 0
       removals:
@@ -691,13 +691,13 @@ benches:
   hub_remove_half_compact_65536:
     total:
       calls: 1
-      instructions: 588036977
+      instructions: 593986202
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       compaction:
         calls: 1
-        instructions: 88805848
+        instructions: 94755073
         heap_increase: 0
         stable_memory_increase: 0
       removals:
@@ -708,13 +708,13 @@ benches:
   hub_remove_half_compact_65536_batched:
     total:
       calls: 1
-      instructions: 512476738
+      instructions: 518425963
       heap_increase: 29
       stable_memory_increase: 0
     scopes:
       compaction:
         calls: 1
-        instructions: 88805830
+        instructions: 94755055
         heap_increase: 0
         stable_memory_increase: 0
       removals:

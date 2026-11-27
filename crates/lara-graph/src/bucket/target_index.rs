@@ -77,11 +77,17 @@ impl Change {
         }
     }
 
-    /// The changes of compaction moving an edge to `target` from `from` to `to`. Both are
-    /// indexed positions: compaction never merges a bucket's last page, which holds its unindexed
-    /// last block, and moves only into earlier pages.
-    pub(crate) const fn moved(target: NodeId, (from, to): (Position, Position)) -> [Self; 2] {
-        [Self::at(target, from, -1), Self::at(target, to, 1)]
+    /// The changes of compaction moving an edge to `target` from `from` to `to`, in a bucket
+    /// whose positions below `indexed` are indexed. `to` always is: compaction moves edges into
+    /// earlier pages, and a bucket it shortens keeps whole pages. `from` may not be, when the
+    /// last page's unindexed last block is merged into an earlier page.
+    pub(crate) fn moved(
+        target: NodeId,
+        (from, to): (Position, Position),
+        indexed: u32,
+    ) -> impl Iterator<Item = Self> {
+        let left = (from.index() < indexed).then(|| Self::at(target, from, -1));
+        left.into_iter().chain([Self::at(target, to, 1)])
     }
 }
 

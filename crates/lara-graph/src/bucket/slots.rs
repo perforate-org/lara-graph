@@ -140,7 +140,7 @@ fn paged_hole_from<M: Memory>(view: &Pages<'_, M>, paged: &Paged, start: u32) ->
 }
 
 /// The slots data page `number` stores: all of them but in the last page.
-fn page_slots(paged: &Paged, number: u32) -> u32 {
+pub(crate) fn page_slots(paged: &Paged, number: u32) -> u32 {
     (paged.stored - number * PAGE_SLOTS).min(PAGE_SLOTS)
 }
 

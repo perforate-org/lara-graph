@@ -175,3 +175,135 @@ fn moves_name_their_halves_and_whether_they_are_canonical() {
     }
     check(&g);
 }
+
+/// A hub of `n` edges to distinct targets (so its target index has postings), each carrying
+/// its position as an 8-byte value, with the positions in `holes` removed.
+fn valued_hub_with_holes(
+    backing: &Backing,
+    n: u32,
+    holes: impl IntoIterator<Item = u32>,
+) -> Graph<VecMemory> {
+    let mut g = backing.create(n + 1);
+    g.declare_width(l(0), Width::new(8).unwrap()).unwrap();
+    for i in 0..n {
+        g.add_edge_with(
+            Edge::directed(v(0), l(0), v(i + 1)).value(&u64::from(i).to_le_bytes()),
+            Placement::Append,
+        )
+        .unwrap();
+    }
+    for at in holes {
+        remove(&mut g, v(0), l(0), p(at));
+    }
+    g
+}
+
+/// Compacts `g`'s hub bucket until done; returns every move.
+fn compact_all(g: &mut Graph<VecMemory>) -> Vec<crate::Move> {
+    let mut moves = Vec::new();
+    loop {
+        let step = g.compact(v(0), l(0).outgoing()).unwrap();
+        moves.extend_from_slice(step.changes());
+        check(g);
+        if step.progress() == Progress::Done {
+            return moves;
+        }
+    }
+}
+
+/// Each live edge of the hub carries the value it was given: its target's position at insert.
+fn assert_values_follow(g: &Graph<VecMemory>) {
+    let mut seen = 0;
+    g.visit_neighbors_with_values(v(0), l(0).outgoing(), Order::Ascending, |n, value| {
+        let given = u64::from(n.node().index() - 1).to_le_bytes();
+        assert_eq!(value, given, "the value of the edge to {:?}", n.node());
+        seen += 1;
+        ControlFlow::<()>::Continue(())
+    })
+    .unwrap();
+    assert_eq!(seen, g.degree(v(0), l(0).outgoing()).unwrap());
+}
+
+#[test]
+fn two_half_empty_pages_are_packed_into_a_run() {
+    let backing = Backing::default();
+    // Every other edge of two pages removed: only the last page can absorb the first one's
+    // edges, which leaves one page, so the bucket becomes a run.
+    let mut g = valued_hub_with_holes(&backing, 2 * PAGE_SLOTS, (0..2 * PAGE_SLOTS).step_by(2));
+    let moves = compact_all(&mut g);
+    assert_eq!(
+        moves.len(),
+        usize::try_from(PAGE_SLOTS).unwrap(),
+        "every live edge moves"
+    );
+    assert!(matches!(
+        out_bucket(&g, v(0), l(0)),
+        Some(Descriptor::Run(_))
+    ));
+    assert_eq!(g.holes(v(0), l(0).outgoing()), Ok(0));
+    assert_values_follow(&g);
+}
+
+#[test]
+fn absorbing_the_last_page_shortens_the_bucket() {
+    let backing = Backing::default();
+    // Page 0 full; pages 1 and 2 (the last) half removed: page 1 absorbs page 2 and the bucket
+    // ends after page 1, so the next append opens page 2 again.
+    let holes = (PAGE_SLOTS..3 * PAGE_SLOTS).step_by(2);
+    let mut g = valued_hub_with_holes(&backing, 3 * PAGE_SLOTS, holes);
+    let moves = compact_all(&mut g);
+    assert!(moves.iter().all(|m| m.to().index() < 2 * PAGE_SLOTS));
+    let Some(Descriptor::Paged(paged)) = out_bucket(&g, v(0), l(0)) else {
+        panic!("still paged")
+    };
+    assert_eq!((paged.stored, paged.live), (2 * PAGE_SLOTS, 2 * PAGE_SLOTS));
+    assert_values_follow(&g);
+    let appended = g
+        .add_edge_with(
+            Edge::directed(v(0), l(0), v(1)).value(&0u64.to_le_bytes()),
+            Placement::Append,
+        )
+        .unwrap();
+    assert_eq!(appended.canonical().position(), p(2 * PAGE_SLOTS));
+    check(&g);
+}
+
+#[test]
+fn a_last_page_not_yet_filled_is_absorbed_with_its_unindexed_block() {
+    let backing = Backing::default();
+    // The last page holds 300 positions, its last block not full and so not indexed; page 1
+    // keeps half its edges. They fit one page: page 1 absorbs them, holes and all.
+    let n = 2 * PAGE_SLOTS + 300;
+    let holes = (PAGE_SLOTS..2 * PAGE_SLOTS).step_by(2);
+    let mut g = valued_hub_with_holes(&backing, n, holes);
+    compact_all(&mut g);
+    let Some(Descriptor::Paged(paged)) = out_bucket(&g, v(0), l(0)) else {
+        panic!("still paged")
+    };
+    assert_eq!(paged.stored, 2 * PAGE_SLOTS);
+    assert_eq!(paged.live, PAGE_SLOTS + PAGE_SLOTS / 2 + 300);
+    assert_values_follow(&g);
+    for target in [2 * PAGE_SLOTS + 1, n] {
+        assert_eq!(
+            g.contains_edge(v(0), l(0).outgoing(), v(target)),
+            Ok(true),
+            "edge to {target}, moved from the last page"
+        );
+    }
+}
+
+#[test]
+fn a_dead_last_page_behind_a_page_with_holes_is_dropped() {
+    let backing = Backing::default();
+    // Page 1 has a hole at its start; page 2, the last, has none live: page 1 absorbs it, its
+    // own edges packed a position down, and the bucket ends after page 1.
+    let holes = core::iter::once(PAGE_SLOTS).chain(2 * PAGE_SLOTS..3 * PAGE_SLOTS);
+    let mut g = bucket_with_holes(&backing, 3 * PAGE_SLOTS, holes);
+    let moves = compact_all(&mut g);
+    assert_eq!(moves.len(), usize::try_from(PAGE_SLOTS - 1).unwrap());
+    assert!(moves.iter().all(|m| m.from().index() - m.to().index() == 1));
+    let Some(Descriptor::Paged(paged)) = out_bucket(&g, v(0), l(0)) else {
+        panic!("still paged")
+    };
+    assert_eq!(paged.stored, 2 * PAGE_SLOTS);
+}

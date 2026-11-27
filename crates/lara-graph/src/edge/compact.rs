@@ -125,10 +125,12 @@ impl<M: Memory> EdgeStore<M> {
         if bucket.indexed().is_none() || !step.stays_paged() || step.moves().is_empty() {
             return Ok(None);
         }
+        // The index covers the bucket's complete blocks.
+        let indexed = bucket.slots.stored() / target_index::BLOCK * target_index::BLOCK;
         let changes: Vec<Change> = step
             .moves()
             .iter()
-            .flat_map(|m| Change::moved(m.node(), (m.from(), m.to())))
+            .flat_map(|m| Change::moved(m.node(), (m.from(), m.to()), indexed))
             .collect();
         let plan = target_index::plan(&self.store.pages(), bucket.index.tree(), &changes);
         self.store.reserve(plan.pages())?;

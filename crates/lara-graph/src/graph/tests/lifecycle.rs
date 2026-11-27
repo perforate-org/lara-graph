@@ -48,7 +48,11 @@ fn widths_across_the_label_range_survive_a_reopen() {
     }
     let g = backing.open();
     for (label, width) in labels {
-        assert_eq!(g.width(EdgeLabel::new(label)), Some(w(width)), "label {label}");
+        assert_eq!(
+            g.width(EdgeLabel::new(label)),
+            Some(w(width)),
+            "label {label}"
+        );
     }
     for label in [0, 3, 1_499, 1_501, 39_999, u16::MAX - 1] {
         assert_eq!(g.width(EdgeLabel::new(label)), None, "label {label}");

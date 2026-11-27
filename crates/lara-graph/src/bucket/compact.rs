@@ -9,8 +9,12 @@
 //! - A paged bucket with at most [`DEMOTE_AT`] live edges is packed into a run (or tiny bucket).
 //! - Otherwise one page-level action per step: a dead page (not the last) is released and its
 //!   index entry left hollow, or a page with holes absorbs the next page with content when both
-//!   fit in one page. No position after them moves. The last page is left to inserts, which
-//!   reuse its holes.
+//!   fit in one page. No position after them moves.
+//! - The next page with content may be the last, while the index is one level (up to
+//!   [`paged::FANOUT`] data pages, half a million positions). Absorbing it shortens the bucket
+//!   to the absorbing page's end, so that appends, which never fill holes, do not leave the
+//!   bucket half empty for good. When that would leave one page, the bucket is packed into a
+//!   run instead: a paged bucket has more than one page.
 
 use crate::bucket::descriptor::{
     Beside, Descriptor, PAGE_SLOTS, Paged, Run, Slot, TINY_SLOTS, Tiny, run_class,
@@ -115,8 +119,12 @@ pub(crate) fn plan<M: Memory>(d: Descriptor, store: &PageStore<M>) -> Planned {
                 (Action::Demote(paged, live_edges(&d, store)), 0)
             }
             Descriptor::Paged(paged) => match choose(&paged, store) {
+                // Absorbing the last page into the first leaves one page: a run.
+                PageAction::Merge((0, _), (second, _)) if second == last_page(&paged) => {
+                    (Action::Demote(paged, live_edges(&d, store)), 0)
+                }
                 PageAction::Merge(first, second) => {
-                    let edges = merged_edges(store, first, second);
+                    let edges = merged_edges(store, &paged, first, second);
                     let action = PageAction::Merge(first, second);
                     (Action::Page(paged, action, edges), first.0 * PAGE_SLOTS)
                 }
@@ -148,7 +156,7 @@ pub(crate) fn apply<M: Memory>(
             (demote(paged, &edges, store, inline)?, Progress::Done, None)
         }
         Action::Page(paged, action, edges) => match page_step(paged, action, &edges, store) {
-            Some(hollowed) => (
+            Some((paged, hollowed)) => (
                 Outcome::LabelBucket(Descriptor::Paged(paged)),
                 Progress::Remaining,
                 Some(hollowed),
@@ -253,15 +261,24 @@ fn choose<M: Memory>(paged: &Paged, store: &PageStore<M>) -> PageAction {
     let leaves = paged::leaves(&store.pages(), paged);
     let last = stored_u32(leaves.len()) - 1;
     let full = narrow(PAGE_SLOTS);
+    // The last page may be absorbed while the index is one level: shortening a deeper one would
+    // release index nodes and could make it shallower.
+    let partners = if leaves.len() <= usize::try_from(paged::FANOUT).unwrap_or(usize::MAX) {
+        last + 1
+    } else {
+        last
+    };
+    let live =
+        |number: u32, leaf: Leaf| slots::page_slots(paged, number) - u32::from(leaf.tombstones);
     let candidates = (0u32..).zip(&leaves).take_while(|(n, _)| *n < last);
     for (number, leaf) in candidates.filter(|(_, l)| l.page.is_some() && l.tombstones > 0) {
         if leaf.tombstones == full {
             return PageAction::Hollow(number);
         }
-        let next = (number + 1..last).find(|&n| leaf_at(&leaves, n).page.is_some());
+        let next = (number + 1..partners).find(|&n| leaf_at(&leaves, n).page.is_some());
         if let Some(next) = next {
             let (first, second) = (leaf_at(&leaves, number), leaf_at(&leaves, next));
-            if u32::from(first.tombstones) + u32::from(second.tombstones) >= PAGE_SLOTS {
+            if live(number, first) + live(next, second) <= PAGE_SLOTS {
                 return PageAction::Merge((number, first), (next, second));
             }
         }
@@ -269,22 +286,37 @@ fn choose<M: Memory>(paged: &Paged, store: &PageStore<M>) -> PageAction {
     PageAction::Nothing
 }
 
-/// Applies a page-level action; returns the data page it released (its entry left hollow), or
-/// `None` when there was nothing to do.
+/// The last data page of `paged`.
+fn last_page(paged: &Paged) -> u32 {
+    paged::data_pages(paged.stored) - 1
+}
+
+/// Applies a page-level action; returns the bucket after it and the data page it released (its
+/// entry left hollow), or `None` when there was nothing to do. Absorbing the last page shortens
+/// the bucket to the absorbing page's end: every page after it is hollow, and their entries are
+/// past the end, so the next appended page overwrites them.
 fn page_step<M: Memory>(
     paged: Paged,
     action: PageAction,
     edges: &[Neighbor],
     store: &mut PageStore<M>,
-) -> Option<u32> {
+) -> Option<(Paged, u32)> {
     match action {
         PageAction::Hollow(number) => {
             paged::hollow(store, &paged, number);
-            Some(number)
+            Some((paged, number))
         }
         PageAction::Merge(first, second) => {
             merge(store, &paged, (first, second), edges);
-            Some(second.0)
+            let after = if second.0 == last_page(&paged) {
+                Paged {
+                    stored: (first.0 + 1) * PAGE_SLOTS,
+                    ..paged
+                }
+            } else {
+                paged
+            };
+            Some((after, second.0))
         }
         PageAction::Nothing => None,
     }
@@ -293,12 +325,20 @@ fn page_step<M: Memory>(
 /// The live edges of two pages, in position order.
 fn merged_edges<M: Memory>(
     store: &PageStore<M>,
+    paged: &Paged,
     first: (u32, Leaf),
     second: (u32, Leaf),
 ) -> Vec<Neighbor> {
     [first, second]
         .into_iter()
-        .flat_map(|(number, leaf)| page_edges(store, number, leaf.present()))
+        .flat_map(|(number, leaf)| {
+            page_edges(
+                store,
+                number,
+                leaf.present(),
+                slots::page_slots(paged, number),
+            )
+        })
         .collect()
 }
 
@@ -323,9 +363,15 @@ fn merge<M: Memory>(
     paged::hollow(store, paged, second.0);
 }
 
-/// The live edges of data page `number`, with their bucket positions.
-fn page_edges<M: Memory>(store: &PageStore<M>, number: u32, page: PageId) -> Vec<Neighbor> {
-    let bytes = store.pages().read(page.offset(), byte_len(PAGE_SLOTS));
+/// The live edges of data page `number`'s first `len` slots, with their bucket positions: a
+/// last page's slots past the end were never written.
+fn page_edges<M: Memory>(
+    store: &PageStore<M>,
+    number: u32,
+    page: PageId,
+    len: u32,
+) -> Vec<Neighbor> {
+    let bytes = store.pages().read(page.offset(), byte_len(len));
     let base = number * PAGE_SLOTS;
     (base..)
         .zip(Slot::decode_all(&bytes))
