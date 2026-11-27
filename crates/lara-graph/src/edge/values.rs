@@ -88,6 +88,24 @@ impl<M: Memory> EdgeView<'_, M> {
         value_at(&self.pages(), self.widths.get(label), bucket, position)
     }
 
+    /// Appends the value at each of `positions` of `bucket` (a bucket of `label`) to `out`, as
+    /// [`Self::read_value`] gives each.
+    pub(crate) fn read_values(
+        &self,
+        bucket: &LabelBucket,
+        label: EdgeLabel,
+        positions: &[Position],
+        out: &mut Vec<u8>,
+    ) {
+        values_into(
+            &self.pages(),
+            self.widths.get(label),
+            bucket,
+            positions,
+            out,
+        );
+    }
+
     /// Calls `f` with the value of every position of `bucket` in `order`, until it breaks.
     pub(crate) fn visit_values_in<B>(
         &self,
@@ -207,6 +225,50 @@ fn live_ranges<M: Memory>(view: &Pages<'_, M>, slots: &Descriptor) -> Vec<(u32, 
         }
     }
     ranges
+}
+
+/// Appends the value at each of `positions` of `bucket`, a bucket of a label of width `width`, to
+/// `out`, as [`value_at`] gives each. A run of consecutive ascending positions is read a value
+/// page at a time; one value at a time, with a buffer each, a batch of a thousand cost about
+/// 1.1K instructions a value (Gleaph's `timer_maintenance_single_step_indexed_hub_2048`).
+pub(super) fn values_into<M: Memory>(
+    pages: &Pages<'_, M>,
+    width: Option<Width>,
+    bucket: &LabelBucket,
+    positions: &[Position],
+    out: &mut Vec<u8>,
+) {
+    let Some(cells) = bucket.cells() else {
+        let len = positions.len() * width.map_or(0, |w| usize::from(w.get()));
+        out.resize(out.len() + len, 0);
+        return;
+    };
+    let w = usize::from(cells.width.get());
+    let mut positions = positions.iter().map(|p| p.index()).peekable();
+    while let Some(start) = positions.next() {
+        let mut end = start.saturating_add(1);
+        while positions.next_if_eq(&end).is_some() {
+            end = end.saturating_add(1);
+        }
+        if end - start <= 1 {
+            let at = out.len();
+            out.resize(at + w, 0);
+            if let Some(cell) = out.get_mut(at..) {
+                values::read(pages, cells.plane, cells.width, start, cell);
+            }
+        } else {
+            let _: Option<()> = values::visit(
+                pages,
+                cells.plane,
+                cells.width,
+                (start, end, false),
+                |_, bytes| {
+                    out.extend_from_slice(bytes);
+                    ControlFlow::Continue(())
+                },
+            );
+        }
+    }
 }
 
 /// The value at `position` of `bucket`, a bucket of a label of width `width`: its cell, zeros

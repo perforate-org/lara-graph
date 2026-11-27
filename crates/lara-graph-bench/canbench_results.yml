@@ -16,14 +16,14 @@ benches:
   all_labels_batched_1:
     total:
       calls: 1
-      instructions: 1730011
+      instructions: 1730009
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   all_labels_batched_8:
     total:
       calls: 1
-      instructions: 6382006
+      instructions: 6382004
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -345,7 +345,7 @@ benches:
   degree_1024_batched:
     total:
       calls: 1
-      instructions: 676495
+      instructions: 676493
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -359,7 +359,7 @@ benches:
   degree_absent_label_1024_batched:
     total:
       calls: 1
-      instructions: 466874
+      instructions: 466872
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -513,7 +513,7 @@ benches:
   has_edges_1024_batched:
     total:
       calls: 1
-      instructions: 617867
+      instructions: 617865
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -750,6 +750,23 @@ benches:
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
+  hub_values_at_1024:
+    total:
+      calls: 1
+      instructions: 761602
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      consecutive:
+        calls: 1
+        instructions: 49453
+        heap_increase: 0
+        stable_memory_increase: 0
+      spaced:
+        calls: 1
+        instructions: 710356
+        heap_increase: 0
+        stable_memory_increase: 0
   hub_visit_1024:
     total:
       calls: 1
@@ -802,7 +819,7 @@ benches:
   labels_1024_batched:
     total:
       calls: 1
-      instructions: 438557
+      instructions: 438555
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -1117,7 +1134,7 @@ benches:
   visit_inline_1024_batched:
     total:
       calls: 1
-      instructions: 655083
+      instructions: 655081
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -1131,14 +1148,14 @@ benches:
   visit_run_1024_batch_context:
     total:
       calls: 1
-      instructions: 1139152
+      instructions: 1139150
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   visit_run_1024_batched:
     total:
       calls: 1
-      instructions: 1141451
+      instructions: 1141449
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -1152,7 +1169,7 @@ benches:
   visit_run_1024_batched_shuffled:
     total:
       calls: 1
-      instructions: 1359551
+      instructions: 1359549
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}

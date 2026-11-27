@@ -105,11 +105,11 @@ impl<S: GraphMemories> Graph<S> {
         let width = self.widths.get(label).map_or(0, |w| usize::from(w.get()));
         let found = self.find_label_bucket(v, LabelBucketKey { label, direction })?;
         out.clear();
-        for &p in positions {
-            match &found {
-                Some(found) => out.extend(self.edge_view().read_value(&found.bucket, label, p)),
-                None => out.resize(out.len() + width, 0),
-            }
+        match &found {
+            Some(found) => self
+                .edge_view()
+                .read_values(&found.bucket, label, positions, out),
+            None => out.resize(positions.len() * width, 0),
         }
         Ok(())
     }

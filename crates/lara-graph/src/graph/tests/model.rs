@@ -629,6 +629,23 @@ fn assert_values<M: Memory>(
         .unwrap();
     let want: Vec<u8> = live.values().rev().flatten().copied().collect();
     assert_eq!(bytes, want, "values_at of {x:?} {label:?} {direction:?}");
+    // Ascending, which reads runs of consecutive positions a page at a time: runs break where
+    // edges were removed, and the first position is asked twice.
+    let mut positions: Vec<Position> = live.keys().map(|&at| p(at)).collect();
+    if let Some(&first) = positions.first() {
+        positions.insert(0, first);
+    }
+    let mut bytes = Vec::new();
+    g.values_at(x, Adjacency::new(label, direction), &positions, &mut bytes)
+        .unwrap();
+    let want: Vec<u8> = positions
+        .iter()
+        .flat_map(|at| live[&at.index()].iter().copied())
+        .collect();
+    assert_eq!(
+        bytes, want,
+        "ascending values_at of {x:?} {label:?} {direction:?}"
+    );
     let mut first_phase = BTreeMap::new();
     g.visit_values(
         x,

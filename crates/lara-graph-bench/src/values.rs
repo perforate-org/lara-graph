@@ -110,6 +110,29 @@ fn hub_visit_values_65536() -> BenchResult {
 }
 
 /// 51 combined scans (edge and value) of a 1024-edge hub.
+/// The values at 1024 consecutive positions of a valued hub, by position (`values_at`), as a
+/// reader of a window or a compaction's moved edges asks for them, and at every other one.
+#[bench(raw)]
+fn hub_values_at_1024() -> BenchResult {
+    let mut g = graph();
+    let hub = seed_valued_hub(&mut g, 2048);
+    let consecutive: Vec<Position> = (0..1024).map(Position::new).collect();
+    let spaced: Vec<Position> = (0..1024).map(|i| Position::new(2 * i)).collect();
+    let mut out = Vec::new();
+    bench_fn(|| {
+        {
+            let _scope = canbench_rs::bench_scope("consecutive");
+            g.values_at(hub, OUT, &consecutive, &mut out)
+                .unwrap_or_else(|e| panic!("values: {e}"));
+            black_box(out.len());
+        }
+        let _scope = canbench_rs::bench_scope("spaced");
+        g.values_at(hub, OUT, &spaced, &mut out)
+            .unwrap_or_else(|e| panic!("values: {e}"));
+        black_box(out.len());
+    })
+}
+
 #[bench(raw)]
 fn hub_visit_with_values_1024() -> BenchResult {
     let mut g = graph();
